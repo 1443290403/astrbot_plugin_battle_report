@@ -410,16 +410,21 @@ class BattleReportPlugin(Star):
         report.submitted_name = event.get_sender_name()
         report.created_at = int(time.time())
 
-        # 判定胜者与主体战队
+        # 判定胜者：胜负未定则不记录
         winner = determine_match_winner(report)
+        if winner is None:
+            yield event.plain_result(
+                "❌ 比赛胜负未定，无法记录战报。请补全比分后重试。\n"
+                "（人头赛需分出胜负对局数；2/3 KOF 需一方全员败北）"
+            )
+            return
+
         home_team = (
             team_tag
             or str(self.config.get("home_team", "") or "").strip()
             or report.team_a
         )
-        if winner is None:
-            home_result = "⚔️ 比赛胜负未定（请补全比分）"
-        elif home_team == winner:
+        if home_team == winner:
             home_result = f"🏆 {home_team} 获胜！"
         elif home_team in (report.team_a, report.team_b):
             home_result = f"💀 {home_team} 战败"
