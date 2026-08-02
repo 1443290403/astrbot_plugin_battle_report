@@ -24,38 +24,39 @@ def compute_cumulative(points: list[tuple[str, int, int]]) -> list[dict]:
 
 
 def _rank_lines(rows: list[dict], name_key: str, title: str) -> list[str]:
-    """生成带并列名次的榜单文本行。"""
+    """生成带并列名次的榜单文本行（按积分 points）。"""
     if not rows:
         return ["暂无战报数据。"]
     lines = [title]
     prev = None
     rank = 0
     for i, r in enumerate(rows, 1):
-        key = (r["win_rate"], r["wins"], r["total"])
+        pts = r.get("points", 0) or 0
+        key = (pts, r["wins"], r["total"])
         if key != prev:
             rank = i
             prev = key
         lines.append(
             f"第{rank}名 {r[name_key]}  胜{r['wins']} 负{r['losses']} "
-            f"平{r['draws']}  总{r['total']}  胜率{r['win_rate']}%"
+            f"总{r['total']}  积分{pts}"
         )
     return lines
 
 
 def format_player_ranking(rows: list[dict], limit: int = 10, min_games: int = 1) -> str:
-    """个人胜率排行文本。"""
+    """个人积分排行文本。"""
     if not rows:
         return "暂无战报数据。"
     return "\n".join(
-        _rank_lines(rows, "player", f"🏆 个人胜率榜（前 {limit}）\n（仅统计 ≥{min_games} 局的玩家）")
+        _rank_lines(rows, "player", f"🏆 个人积分榜（前 {limit}）\n（仅统计 ≥{min_games} 局的玩家）")
     )
 
 
 def format_team_ranking(rows: list[dict], limit: int = 10) -> str:
-    """队伍战绩排行文本。"""
+    """队伍积分排行文本。"""
     if not rows:
         return "暂无队伍战报数据。"
-    return "\n".join(_rank_lines(rows, "team", f"🏆 队伍战绩榜（前 {limit}）"))
+    return "\n".join(_rank_lines(rows, "team", f"🏆 队伍积分榜（前 {limit}）"))
 
 
 def format_player_record(player: str, agg: dict) -> str:

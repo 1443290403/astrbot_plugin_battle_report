@@ -282,19 +282,29 @@ class Database:
         date_to: str | None = None,
         min_games: int = 1,
         limit: int = 10,
+        team: str | None = None,
     ) -> list[dict]:
-        """个人胜率排行。"""
+        """个人排行（积分 = 胜场 × 胜率，胜率用小数，保留两位）。
+
+        team 非空时只统计该战队选手。
+        """
         d1, d2 = self._date_bounds(date_from, date_to)
+        team_clause = ""
+        params: list = [group_id, d1, d2, group_id, d1, d2]
+        if team:
+            team_clause = "WHERE sides.team = %s "
+            params.append(team)
+        params.extend([min_games, limit])
         return await self._query(
-            """WITH sides AS (
-                   SELECT d.player_a AS player,
+            f"""WITH sides AS (
+                   SELECT d.player_a AS player, d.player_a_team AS team,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END AS win,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END AS loss,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s
                    UNION ALL
-                   SELECT d.player_b,
+                   SELECT d.player_b, d.player_b_team,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
@@ -303,11 +313,13 @@ class Database:
                )
                SELECT player, SUM(win) wins, SUM(loss) losses, SUM(draw) draws,
                       COUNT(*) total,
-                      ROUND(SUM(win) * 100.0 / NULLIF(SUM(win)+SUM(loss), 0), 1) AS win_rate
-               FROM sides GROUP BY player HAVING total >= %s
-               ORDER BY win_rate DESC, wins DESC, total DESC, player ASC
+                      ROUND(SUM(win) * SUM(win) / NULLIF(SUM(win)+SUM(loss), 0), 2) AS points
+               FROM sides
+               {team_clause}
+               GROUP BY player HAVING total >= %s
+               ORDER BY points DESC, wins DESC, total DESC, player ASC
                LIMIT %s""",
-            (group_id, d1, d2, group_id, d1, d2, min_games, limit),
+            tuple(params),
         )
 
     async def get_player_record(
@@ -375,9 +387,9 @@ class Database:
                    WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s
                )
                SELECT team, SUM(win) wins, SUM(loss) losses, SUM(draw) draws, COUNT(*) total,
-                      ROUND(SUM(win)*100.0/NULLIF(SUM(win)+SUM(loss),0),1) AS win_rate
+                      ROUND(SUM(win)*SUM(win)/NULLIF(SUM(win)+SUM(loss),0),2) AS points
                FROM team_sides GROUP BY team
-               ORDER BY win_rate DESC, wins DESC, total DESC, team ASC
+               ORDER BY points DESC, wins DESC, total DESC, team ASC
                LIMIT %s""",
             (group_id, d1, d2, group_id, d1, d2, limit),
         )

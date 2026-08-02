@@ -110,9 +110,24 @@ def test_player_ranking():
         assert pl[0]["player"] == "老千"
         assert pl[0]["wins"] == 3
         assert pl[0]["losses"] == 0
-        assert pl[0]["win_rate"] == 100.0
+        # 积分 = 胜场 × 胜率(小数) = 3 × 1.0 = 3.0
+        assert pl[0]["points"] == 3.0
         honglian = next(r for r in pl if r["player"] == "红莲")
         assert honglian["wins"] == 1 and honglian["losses"] == 1
+
+    _with_db(ops)
+
+
+def test_player_ranking_team_filter():
+    async def ops(db):
+        await db.insert_report(_make_report())
+        # 只统计 DYG 选手
+        pl = await db.get_player_ranking(GROUP_ID, team="DYG")
+        assert pl[0]["player"] == "老千"
+        assert {r["player"] for r in pl} == {"老千", "牌大", "蓝大"}
+        # 只统计 KC 选手
+        pl_kc = await db.get_player_ranking(GROUP_ID, team="KC")
+        assert {r["player"] for r in pl_kc} == {"红莲", "凯撒亮", "悠悠球"}
 
     _with_db(ops)
 

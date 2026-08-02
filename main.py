@@ -469,14 +469,26 @@ class BattleReportPlugin(Star):
         scope = (scope or "个人").strip()
         limit = int(self.config.get("ranking_limit", 10) or 10)
 
+        home_team = str(self.config.get("home_team", "") or "").strip()
         try:
             if scope in ("队伍", "战队", "队"):
                 rows = await self.db.get_team_ranking(group_id, date_from, None, limit)
                 yield event.plain_result(stats.format_team_ranking(rows, limit))
             else:
                 min_games = int(self.config.get("min_games", 1) or 1)
-                rows = await self.db.get_player_ranking(group_id, date_from, None, min_games, limit)
-                yield event.plain_result(stats.format_player_ranking(rows, limit, min_games))
+                if scope in ("全部", "所有"):
+                    rows = await self.db.get_player_ranking(
+                        group_id, date_from, None, min_games, limit, team=None
+                    )
+                    yield event.plain_result(stats.format_player_ranking(rows, limit, min_games))
+                else:
+                    # 默认只统计主体战队选手
+                    rows = await self.db.get_player_ranking(
+                        group_id, date_from, None, min_games, limit,
+                        team=(home_team or None),
+                    )
+                    note = f"\n（主体战队 {home_team}）" if home_team else ""
+                    yield event.plain_result(stats.format_player_ranking(rows, limit, min_games) + note)
         except Exception:
             logger.exception("排行查询失败")
             yield event.plain_result("❌ 查询出错，请稍后重试。")
