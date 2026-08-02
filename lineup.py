@@ -322,13 +322,13 @@ def build_next_round(
             if team_a:
                 pa, sa, pb, sb = _align_team_order(pa, sa, pb, sb, team_map, team_a)
             added.append(f"{pa} {sa}:{sb} {pb}")
-        if errors:
+        if errors and not added:
             return RoundBuildResult(False, draft_text, [], errors)
         if not added:
             return RoundBuildResult(False, draft_text, [], ["没有可添加的对局。"])
 
     new_text = _append_round(draft_text, round_no, added)
-    return RoundBuildResult(True, new_text, added, [])
+    return RoundBuildResult(True, new_text, added, errors)
 
 
 # ---------- 记录比分（/记录） ----------

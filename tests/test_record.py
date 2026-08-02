@@ -79,6 +79,23 @@ def test_record_from_info_bad_format():
     assert not r.ok
 
 
+def test_record_multiple_lines():
+    # 逐行处理：有效行应用，无效行跳过，其余行继续
+    current = DRAFT
+    applied = []
+    errors = []
+    for info in ["红莲 20", "蓝大 20", "悠悠球 12 黄大"]:
+        r = record_from_info(current, info)
+        if r.ok:
+            applied.extend(r.added_lines)
+            current = r.new_text
+        else:
+            errors.extend(r.errors)
+    assert "红莲 2:0 老千" in current  # 有效
+    assert "悠悠球 1:2 红大" in current  # 有效（填入悠悠球已有未记录对阵）
+    assert any("待记录" in e for e in errors)  # 蓝大 已记录 → 失败
+
+
 TEAM_DRAFT = """战队: TEST1 VS TEST
 时间: 2026.08.02
 规则: 2/3【KOF】

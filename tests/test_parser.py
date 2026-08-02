@@ -1,6 +1,6 @@
 """战报解析器单元测试。"""
 
-from battle_report_parser import _cn_to_int, _normalize_date, parse_battle_report
+from battle_report_parser import _cn_to_int, _normalize_date, parse_battle_report, split_reports
 
 SAMPLE = """战队: KC VS DYG
 时间: 2026.08.01
@@ -73,3 +73,17 @@ def test_cn_to_int():
     assert _cn_to_int("十二") == 12
     assert _cn_to_int("二十") == 20
     assert _cn_to_int("3") == 3
+
+
+def test_split_reports():
+    text = (
+        "战队: A VS B\n时间: 2026.01.01\n规则: 人头赛\n地点: 1\n------第一轮------\n红莲 2:0 蓝大\n"
+        "战队: C VS D\n时间: 2026.01.02\n规则: 2/3【KOF】\n地点: 1\n------第一轮------\n凯撒亮 1:2 老千"
+    )
+    chunks = split_reports(text)
+    assert len(chunks) == 2
+    assert chunks[0].startswith("战队: A VS B")
+    assert chunks[1].startswith("战队: C VS D")
+    # 单份
+    assert len(split_reports("战队: A VS B\n时间: 2026.01.01\n红莲 2:0 蓝大")) == 1
+    assert split_reports("") == []

@@ -26,6 +26,7 @@ from .battle_report_parser import (
     BattleReport,
     determine_match_winner,
     parse_battle_report,
+    split_reports,
 )
 from .database import Database
 
@@ -324,6 +325,8 @@ class BattleReportPlugin(Star):
             yield event.plain_result("❌ " + "\n".join(result.errors))
             return
         yield event.plain_result(result.new_text)
+        if result.errors:
+            yield event.plain_result("⚠️ 部分对局未解析：\n" + "\n".join(result.errors))
 
     # ---------- 记录比分（/记录） ----------
 
@@ -352,24 +355,30 @@ class BattleReportPlugin(Star):
             yield event.plain_result("❌ 未在群聊记录中找到战报，请先使用 /排表 生成。")
             return
 
-        # 逐行处理记录信息
+        # 逐行处理记录信息（一行失败不影响其余行）
         all_added: list[str] = []
+        errors: list[str] = []
         current = draft
         for info in info_lines:
             result = lineup.record_from_info(current, info)
-            if not result.ok:
-                yield event.plain_result("❌ " + "\n".join(result.errors))
-                return
-            all_added.extend(result.added_lines)
-            current = result.new_text
+            if result.ok:
+                all_added.extend(result.added_lines)
+                current = result.new_text
+            else:
+                errors.extend(result.errors)
 
+        if not all_added:
+            yield event.plain_result("❌ 没有成功记录任何对局。\n" + "\n".join(errors))
+            return
         yield event.plain_result(current)
+        if errors:
+            yield event.plain_result("⚠️ 部分记录失败：\n" + "\n".join(errors))
 
     # ---------- 提交战报 ----------
 
     @filter.command("战报", alias={"/战报"})
     async def submit_report(self, event: AstrMessageEvent):
-        """提交战报（粘贴整块文本）"""
+        """提交战报（可一次粘贴多份，按『战队:』行拆分）"""
         err = self._check_db()
         if err:
             yield event.plain_result(err)
@@ -388,67 +397,83 @@ class BattleReportPlugin(Star):
             team_tag = first_lines[0]
             payload = "\n".join(first_lines[1:])
 
-        result = parse_battle_report(payload)
-        if result.errors:
-            yield event.plain_result(
-                "❌ 战报解析失败：\n" + "\n".join(result.errors) + "\n\n" + _FORMAT_EXAMPLE
-            )
+        # 拆成多份战报
+        report_chunks = split_reports(payload)
+        if not report_chunks:
+            yield event.plain_result("❌ 战报内容为空。")
             return
 
-        report = result.report
+        # 解析所有战报
+        parsed: list = []
+        for chunk in report_chunks:
+            result = parse_battle_report(chunk)
+            if result.errors:
+                yield event.plain_result(
+                    "❌ 战报解析失败：\n" + "\n".join(result.errors) + "\n\n" + _FORMAT_EXAMPLE
+                )
+                return
+            parsed.append((result.report, result.warnings))
+
+        # 确定群号
         group_id = event.get_group_id()
         if not group_id:
-            if self.config.get("allow_private_chat", True) and (report.location or "").strip():
-                group_id = report.location.strip()
+            loc = parsed[0][0].location or ""
+            if self.config.get("allow_private_chat", True) and loc.strip():
+                group_id = loc.strip()
             else:
                 yield event.plain_result(
                     "⚠️ 无法确定群号：请在群聊提交，或让战报中的『地点:』填写群号。"
                 )
                 return
-        report.group_id = group_id
-        report.submitted_by = event.get_sender_id()
-        report.submitted_name = event.get_sender_name()
-        report.created_at = int(time.time())
 
-        # 判定胜者：胜负未定则不记录
-        winner = determine_match_winner(report)
-        if winner is None:
-            yield event.plain_result(
-                "❌ 比赛胜负未定，无法记录战报。请补全比分后重试。\n"
-                "（人头赛需分出胜负对局数；2/3 KOF 需一方全员败北）"
+        # 逐个提交
+        for report, warnings in parsed:
+            report.group_id = group_id
+            report.submitted_by = event.get_sender_id()
+            report.submitted_name = event.get_sender_name()
+            report.created_at = int(time.time())
+
+            # 判定胜者：胜负未定则不记录
+            winner = determine_match_winner(report)
+            if winner is None:
+                yield event.plain_result(
+                    f"❌ 比赛胜负未定，未记录：\n{report.team_a} VS {report.team_b} | "
+                    f"{report.match_time}\n（请补全比分后重试）"
+                )
+                continue
+
+            home_team = (
+                team_tag
+                or str(self.config.get("home_team", "") or "").strip()
+                or report.team_a
             )
-            return
+            if home_team == winner:
+                home_result = f"🏆 {home_team} 获胜！"
+            elif home_team in (report.team_a, report.team_b):
+                home_result = f"💀 {home_team} 战败"
+            else:
+                home_result = f"本场胜者：{winner}"
 
-        home_team = (
-            team_tag
-            or str(self.config.get("home_team", "") or "").strip()
-            or report.team_a
-        )
-        if home_team == winner:
-            home_result = f"🏆 {home_team} 获胜！"
-        elif home_team in (report.team_a, report.team_b):
-            home_result = f"💀 {home_team} 战败"
-        else:
-            home_result = f"本场胜者：{winner}"
+            try:
+                match_id = await self.db.insert_report(report, winner)
+            except Exception as e:
+                logger.exception("战报入库失败")
+                yield event.plain_result(
+                    f"❌ 写入失败：{report.team_a} VS {report.team_b} | {report.match_time}\n{e}"
+                )
+                continue
 
-        try:
-            match_id = await self.db.insert_report(report, winner)
-        except Exception as e:
-            logger.exception("战报入库失败")
-            yield event.plain_result(f"❌ 写入数据库失败：{e}")
-            return
-
-        summary = (
-            f"✅ 战报已记录（ID {match_id}）\n"
-            f"{report.team_a} VS {report.team_b} | {report.match_time} | "
-            f"共 {len(report.duels)} 局\n"
-            f"{home_result}"
-        )
-        yield event.plain_result(summary)
-        if result.warnings:
-            yield event.plain_result("⚠️ 解析警告：\n" + "\n".join(result.warnings))
-        for w in await self._roster_warnings(group_id, report):
-            yield event.plain_result(w)
+            summary = (
+                f"✅ 战报已记录（ID {match_id}）\n"
+                f"{report.team_a} VS {report.team_b} | {report.match_time} | "
+                f"共 {len(report.duels)} 局\n"
+                f"{home_result}"
+            )
+            yield event.plain_result(summary)
+            if warnings:
+                yield event.plain_result("⚠️ 解析警告：\n" + "\n".join(warnings))
+            for w in await self._roster_warnings(group_id, report):
+                yield event.plain_result(w)
 
     # ---------- 查询 ----------
 

@@ -222,6 +222,22 @@ def parse_battle_report(text: str) -> ParseResult:
     return ParseResult(report, [], warnings)
 
 
+def split_reports(text: str) -> list[str]:
+    """按『战队:』行把文本拆成多份战报（支持一次提交多条）。"""
+    chunks: list[str] = []
+    current: list[str] = []
+    for ln in text.splitlines():
+        if ln.strip().startswith("战队:"):
+            if current:
+                chunks.append("\n".join(current))
+            current = [ln]
+        else:
+            current.append(ln)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def determine_match_winner(report: BattleReport) -> str | None:
     """根据规则判定比赛胜者战队。
 

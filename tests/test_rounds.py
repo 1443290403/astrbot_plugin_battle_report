@@ -123,6 +123,14 @@ def test_round_align_team_order_names_only():
     assert "YE 0:0 空枭" in r.new_text
 
 
+def test_round_partial_success():
+    # 一行有效一行无效：有效照加，无效进 errors
+    r = build_next_round(TEAM_DRAFT, 2, ["红莲 20 黄大", "这一行无法解析"])
+    assert r.ok
+    assert "红莲 2:0 黄大" in r.new_text
+    assert r.errors and any("无法解析" in e for e in r.errors)
+
+
 def test_no_prev_round_fails():
     # 第 3 轮但草稿只有第 1 轮 → 找不到第 2 轮前的……实际找最高 <3 的轮次即第 1 轮
     r = build_next_round(DRAFT, 3, [])
