@@ -318,3 +318,118 @@ def build_next_round(
 
     new_text = _append_round(draft_text, round_no, added)
     return RoundBuildResult(True, new_text, added, [])
+
+
+# ---------- 记录比分（/记录） ----------
+
+@dataclass
+class RecordResult:
+    """/记录 结果。"""
+
+    ok: bool
+    new_text: str
+    added_lines: list[str]
+    errors: list[str]
+
+
+def parse_score_token(s: str) -> tuple[int, int] | None:
+    """解析比分 token："2:0" 或紧凑两位数字 "20" → (2, 0)。"""
+    s = s.strip()
+    m = re.match(r"^(\d+)\s*[:：]\s*(\d+)$", s)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    if len(s) == 2 and s.isdigit():
+        return int(s[0]), int(s[1])
+    return None
+
+
+def _scan_duel_lines(lines: list[str]) -> list[tuple[int, int, str, int, int, str]]:
+    """扫描草稿行，返回对局列表 [(行号, 轮次, 玩家A, 比分A, 比分B, 玩家B)]。"""
+    result: list[tuple[int, int, str, int, int, str]] = []
+    round_no = 0
+    for i, ln in enumerate(lines):
+        m = ROUND_RE.match(ln)
+        if m:
+            round_no = _cn_to_int(m.group(1)) or (round_no + 1)
+            continue
+        m = SCORE_RE.search(ln)
+        if m:
+            pa = ln[: m.start()].strip()
+            pb = ln[m.end():].strip()
+            if pa and pb:
+                sa, sb = int(m.group(1)), int(m.group(2))
+                result.append((i, round_no, pa, sa, sb, pb))
+    return result
+
+
+def record_result(
+    draft_text: str,
+    player: str,
+    my_score: int,
+    opp_score: int,
+    opponent: str | None = None,
+) -> RecordResult:
+    """在草稿中记录一名选手的比分。
+
+    - opponent 为 None：寻找该选手最后一场未记录比分（0:0）的对阵并填入比分；
+      找不到则报错。
+    - opponent 给定：先按上一条逻辑尝试填入；若无未记录对阵，则在最新轮次
+      插入新对阵『player my_score:opp_score opponent』。
+    """
+    lines = draft_text.splitlines()
+    duels = _scan_duel_lines(lines)
+
+    # 最后一场未记录比分且含该选手的对阵
+    target = None
+    for i, _, pa, sa, sb, pb in reversed(duels):
+        if sa == 0 and sb == 0 and (pa == player or pb == player):
+            target = (i, pa, pb, pa == player)
+            break
+
+    if target:
+        line_idx, pa, pb, player_is_a = target
+        if player_is_a:
+            new_line = f"{pa} {my_score}:{opp_score} {pb}"
+        else:
+            # 选手在右侧：保持左侧玩家不变，右侧填选手比分
+            new_line = f"{pa} {opp_score}:{my_score} {pb}"
+        lines[line_idx] = new_line
+        new_text = "\n".join(lines).rstrip() + "\n"
+        return RecordResult(True, new_text, [new_line], [])
+
+    if opponent is None:
+        return RecordResult(False, draft_text, [], [f"未找到玩家「{player}」待记录比分的对阵。"])
+
+    # 无未记录对阵 → 在最新轮次插入新对阵
+    latest_round = 0
+    for ln in lines:
+        m = ROUND_RE.match(ln)
+        if m:
+            latest_round = max(latest_round, _cn_to_int(m.group(1)) or latest_round + 1)
+    if latest_round == 0:
+        return RecordResult(False, draft_text, [], ["草稿中没有可用的轮次。"])
+
+    new_line = f"{player} {my_score}:{opp_score} {opponent}"
+    new_text = _append_round(draft_text, latest_round, [new_line])
+    return RecordResult(True, new_text, [new_line], [])
+
+
+def record_from_info(draft_text: str, info: str) -> RecordResult:
+    """根据记录信息行（如『随便 20』或『随便 20 黄大』）在草稿中记录比分。"""
+    tokens = info.split()
+    if len(tokens) == 2:
+        player, score_token = tokens
+        score = parse_score_token(score_token)
+        if score is None:
+            return RecordResult(False, draft_text, [], [f"无法解析比分：{score_token}"])
+        return record_result(draft_text, player, score[0], score[1], None)
+    if len(tokens) == 3:
+        player, score_token, opponent = tokens
+        score = parse_score_token(score_token)
+        if score is None:
+            return RecordResult(False, draft_text, [], [f"无法解析比分：{score_token}"])
+        return record_result(draft_text, player, score[0], score[1], opponent)
+    return RecordResult(
+        False, draft_text, [],
+        [f"记录格式应为『玩家名 比分 [对手]』，得到：{info}"],
+    )

@@ -62,6 +62,11 @@ _HELP_TEXT = (
     "无追加：随机匹配上一轮胜者\n"
     "如：/第二轮 红莲 2:0 蓝大（记录比分）\n"
     "读取群聊中最近一条战报并追加该轮\n\n"
+    "▎记录比分\n"
+    "/记录 玩家名 比分 [对手]\n"
+    "如：/记录 红莲 20（填入红莲最后一场未记录对阵）\n"
+    "如：/记录 红莲 20 蓝大（无未记录对阵时插入最新轮次）\n"
+    "比分支持 2:0 或紧凑 20\n\n"
     "▎提交战报\n"
     "/战报 + 粘贴排表模板（填入实际比分）\n\n"
     "▎查询\n"
@@ -315,6 +320,46 @@ class BattleReportPlugin(Star):
             yield event.plain_result("❌ " + "\n".join(result.errors))
             return
         yield event.plain_result(result.new_text)
+
+    # ---------- 记录比分（/记录） ----------
+
+    @filter.command("记录", alias={"/记录"})
+    async def record_cmd(self, event: AstrMessageEvent):
+        """记录比分：/记录 玩家名 比分 [对手]；无参数时提示格式"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+
+        raw = event.get_message_str()
+        payload = _strip_command(raw, ("记录", "/记录"))
+        if not payload.strip():
+            yield event.plain_result(
+                "请提供记录信息，格式：\n"
+                "记录 玩家名 比分\n"
+                "记录 玩家名 比分 对手\n"
+                "比分支持 2:0 或紧凑 20。"
+            )
+            return
+
+        info_lines = [ln.strip() for ln in payload.splitlines() if ln.strip()]
+        draft = await self._read_latest_report(event)
+        if not draft:
+            yield event.plain_result("❌ 未在群聊记录中找到战报，请先使用 /排表 生成。")
+            return
+
+        # 逐行处理记录信息
+        all_added: list[str] = []
+        current = draft
+        for info in info_lines:
+            result = lineup.record_from_info(current, info)
+            if not result.ok:
+                yield event.plain_result("❌ " + "\n".join(result.errors))
+                return
+            all_added.extend(result.added_lines)
+            current = result.new_text
+
+        yield event.plain_result(current)
 
     # ---------- 提交战报 ----------
 
