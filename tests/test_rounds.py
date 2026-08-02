@@ -98,6 +98,31 @@ def test_prev_round_all_zero_fails():
     assert any("胜者" in e for e in r.errors)
 
 
+TEAM_DRAFT = """战队: TEST1 VS TEST
+时间: 2026.08.02
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+YE 2:0 红大
+悠悠球 1:2 空枭
+随便 0:0 黄大
+------第二轮------"""
+
+
+def test_round_align_team_order():
+    # 空枭属 TEST（右），YE 属 TEST1（左）；输入顺序反了 → 对齐为 YE 1:2 空枭
+    r = build_next_round(TEAM_DRAFT, 2, ["空枭 21 YE"])
+    assert r.ok
+    assert "YE 1:2 空枭" in r.new_text
+    assert "空枭 2:1 YE" not in r.new_text
+
+
+def test_round_align_team_order_names_only():
+    r = build_next_round(TEAM_DRAFT, 2, ["空枭 YE"])
+    assert r.ok
+    assert "YE 0:0 空枭" in r.new_text
+
+
 def test_no_prev_round_fails():
     # 第 3 轮但草稿只有第 1 轮 → 找不到第 2 轮前的……实际找最高 <3 的轮次即第 1 轮
     r = build_next_round(DRAFT, 3, [])

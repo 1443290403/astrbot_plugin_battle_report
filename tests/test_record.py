@@ -77,3 +77,22 @@ def test_record_from_info_full():
 def test_record_from_info_bad_format():
     r = record_from_info(DRAFT, "红莲 2:0 蓝大 额外")
     assert not r.ok
+
+
+TEAM_DRAFT = """战队: TEST1 VS TEST
+时间: 2026.08.02
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+YE 2:0 红大
+悠悠球 1:2 空枭
+随便 0:0 黄大
+------第二轮------"""
+
+
+def test_record_align_team_order_insert():
+    # 空枭无未记录对阵 → 插入，但按队伍对齐为 YE 1:2 空枭（空枭属 TEST/右，YE 属 TEST1/左）
+    r = record_from_info(TEAM_DRAFT, "空枭 21 YE")
+    assert r.ok
+    assert "YE 1:2 空枭" in r.new_text
+    assert "空枭 2:1 YE" not in r.new_text

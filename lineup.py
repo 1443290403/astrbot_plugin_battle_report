@@ -285,6 +285,13 @@ def build_next_round(
             pb = b[i] if i < len(b) else "TK"
             added.append(f"{pa} 0:0 {pb}")
     else:
+        # 玩家→队伍映射（左=team_a，右=team_b），用于按队伍对齐对局顺序
+        team_map = {}
+        for d in report.duels:
+            team_map.setdefault(d.player_a, report.team_a)
+            team_map.setdefault(d.player_b, report.team_b)
+        team_a = report.team_a
+
         added = []
         for line in info_lines:
             line = line.strip()
@@ -298,19 +305,23 @@ def build_next_round(
                 if not pa or not pb:
                     errors.append(f"无法解析对局行：{line}")
                     continue
-                added.append(f"{pa} {sa}:{sb} {pb}")
             else:
                 parts = line.split()
                 if len(parts) == 2:
-                    added.append(f"{parts[0]} 0:0 {parts[1]}")
+                    pa, pb = parts[0], parts[1]
+                    sa = sb = 0
                 elif len(parts) == 3 and len(parts[1]) == 2 and parts[1].isdigit():
                     # 紧凑比分：20 → 2:0（KOF 每局比分不超过两位数字）
+                    pa, pb = parts[0], parts[2]
                     sa, sb = int(parts[1][0]), int(parts[1][1])
-                    added.append(f"{parts[0]} {sa}:{sb} {parts[2]}")
                 else:
                     errors.append(
                         f"无法解析对局行：{line}（应为『玩家A 玩家B』或『玩家A 比分 玩家B』）"
                     )
+                    continue
+            if team_a:
+                pa, sa, pb, sb = _align_team_order(pa, sa, pb, sb, team_map, team_a)
+            added.append(f"{pa} {sa}:{sb} {pb}")
         if errors:
             return RoundBuildResult(False, draft_text, [], errors)
         if not added:
@@ -362,6 +373,34 @@ def _scan_duel_lines(lines: list[str]) -> list[tuple[int, int, str, int, int, st
     return result
 
 
+def _parse_teams_and_mapping(draft_text: str) -> tuple[str | None, str | None, dict]:
+    """解析草稿的战队信息与 玩家→队伍 映射（左=team_a，右=team_b）。"""
+    parsed = parse_battle_report(draft_text)
+    if parsed.errors or not parsed.report:
+        return None, None, {}
+    report = parsed.report
+    mapping: dict[str, str] = {}
+    for d in report.duels:
+        mapping.setdefault(d.player_a, report.team_a)
+        mapping.setdefault(d.player_b, report.team_b)
+    return report.team_a, report.team_b, mapping
+
+
+def _align_team_order(
+    p1: str, s1: int, p2: str, s2: int,
+    team_map: dict, team_a: str,
+) -> tuple[str, int, int, str]:
+    """按队伍对齐对局：team_a（战队头左侧）的选手放左侧。
+
+    若 p2 属于 team_a 而 p1 不属于，则交换双方与比分。无法确认归属时保持原样。
+    """
+    t1 = team_map.get(p1)
+    t2 = team_map.get(p2)
+    if t2 == team_a and t1 != team_a:
+        return p2, s2, p1, s1
+    return p1, s1, p2, s2
+
+
 def record_result(
     draft_text: str,
     player: str,
@@ -400,7 +439,7 @@ def record_result(
     if opponent is None:
         return RecordResult(False, draft_text, [], [f"未找到玩家「{player}」待记录比分的对阵。"])
 
-    # 无未记录对阵 → 在最新轮次插入新对阵
+    # 无未记录对阵 → 在最新轮次插入新对阵（按队伍对齐：team_a 选手在左）
     latest_round = 0
     for ln in lines:
         m = ROUND_RE.match(ln)
@@ -409,7 +448,11 @@ def record_result(
     if latest_round == 0:
         return RecordResult(False, draft_text, [], ["草稿中没有可用的轮次。"])
 
-    new_line = f"{player} {my_score}:{opp_score} {opponent}"
+    team_a, _, team_map = _parse_teams_and_mapping(draft_text)
+    p1, s1, p2, s2 = player, my_score, opponent, opp_score
+    if team_a:
+        p1, s1, p2, s2 = _align_team_order(p1, s1, p2, s2, team_map, team_a)
+    new_line = f"{p1} {s1}:{s2} {p2}"
     new_text = _append_round(draft_text, latest_round, [new_line])
     return RecordResult(True, new_text, [new_line], [])
 
