@@ -1,14 +1,99 @@
-# astrbot-plugin-helloworld
+# astrbot_plugin_battle_report
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+面向 QQ 群聊的战队对战战报插件（AstrBot）。群内成员排表、提交战报，插件负责存储与个人/队伍数据分析。数据存储于线上 MySQL。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 功能
 
-# Supports
+- **排表**：`/排表` + 战队名单 → 随机配对生成第一轮战报模板（比分 0:0 占位，第二轮留空）
+- **追加轮次**：`/第N轮`（N≥2，数字或中文）→ 读取群聊中最近一条战报，追加该轮（无追加则随机匹配上一轮胜者；可带玩家名或比分）
+- **提交**：`/战报` + 粘贴排表模板（填入实际比分）→ 解析入库
+- **排行**：个人胜率榜 / 队伍战绩榜
+- **战绩**：单玩家战绩查询
+- **趋势**：Pillow 生成的胜率走势图
+- **导出**：CSV / JSON 导出当前群全部战报
+- **管理**：管理员删除、提交者撤销自己最近一条
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 安装
+
+1. 将本目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`
+2. 在 AstrBot 管理面板启用插件，`requirements.txt` 会自动安装依赖（`aiomysql`、`Pillow`）
+3. 在插件配置中填写 MySQL 连接信息（`mysql_host/port/user/password/db`）
+
+所有命令使用 `/` 前缀（AstrBot 默认唤醒前缀即为 `/`，无需额外配置）。
+
+## 命令
+
+| 命令 | 说明 |
+|---|---|
+| `/排表 [规则]` + 名单 | 排表，名单格式：`队伍名: 成员1 成员2` |
+| `/第N轮 [玩家A [比分] 玩家B]` | 追加轮次（读取群聊最近一条战报） |
+| `/战报` + 战报文本 | 提交战报（格式见下） |
+| `/战报排行 [个人\|队伍]` | 排行榜 |
+| `/战报战绩 <玩家名>` | 个人战绩 |
+| `/战报趋势 <玩家名\|队伍> [天数]` | 胜率走势图 |
+| `/战报导出 [csv\|json]` | 导出数据 |
+| `/战报删除 <战报ID>` | 删除（仅管理员） |
+| `/战报撤销` | 撤销自己最近一条 |
+| `/看排表` | 查看本群战队名单 |
+| `/战报帮助` | 帮助 |
+
+## 排表示例
+
+```
+/排表 人头赛
+KC:红莲 凯撒亮 悠悠球
+DYG:老千 蓝大 红大
+```
+
+生成：
+
+```
+战队: KC VS DYG
+时间: 2026.08.02
+规则: 人头赛
+地点: 123456789
+------第一轮------
+红莲 0:0 红大
+悠悠球 0:0 蓝大
+凯撒亮 0:0 老千
+------第二轮------
+```
+
+> 第一轮为随机配对，每次结果不同；一方人数较少时，该侧超出部分以 TK 占位，由用户替换为实际玩家名（第二轮为第一轮胜者晋级）。
+
+## 追加轮次（/第N轮）
+
+`/第N轮` 会读取群聊记录中**最近一条以「战队:」开头的战报**（即最近一次 `/排表` 或 `/第N轮` 的产物），并把第 N 轮追加进去，回发更新后的完整战报。N 为 2 及以上的数字或中文（如 `/第二轮`、`/第3轮`）。
+
+| 输入 | 行为 |
+|---|---|
+| `/第二轮`（无追加） | 从上一轮**胜者**中随机配对（两边各自洗牌后按索引配对，少人侧 TK 占位） |
+| `/第二轮 红莲 蓝大` | 将两人排至一起：`红莲 0:0 蓝大` |
+| `/第二轮 红莲 2:0 蓝大` | 记录该对局：`红莲 2:0 蓝大` |
+
+> 上一轮需先填好比分才能确定胜者；若上一轮全是 0:0，会提示先填比分。示例：在群聊中先 `/排表`，把第一轮比分填好后（可重新发送含比分的完整战报），再 `/第二轮` 随机匹配第一轮胜者。
+
+## 战报格式
+
+```
+战队: KC VS DYG
+时间: 2026.08.01
+规则: 2/3【KOF】
+地点: 435823386
+------第一轮------
+红莲 2:1 牌大
+凯撒亮 2:1 蓝大
+悠悠球 1:2 老千
+------第二轮------
+凯撒亮 1:2 老千
+```
+
+## 统计口径
+
+- 个人胜率 = 胜场 / (胜场 + 负场)，平局不计入分母只计入总场次
+- 队伍胜负：一场比赛中赢得更多对局的一方胜
+- 数据按群隔离（`group_id`）
+
+## 安全提示
+
+MySQL 密码保存在插件配置文件（`data/config/astrbot_plugin_battle_report_config.json`）中。若本仓库会推到公开远端，请在插件配置中使用独立数据库账号或修改默认密码，避免凭据泄露。

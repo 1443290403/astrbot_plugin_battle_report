@@ -1,0 +1,76 @@
+{
+  "submit_requires_admin": {
+    "description": "是否仅管理员可提交战报",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后仅群管理员/群主可提交战报"
+  },
+  "allow_private_chat": {
+    "description": "是否允许私聊提交战报",
+    "type": "bool",
+    "default": true,
+    "hint": "私聊提交时用战报『地点:』字段作为群隔离键"
+  },
+  "ranking_limit": {
+    "description": "排行榜展示条数",
+    "type": "int",
+    "default": 10
+  },
+  "min_games": {
+    "description": "进入个人排行所需最少对局数",
+    "type": "int",
+    "default": 1
+  },
+  "default_days": {
+    "description": "默认统计时间范围（天，0=全部）",
+    "type": "int",
+    "default": 0
+  },
+  "trend_chart_width": {
+    "description": "趋势图宽度（px）",
+    "type": "int",
+    "default": 960
+  },
+  "trend_chart_height": {
+    "description": "趋势图高度（px）",
+    "type": "int",
+    "default": 480
+  },
+  "default_rule": {
+    "description": "排表默认规则",
+    "type": "string",
+    "default": "2/3【KOF】",
+    "hint": "排表时未追加规则则使用此值"
+  },
+  "pairing_seed": {
+    "description": "排表随机种子（留空则每次随机；填写则固定以便复现）",
+    "type": "string",
+    "default": ""
+  },
+  "mysql_host": {
+    "description": "MySQL 主机地址",
+    "type": "string",
+    "default": "127.0.0.1"
+  },
+  "mysql_port": {
+    "description": "MySQL 端口",
+    "type": "int",
+    "default": 3306
+  },
+  "mysql_user": {
+    "description": "MySQL 用户名",
+    "type": "string",
+    "default": "root"
+  },
+  "mysql_password": {
+    "description": "MySQL 密码",
+    "type": "string",
+    "default": "",
+    "hint": "安装后请在插件配置中填写数据库密码"
+  },
+  "mysql_db": {
+    "description": "MySQL 数据库名（插件会自动建库建表）",
+    "type": "string",
+    "default": "astrbot_battle_report"
+  }
+}
