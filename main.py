@@ -17,6 +17,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event.filter import CustomFilter
 from astrbot.api.message_components import File, Image, Plain
 from astrbot.api.star import Star, StarTools, register
 
@@ -29,7 +30,13 @@ _LINEUP_CMDS = ("排表", "/排表")
 
 # /第N轮 命令（N 为数字或中文，第 1 轮由排表生成）
 _ROUND_CMD_RE = re.compile(r"^\s*第\s*([一二三四五六七八九十百零\d]+)\s*轮")
-_ROUND_CMD_STR = r"^\s*第\s*([一二三四五六七八九十百零\d]+)\s*轮"
+
+
+class RoundCommandFilter(CustomFilter):
+    """匹配 /第N轮 形式的追加轮次命令（用 CustomFilter 避免仪表盘显示正则字符串）。"""
+
+    def filter(self, event: AstrMessageEvent, cfg) -> bool:
+        return bool(_ROUND_CMD_RE.match(event.get_message_str().strip()))
 
 _FORMAT_EXAMPLE = (
     "格式示例：\n"
@@ -254,10 +261,10 @@ class BattleReportPlugin(Star):
 
     # ---------- 追加轮次（/第N轮） ----------
 
-    @filter.regex(_ROUND_CMD_STR)
+    @filter.custom_filter(RoundCommandFilter)
     async def round_cmd(self, event: AstrMessageEvent):
         """追加轮次：/第N轮 [玩家A [比分] 玩家B]；无追加时随机匹配上一轮胜者"""
-        if not getattr(event, "is_wake", False):
+        if not getattr(event, "is_at_or_wake_command", False):
             return
         group_id = event.get_group_id()
         if not group_id:
