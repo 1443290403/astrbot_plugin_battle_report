@@ -103,7 +103,8 @@ class BattleReportPlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     async def initialize(self):
-        """初始化 MySQL 连接池与表结构。"""
+        """初始化：覆写 /第N轮 处理器显示名 + 连接 MySQL。"""
+        self._friendly_round_display()
         try:
             self.db = Database(
                 host=str(self.config.get("mysql_host", "127.0.0.1")),
@@ -118,6 +119,25 @@ class BattleReportPlugin(Star):
         except Exception as e:
             logger.error(f"战报插件数据库连接失败: {e}")
             self.db_ready = False
+
+    def _friendly_round_display(self):
+        """覆写 /第N轮 处理器在仪表盘的显示名（函数名 round_cmd 不变）。
+
+        仪表盘对 CustomFilter 处理器显示 handler_name（即函数名），这里在
+        注册后把显示名改为友好的『/第N轮』。
+        """
+        try:
+            from astrbot.core.star.star_handler import star_handlers_registry
+
+            for handler in star_handlers_registry:
+                if (
+                    handler.handler_name == "round_cmd"
+                    and "astrbot_plugin_battle_report" in (handler.handler_module_path or "")
+                ):
+                    handler.handler_name = "/第N轮"
+                    return
+        except Exception as e:
+            logger.warning(f"设置 /第N轮 显示名失败: {e}")
 
     async def terminate(self):
         if self.db:
