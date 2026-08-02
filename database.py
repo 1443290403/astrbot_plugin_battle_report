@@ -9,7 +9,7 @@ from typing import Any
 
 import aiomysql
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -138,8 +138,12 @@ class Database:
                 await cur.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version")
                 row = await cur.fetchone()
                 current = row[0] if row else 0
+                if current < 2:
+                    # v2：matches 增加 winner 列（记录胜者战队）
+                    await cur.execute(
+                        "ALTER TABLE matches ADD COLUMN winner VARCHAR(64) DEFAULT ''"
+                    )
                 if current < SCHEMA_VERSION:
-                    # 当前仅有 v1（建表），后续新增迁移在此追加
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
 
     async def close(self) -> None:
@@ -168,8 +172,8 @@ class Database:
 
     # ---------- 战报写入 / 删除 ----------
 
-    async def insert_report(self, report) -> int:
-        """插入一份战报（match + duels），返回 match_id。"""
+    async def insert_report(self, report, winner: str = "") -> int:
+        """插入一份战报（match + duels），返回 match_id。winner 为胜者战队名。"""
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             await conn.begin()
@@ -178,8 +182,8 @@ class Database:
                     await cur.execute(
                         """INSERT INTO matches
                            (group_id, team_a, team_b, match_time, rule, location,
-                            submitted_by, submitted_name, created_at)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            submitted_by, submitted_name, created_at, winner)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             report.group_id,
                             report.team_a,
@@ -190,6 +194,7 @@ class Database:
                             report.submitted_by,
                             report.submitted_name,
                             int(report.created_at) if report.created_at else 0,
+                            winner or "",
                         ),
                     )
                     match_id = cur.lastrowid

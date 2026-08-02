@@ -42,6 +42,12 @@
     "default": "2/3【KOF】",
     "hint": "排表时未追加规则则使用此值"
   },
+  "home_team": {
+    "description": "主体战队（你的战队名）",
+    "type": "string",
+    "default": "",
+    "hint": "所有统计默认展示该战队战绩；提交战报时可用 /战报 队标 指定其他战队；留空则默认取战报左侧战队"
+  },
   "pairing_seed": {
     "description": "排表随机种子（留空则每次随机；填写则固定以便复现）",
     "type": "string",

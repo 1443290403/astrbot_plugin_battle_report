@@ -22,7 +22,11 @@ from astrbot.api.message_components import File, Image, Plain
 from astrbot.api.star import Star, StarTools, register
 
 from . import chart, lineup, stats
-from .battle_report_parser import BattleReport, parse_battle_report
+from .battle_report_parser import (
+    BattleReport,
+    determine_match_winner,
+    parse_battle_report,
+)
 from .database import Database
 
 _SUBMIT_CMDS = ("战报", "/战报")
@@ -376,6 +380,14 @@ class BattleReportPlugin(Star):
 
         raw = event.get_message_str()
         payload = _strip_command(raw, _SUBMIT_CMDS)
+
+        # 队标：首行若不以战报字段开头，视为 /战报 后追加的指定战队
+        team_tag = None
+        first_lines = [ln.strip() for ln in payload.splitlines() if ln.strip()]
+        if first_lines and not first_lines[0].startswith(("战队:", "时间:", "规则:", "地点:")):
+            team_tag = first_lines[0]
+            payload = "\n".join(first_lines[1:])
+
         result = parse_battle_report(payload)
         if result.errors:
             yield event.plain_result(
@@ -398,8 +410,24 @@ class BattleReportPlugin(Star):
         report.submitted_name = event.get_sender_name()
         report.created_at = int(time.time())
 
+        # 判定胜者与主体战队
+        winner = determine_match_winner(report)
+        home_team = (
+            team_tag
+            or str(self.config.get("home_team", "") or "").strip()
+            or report.team_a
+        )
+        if winner is None:
+            home_result = "⚔️ 比赛胜负未定（请补全比分）"
+        elif home_team == winner:
+            home_result = f"🏆 {home_team} 获胜！"
+        elif home_team in (report.team_a, report.team_b):
+            home_result = f"💀 {home_team} 战败"
+        else:
+            home_result = f"本场胜者：{winner}"
+
         try:
-            match_id = await self.db.insert_report(report)
+            match_id = await self.db.insert_report(report, winner)
         except Exception as e:
             logger.exception("战报入库失败")
             yield event.plain_result(f"❌ 写入数据库失败：{e}")
@@ -408,7 +436,8 @@ class BattleReportPlugin(Star):
         summary = (
             f"✅ 战报已记录（ID {match_id}）\n"
             f"{report.team_a} VS {report.team_b} | {report.match_time} | "
-            f"共 {len(report.duels)} 局"
+            f"共 {len(report.duels)} 局\n"
+            f"{home_result}"
         )
         yield event.plain_result(summary)
         if result.warnings:
@@ -481,6 +510,9 @@ class BattleReportPlugin(Star):
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
         name = name.strip()
+        if not name:
+            # 未指定时默认展示主体战队
+            name = str(self.config.get("home_team", "") or "").strip()
         if not name:
             yield event.plain_result("用法：战报趋势 <玩家名或队伍名> [最近N天]")
             return

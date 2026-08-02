@@ -220,3 +220,60 @@ def parse_battle_report(text: str) -> ParseResult:
     if errors:
         return ParseResult(None, errors, warnings)
     return ParseResult(report, [], warnings)
+
+
+def determine_match_winner(report: BattleReport) -> str | None:
+    """根据规则判定比赛胜者战队。
+
+    规则含『人头赛』：获胜对局数多的一方胜（平局返回 None）。
+    否则按 KOF：一方所有有记录对局的选手最后一场均为负（全员败北）时，另一方胜；
+    双方都未全员败北或数据异常返回 None（胜负未定）。
+
+    Returns:
+        胜者战队名（team_a 或 team_b）；无法判定返回 None。
+    """
+    if not report.duels:
+        return None
+    rule = (report.rule or "").lower()
+    if "人头" in rule or "head" in rule:
+        return _winner_headcount(report)
+    return _winner_kof(report)
+
+
+def _winner_headcount(report: BattleReport) -> str | None:
+    """人头赛：只有一轮，按获胜对局数判定。"""
+    wins_a = wins_b = 0
+    for d in report.duels:
+        if d.score_a == 0 and d.score_b == 0:
+            continue  # 未打的占位
+        if d.score_a > d.score_b:
+            wins_a += 1
+        elif d.score_b > d.score_a:
+            wins_b += 1
+    if wins_a == wins_b:
+        return None
+    return report.team_a if wins_a > wins_b else report.team_b
+
+
+def _winner_kof(report: BattleReport) -> str | None:
+    """2/3 KOF：一方所有选手最后一场均为负（全员败北）时另一方胜。"""
+    a_last: dict[str, tuple[int, bool]] = {}  # 选手 -> (对局序号, 该场是否负)
+    b_last: dict[str, tuple[int, bool]] = {}
+    for idx, d in enumerate(report.duels):
+        if d.score_a == 0 and d.score_b == 0:
+            continue  # 未打的占位不计
+        a_last[d.player_a] = (idx, d.score_a < d.score_b)
+        b_last[d.player_b] = (idx, d.score_b < d.score_a)
+
+    def all_defeated(m: dict[str, tuple[int, bool]]) -> bool:
+        if not m:
+            return False
+        return all(is_loss for _, is_loss in m.values())
+
+    a_def = all_defeated(a_last)
+    b_def = all_defeated(b_last)
+    if a_def and not b_def:
+        return report.team_b
+    if b_def and not a_def:
+        return report.team_a
+    return None
