@@ -25,7 +25,11 @@ import random
 import re
 from dataclasses import dataclass, field
 
-from battle_report_parser import ROUND_RE, SCORE_RE, _cn_to_int, parse_battle_report
+try:
+    # AstrBot 以包方式导入插件（data.plugins.<插件名>.main）
+    from .battle_report_parser import ROUND_RE, SCORE_RE, _cn_to_int, parse_battle_report
+except ImportError:  # 单测以顶层模块导入
+    from battle_report_parser import ROUND_RE, SCORE_RE, _cn_to_int, parse_battle_report
 
 # 队伍行："KC:红莲 悠悠球" / "KC：红莲 悠悠球"
 TEAM_LINE_RE = re.compile(r"^([^:：]+)\s*[:：]\s*(.+)$")
