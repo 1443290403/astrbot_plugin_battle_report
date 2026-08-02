@@ -238,7 +238,8 @@ def build_next_round(
 
     无 info_lines 时：从上一轮可确认的胜者中随机配对（两队各自洗牌后按索引配对，
     人数较少一侧以 TK 占位）。
-    有 info_lines 时：每行『玩家A』『玩家B』或『玩家A 比分 玩家B』追加为对局。
+    有 info_lines 时：每行『玩家A』『玩家B』或『玩家A 比分 玩家B』追加为对局；
+    比分可写冒号形式（2:0）或紧凑两位数字形式（20 表示 2:0）。
     """
     errors: list[str] = []
     parsed = parse_battle_report(draft_text)
@@ -302,6 +303,10 @@ def build_next_round(
                 parts = line.split()
                 if len(parts) == 2:
                     added.append(f"{parts[0]} 0:0 {parts[1]}")
+                elif len(parts) == 3 and len(parts[1]) == 2 and parts[1].isdigit():
+                    # 紧凑比分：20 → 2:0（KOF 每局比分不超过两位数字）
+                    sa, sb = int(parts[1][0]), int(parts[1][1])
+                    added.append(f"{parts[0]} {sa}:{sb} {parts[2]}")
                 else:
                     errors.append(
                         f"无法解析对局行：{line}（应为『玩家A 玩家B』或『玩家A 比分 玩家B』）"

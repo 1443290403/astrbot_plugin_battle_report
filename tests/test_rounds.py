@@ -67,6 +67,18 @@ def test_names_with_scores():
     assert "红莲 2:0 蓝大" in r.new_text
 
 
+def test_compact_score_20_means_2_0():
+    r = build_next_round(DRAFT, 2, ["红莲 20 蓝大"])
+    assert r.ok
+    assert "红莲 2:0 蓝大" in r.new_text
+
+
+def test_compact_score_12_means_1_2():
+    r = build_next_round(DRAFT, 2, ["凯撒亮 12 老千"])
+    assert r.ok
+    assert "凯撒亮 1:2 老千" in r.new_text
+
+
 def test_append_multiple_lines():
     r1 = build_next_round(DRAFT, 2, ["红莲 2:0 蓝大"])
     assert r1.ok
