@@ -128,6 +128,9 @@ def test_player_ranking_team_filter():
         # 只统计 KC 选手
         pl_kc = await db.get_player_ranking(GROUP_ID, team="KC")
         assert {r["player"] for r in pl_kc} == {"红莲", "凯撒亮", "悠悠球"}
+        # limit=None 返回主体战队全部选手（不受排名条数限制）
+        pl_all = await db.get_player_ranking(GROUP_ID, team="KC", limit=None)
+        assert {r["player"] for r in pl_all} == {"红莲", "凯撒亮", "悠悠球"}
 
     _with_db(ops)
 

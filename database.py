@@ -294,7 +294,11 @@ class Database:
         if team:
             team_clause = "WHERE sides.team = %s "
             params.append(team)
-        params.extend([min_games, limit])
+        params.append(min_games)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT %s"
+            params.append(limit)
         return await self._query(
             f"""WITH sides AS (
                    SELECT d.player_a AS player, d.player_a_team AS team,
@@ -318,7 +322,7 @@ class Database:
                {team_clause}
                GROUP BY player HAVING total >= %s
                ORDER BY points DESC, wins DESC, total DESC, player ASC
-               LIMIT %s""",
+               {limit_clause}""",
             tuple(params),
         )
 

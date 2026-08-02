@@ -43,13 +43,12 @@ def _rank_lines(rows: list[dict], name_key: str, title: str) -> list[str]:
     return lines
 
 
-def format_player_ranking(rows: list[dict], limit: int = 10, min_games: int = 1) -> str:
-    """个人积分排行文本。"""
+def format_player_ranking(rows: list[dict], limit: int | None = 10, min_games: int = 1) -> str:
+    """个人积分排行文本。limit 为 None 时显示全部。"""
     if not rows:
         return "暂无战报数据。"
-    return "\n".join(
-        _rank_lines(rows, "player", f"🏆 个人积分榜（前 {limit}）\n（仅统计 ≥{min_games} 局的玩家）")
-    )
+    title = "🏆 个人积分榜（全部）" if limit is None else f"🏆 个人积分榜（前 {limit}）"
+    return "\n".join(_rank_lines(rows, "player", f"{title}\n（仅统计 ≥{min_games} 局的玩家）"))
 
 
 def format_team_ranking(rows: list[dict], limit: int = 10) -> str:

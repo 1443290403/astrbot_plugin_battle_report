@@ -482,13 +482,13 @@ class BattleReportPlugin(Star):
                     )
                     yield event.plain_result(stats.format_player_ranking(rows, limit, min_games))
                 else:
-                    # 默认只统计主体战队选手
+                    # 默认只统计主体战队选手，显示全部队员（不设上限）
                     rows = await self.db.get_player_ranking(
-                        group_id, date_from, None, min_games, limit,
+                        group_id, date_from, None, min_games, None,
                         team=(home_team or None),
                     )
-                    note = f"\n（主体战队 {home_team}）" if home_team else ""
-                    yield event.plain_result(stats.format_player_ranking(rows, limit, min_games) + note)
+                    note = f"\n（主体战队 {home_team}，共 {len(rows)} 人）" if home_team else ""
+                    yield event.plain_result(stats.format_player_ranking(rows, None, min_games) + note)
         except Exception:
             logger.exception("排行查询失败")
             yield event.plain_result("❌ 查询出错，请稍后重试。")
