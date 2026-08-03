@@ -18,7 +18,7 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import CustomFilter
-from astrbot.api.message_components import File, Image, Plain
+from astrbot.api.message_components import File, Image, Plain, Reply
 from astrbot.api.star import Star, StarTools, register
 
 from . import chart, lineup, stats
@@ -98,7 +98,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -228,6 +228,75 @@ class BattleReportPlugin(Star):
                 if best is None or t >= best[0]:
                     best = (t, text)
         return best[1] if best else None
+
+    @staticmethod
+    def _find_forward_id(msg: dict) -> str | None:
+        """从消息对象的 message 段中提取合并转发 id。"""
+        arr = msg.get("message") if isinstance(msg, dict) else None
+        if isinstance(arr, list):
+            for seg in arr:
+                if isinstance(seg, dict) and seg.get("type") == "forward":
+                    data = seg.get("data") or {}
+                    for k in ("id", "res_id", "forward_id"):
+                        if data.get(k):
+                            return str(data[k])
+        return None
+
+    @staticmethod
+    def _extract_forward_text(item: dict) -> str:
+        """提取合并转发内单条消息的纯文本（兼容 content / message 两种段结构）。"""
+        for key in ("content", "message"):
+            arr = item.get(key)
+            if isinstance(arr, list):
+                parts = []
+                for seg in arr:
+                    if isinstance(seg, dict) and seg.get("type") == "text":
+                        parts.append(str(seg.get("data", {}).get("text", "")))
+                if parts:
+                    return "".join(parts)
+        raw = item.get("raw_message") or item.get("message_str") or ""
+        return str(raw)
+
+    async def _extract_reply_reports(self, event: AstrMessageEvent) -> list[str] | None:
+        """从回复引用中提取战报文本列表。
+
+        支持：引用的消息本身是战报文本，或引用的消息是合并转发（内含多条战报）。
+        无回复/获取失败返回 None。
+        """
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            return None
+        reply = next(
+            (c for c in event.get_messages() if isinstance(c, Reply)),
+            None,
+        )
+        if reply is None or not reply.id:
+            return None
+        try:
+            msg = await bot.call_action("get_msg", message_id=int(reply.id))
+        except Exception as e:
+            logger.warning(f"获取被引用消息失败: {e}")
+            return None
+        if not isinstance(msg, dict):
+            return None
+
+        forward_id = self._find_forward_id(msg)
+        if forward_id:
+            try:
+                ret = await bot.call_action("get_forward_msg", id=forward_id)
+            except Exception as e:
+                logger.warning(f"获取合并转发消息失败: {e}")
+                return None
+            inner = (ret or {}).get("messages", []) if isinstance(ret, dict) else []
+            texts = [self._extract_forward_text(m) for m in inner]
+            # 只取以『战队:』开头的战报消息
+            return [t for t in texts if t and t.lstrip().startswith("战队:")]
+
+        # 非转发：被引用消息自身的文本（须为战报）
+        text = self._extract_msg_text(msg)
+        if text and text.lstrip().startswith("战队:"):
+            return [text]
+        return None
 
     # ---------- 排表 ----------
 
@@ -397,8 +466,12 @@ class BattleReportPlugin(Star):
             team_tag = first_lines[0]
             payload = "\n".join(first_lines[1:])
 
-        # 拆成多份战报
-        report_chunks = split_reports(payload)
+        # 优先从回复引用（含合并转发）提取战报
+        reply_reports = await self._extract_reply_reports(event)
+        if reply_reports:
+            report_chunks = reply_reports
+        else:
+            report_chunks = split_reports(payload)
         if not report_chunks:
             yield event.plain_result("❌ 战报内容为空。")
             return
