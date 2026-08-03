@@ -108,7 +108,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.5")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.6")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -602,18 +602,37 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"用户「{user['name']}」尚未绑定任何参赛ID。")
             return
         days = int(self.config.get("default_days", 0) or 0)
+        date_from = self._date_from(days)
         agg = await self.db.get_players_aggregate(
-            None, players, self._date_from(days), None, home_team=home
+            None, players, date_from, None, home_team=home
         )
         wins = int(agg["wins"])
         losses = int(agg["losses"])
         total = int(agg["total"])
         wr = round(wins * 100.0 / (wins + losses), 1) if (wins + losses) else 0.0
-        yield event.plain_result(
-            f"👤 {user['name']}（{home}）\n"
-            f"📌 参赛ID：{'、'.join(players)}\n"
-            f"📊 战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  胜率{wr}%"
-        )
+
+        lines = [
+            f"👤 {user['name']}（{home}）",
+            f"📌 参赛ID：{'、'.join(players)}",
+        ]
+        if len(players) == 1:
+            # 只有一个ID：汇总即该ID明细，无需再列
+            lines.append(
+                f"📊 战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  胜率{wr}%"
+            )
+        else:
+            lines.append(
+                f"📊 汇总战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  胜率{wr}%"
+            )
+            for p in players:
+                rec = await self.db.get_player_record(None, p, date_from, None, home_team=home)
+                w = int(rec.get("wins", 0))
+                l = int(rec.get("losses", 0))
+                d = int(rec.get("draws", 0))
+                t = int(rec.get("total", 0))
+                wr2 = round(w * 100.0 / (w + l), 1) if (w + l) else 0.0
+                lines.append(f"  · {p}：胜{w} 负{l} 平{d} 总{t} 胜率{wr2}%")
+        yield event.plain_result("\n".join(lines))
 
     # ---------- 追加轮次（/第N轮） ----------
 
