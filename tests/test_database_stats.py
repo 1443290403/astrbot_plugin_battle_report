@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from battle_report_parser import parse_battle_report
+from battle_report_parser import determine_match_winner, parse_battle_report, split_reports
 from database import Database
 from conftest import DEFAULTS
 
@@ -194,5 +194,64 @@ def test_teams_replace():
         await db.replace_teams(GROUP_ID, [("KC", ["红莲"])])
         teams = await db.get_teams(GROUP_ID)
         assert len(teams) == 1
+
+    _with_db(ops)
+
+
+def test_batch_reports_db_correct():
+    """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
+    text = """战队: KC VS DYG
+时间: 2026.08.03
+规则: 2/3【KOF】
+地点: 1060889761
+------第一轮------
+红莲 2:0 黄大
+战神 2:1 自大
+TSUKI 2:1 宏大
+------第二轮------
+
+战队: DYG VS KC
+时间: 2026.08.03
+规则: 2/3【KOF】
+地点: 1060889761
+------第一轮------
+红莲 2:0 黄大
+战神 2:1 自大
+TSUKI 2:1 宏大
+------第二轮------"""
+
+    async def ops(db):
+        chunks = split_reports(text)
+        assert len(chunks) == 2
+        for c in chunks:
+            r = parse_battle_report(c)
+            assert not r.errors, r.errors
+            rep = r.report
+            rep.group_id = GROUP_ID
+            rep.submitted_by = "batch"
+            rep.submitted_name = "batch"
+            rep.created_at = 0
+            winner = determine_match_winner(rep)
+            await db.insert_report(rep, winner)
+
+        rows = await db._query(
+            "SELECT id, team_a, team_b, winner FROM matches WHERE group_id=%s ORDER BY id",
+            (GROUP_ID,),
+        )
+        assert len(rows) == 2
+        assert rows[0]["team_a"] == "KC" and rows[0]["winner"] == "KC"
+        assert rows[1]["team_a"] == "DYG" and rows[1]["winner"] == "DYG"
+
+        # 两场比赛的左侧选手队伍归属必须正确
+        d1 = await db._query(
+            "SELECT player_a, player_a_team FROM duels WHERE match_id=%s LIMIT 1",
+            (rows[0]["id"],),
+        )
+        d2 = await db._query(
+            "SELECT player_a, player_a_team FROM duels WHERE match_id=%s LIMIT 1",
+            (rows[1]["id"],),
+        )
+        assert d1[0]["player_a"] == "红莲" and d1[0]["player_a_team"] == "KC"
+        assert d2[0]["player_a"] == "红莲" and d2[0]["player_a_team"] == "DYG"
 
     _with_db(ops)
