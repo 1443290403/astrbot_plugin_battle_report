@@ -333,13 +333,24 @@ class Database:
     # ---------- 用户与参赛ID ----------
 
     async def find_or_create_user(self, home_team: str, name: str, qq_id: str = "") -> int:
-        """按 战队+名字 查找用户，不存在则创建。返回 user_id。"""
+        """按 战队+名字 查找用户（角色）；不存在则创建。
+
+        用户本身是队员角色：若该 QQ 已有角色则复用（一个 QQ 一个角色），
+        否则按名字创建新角色。
+        """
         rows = await self._query(
             "SELECT id FROM users WHERE home_team = %s AND name = %s",
             (home_team, name),
         )
         if rows:
             return rows[0]["id"]
+        if qq_id:
+            rows = await self._query(
+                "SELECT id FROM users WHERE home_team = %s AND qq_id = %s",
+                (home_team, qq_id),
+            )
+            if rows:
+                return rows[0]["id"]
         await self._execute(
             "INSERT INTO users (home_team, name, qq_id, created_at) VALUES (%s, %s, %s, %s)",
             (home_team, name, qq_id, int(time.time())),

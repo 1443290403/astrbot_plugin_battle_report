@@ -269,8 +269,14 @@ def test_user_and_player_ids():
         status, _ = await db.claim_user_by_name("TEST1", "红莲", "10001")
         assert status == "ok"
 
+        # 一个QQ绑定多个ID → 复用同一角色（用户=角色，多ID挂其下）
+        uid2 = await db.find_or_create_user("TEST1", "别的名字", "10001")
+        assert uid2 == uid  # 同QQ复用角色
+        await db.bind_player_to_user("TEST1", "红莲", uid)
+        await db.bind_player_to_user("TEST1", "凯撒亮", uid)
+        assert set(await db.get_user_players("TEST1", uid)) == {"红莲", "凯撒亮"}
+
         # 用户参赛ID + 合并战绩（跨群）
-        assert await db.get_user_players("TEST1", uid) == ["红莲"]
         agg = await db.get_players_aggregate(None, ["红莲"], home_team="TEST1")
         assert agg["wins"] == 1 and agg["losses"] == 0
 
