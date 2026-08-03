@@ -99,7 +99,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.2")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.3")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -185,6 +185,23 @@ class BattleReportPlugin(Star):
         if not days or days <= 0:
             return None
         return (datetime.now() - timedelta(days=days)).date().isoformat()
+
+    async def _is_manager(self, event: AstrMessageEvent) -> bool:
+        """是否 AstrBot 管理员 / 群管理 / 群主。"""
+        if event.is_admin():
+            return True
+        try:
+            group = await event.get_group()
+        except Exception as e:
+            logger.warning(f"获取群信息失败: {e}")
+            group = None
+        if group is None:
+            return False
+        sender = str(event.get_sender_id())
+        if sender == str(group.group_owner):
+            return True
+        admins = [str(a) for a in (group.group_admins or [])]
+        return sender in admins
 
     @staticmethod
     def _extract_msg_text(msg: dict) -> str:
@@ -739,8 +756,8 @@ class BattleReportPlugin(Star):
         if err:
             yield event.plain_result(err)
             return
-        if not event.is_admin():
-            yield event.plain_result("❌ 仅群管理员可删除战报。")
+        if not await self._is_manager(event):
+            yield event.plain_result("❌ 仅群管理或群主可删除战报。")
             return
         group_id = event.get_group_id()
         if not group_id:
