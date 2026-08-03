@@ -283,6 +283,38 @@ def test_user_and_player_ids():
     _with_db(ops)
 
 
+def test_player_record_excludes_same_name_other_team():
+    async def ops(db):
+        # KC 上传 vs RF：红莲是 RF 对手（player_b_team=RF），不应计入 KC 红莲
+        r1 = parse_battle_report(
+            "战队: KC VS RF\n时间: 2026.08.01\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n凯撒亮 2:1 红莲"
+        )
+        rep1 = r1.report
+        rep1.group_id = GROUP_ID
+        rep1.submitted_by = "x"
+        rep1.submitted_name = "y"
+        rep1.created_at = 0
+        await db.insert_report(rep1, "KC", home_team="KC")
+        # KC 上传 vs DYG：红莲是己方（player_a_team=KC）
+        r2 = parse_battle_report(
+            "战队: KC VS DYG\n时间: 2026.08.01\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n红莲 2:1 老千"
+        )
+        rep2 = r2.report
+        rep2.group_id = GROUP_ID
+        rep2.submitted_by = "x"
+        rep2.submitted_name = "y"
+        rep2.created_at = 0
+        await db.insert_report(rep2, "KC", home_team="KC")
+
+        rec = await db.get_player_record(None, "红莲", home_team="KC")
+        # 只算 KC 的红莲（1胜），不含 RF 的同名红莲
+        assert rec["wins"] == 1 and rec["losses"] == 0
+
+    _with_db(ops)
+
+
 def test_batch_reports_db_correct():
     """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
     text = """战队: KC VS DYG

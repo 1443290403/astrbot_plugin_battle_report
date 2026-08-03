@@ -592,20 +592,27 @@ class Database:
         date_to: str | None = None,
         home_team: str | None = None,
     ) -> dict:
-        """单个玩家的战绩汇总。group_id 为 None 时不按群过滤（跨该战队全部群）。"""
+        """单个玩家的战绩汇总。group_id 为 None 时不按群过滤（跨该战队全部群）。
+
+        home_team 非空时同时限制该选手属于该战队（避免同名不同队选手混入）。
+        """
         d1, d2 = self._date_bounds(date_from, date_to)
         group_clause = " AND m.group_id = %s" if group_id else ""
-        home_clause = " AND m.home_team = %s" if home_team else ""
+        home_match = " AND m.home_team = %s" if home_team else ""
+        team_clause_a = " AND d.player_a_team = %s" if home_team else ""
+        team_clause_b = " AND d.player_b_team = %s" if home_team else ""
         params: list = [player, d1, d2]
         if group_id:
             params.append(group_id)
         if home_team:
-            params.append(home_team)
+            params.append(home_team)  # m.home_team
+            params.append(home_team)  # player_a_team
         params += [player, d1, d2]
         if group_id:
             params.append(group_id)
         if home_team:
-            params.append(home_team)
+            params.append(home_team)  # m.home_team
+            params.append(home_team)  # player_b_team
         params.append(player)
         rows = await self._query(
             f"""WITH sides AS (
@@ -614,14 +621,14 @@ class Database:
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE d.player_a = %s
-                     AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_clause}
+                     AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_match}{team_clause_a}
                    UNION ALL
                    SELECT CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE d.player_b = %s
-                     AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_clause}
+                     AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_match}{team_clause_b}
                )
                SELECT player_name AS player,
                       SUM(win) wins, SUM(loss) losses, SUM(draw) draws, COUNT(*) total
