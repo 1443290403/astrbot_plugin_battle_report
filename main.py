@@ -93,7 +93,6 @@ _HELP_TEXT = (
     "▎管理\n"
     "/战报删除 <战报ID>      仅管理/群主\n"
     "/战报撤销              撤销自己最近一条\n"
-    "/看排表                查看本群战队名单\n"
     "/战报帮助              本帮助"
 )
 
@@ -109,7 +108,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.8")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.9")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -374,25 +373,6 @@ class BattleReportPlugin(Star):
         yield event.plain_result(gen.template)
         for w in gen.warnings:
             yield event.plain_result(w)
-
-    @filter.command("看排表", alias={"/看排表"})
-    async def view_lineup(self, event: AstrMessageEvent):
-        """查看当前群已存的战队名单"""
-        err = self._check_db()
-        if err:
-            yield event.plain_result(err)
-            return
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("⚠️ 请在群聊中使用。")
-            return
-        teams = await self.db.get_teams(group_id)
-        grouped: dict[str, list[str]] = {}
-        for t in teams:
-            grouped.setdefault(t["team_name"], []).append(t["player_name"])
-        yield event.plain_result(
-            "📋 本群战队名单：\n" + lineup.format_roster_display(list(grouped.items()))
-        )
 
     # ---------- 群战队绑定 ----------
 
