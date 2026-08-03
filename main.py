@@ -108,7 +108,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.5")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -403,7 +403,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result(err)
             return
         if not await self._is_manager(event):
-            yield event.plain_result("❌ 仅群管理或群主可绑定战队战队。")
+            yield event.plain_result("❌ 仅群管理或群主可绑定战队。")
             return
         group_id = event.get_group_id()
         if not group_id:
@@ -749,11 +749,11 @@ class BattleReportPlugin(Star):
                 )
                 return
 
-        # 上传需群已绑定战队战队
+        # 上传需群已绑定战队
         bound_home = await self.db.get_group_home(group_id)
         if not bound_home:
             yield event.plain_result(
-                "❌ 本群未绑定战队战队，无法上传战报。\n请管理/群主使用 /绑定战队 <战队> 绑定。"
+                "❌ 本群未绑定战队，无法上传战报。\n请管理/群主使用 /绑定战队 <战队> 绑定。"
             )
             return
         home_team = bound_home
