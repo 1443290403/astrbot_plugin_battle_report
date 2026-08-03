@@ -123,6 +123,21 @@ def test_round_align_team_order_names_only():
     assert "YE 0:0 空枭" in r.new_text
 
 
+def test_format_duel_results():
+    from battle_report_parser import parse_battle_report
+    from lineup import format_duel_results
+
+    r = parse_battle_report(TEAM_DRAFT)
+    assert not r.errors
+    # 主体战队 TEST1（左侧）
+    text = format_duel_results(r.report, "TEST1")
+    assert "第一轮 YE 2:0 vs 红大 ✅ 胜" in text
+    assert "悠悠球 1:2 vs 空枭 ❌ 负" in text
+    # 主体战队 TEST（右侧）→ 视角翻转
+    text2 = format_duel_results(r.report, "TEST")
+    assert "第一轮 红大 0:2 vs YE ❌ 负" in text2
+
+
 def test_round_partial_success():
     # 一行有效一行无效：有效照加，无效进 errors
     r = build_next_round(TEAM_DRAFT, 2, ["红莲 20 黄大", "这一行无法解析"])

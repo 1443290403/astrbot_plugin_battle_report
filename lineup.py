@@ -476,3 +476,27 @@ def record_from_info(draft_text: str, info: str) -> RecordResult:
         False, draft_text, [],
         [f"记录格式应为『玩家名 比分 [对手]』，得到：{info}"],
     )
+
+
+def format_duel_results(report, home_team: str) -> str:
+    """每场对阵结果（主体战队视角），供提交后核对。
+
+    格式：第一轮 玩家 比分 vs 对手 ✅ 胜 / ❌ 负 / ➖ 平
+    """
+    home = home_team if home_team in (report.team_a, report.team_b) else report.team_a
+    lines = []
+    for d in report.duels:
+        if home == report.team_b:
+            hp, hs, os_, op = d.player_b, d.score_b, d.score_a, d.player_a
+        else:
+            hp, hs, os_, op = d.player_a, d.score_a, d.score_b, d.player_b
+        if hs > os_:
+            mark = "✅ 胜"
+        elif hs < os_:
+            mark = "❌ 负"
+        else:
+            mark = "➖ 平"
+        lines.append(
+            f"第{_int_to_cn(d.round_no)}轮 {hp} {hs}:{os_} vs {op} {mark}"
+        )
+    return "\n".join(lines)

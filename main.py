@@ -18,10 +18,11 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import CustomFilter
-from astrbot.api.message_components import File, Image, Plain, Reply
+from astrbot.api.message_components import File, Image, Node, Nodes, Plain, Reply
 from astrbot.api.star import Star, StarTools, register
 
 from . import chart, lineup, stats
+from .lineup import format_duel_results
 from .battle_report_parser import (
     BattleReport,
     determine_match_winner,
@@ -98,7 +99,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -499,7 +500,8 @@ class BattleReportPlugin(Star):
                 )
                 return
 
-        # 逐个提交
+        # 逐个提交，收集回复
+        responses: list[str] = []
         for report, warnings in parsed:
             report.group_id = group_id
             report.submitted_by = event.get_sender_id()
@@ -509,7 +511,7 @@ class BattleReportPlugin(Star):
             # 判定胜者：胜负未定则不记录
             winner = determine_match_winner(report)
             if winner is None:
-                yield event.plain_result(
+                responses.append(
                     f"❌ 比赛胜负未定，未记录：\n{report.team_a} VS {report.team_b} | "
                     f"{report.match_time}\n（请补全比分后重试）"
                 )
@@ -531,22 +533,39 @@ class BattleReportPlugin(Star):
                 match_id = await self.db.insert_report(report, winner)
             except Exception as e:
                 logger.exception("战报入库失败")
-                yield event.plain_result(
+                responses.append(
                     f"❌ 写入失败：{report.team_a} VS {report.team_b} | {report.match_time}\n{e}"
                 )
                 continue
 
+            # 汇总 + 每场对阵结果（供核对）
             summary = (
                 f"✅ 战报已记录（ID {match_id}）\n"
                 f"{report.team_a} VS {report.team_b} | {report.match_time} | "
                 f"共 {len(report.duels)} 局\n"
-                f"{home_result}"
+                f"{home_result}\n"
+                f"{format_duel_results(report, home_team)}"
             )
-            yield event.plain_result(summary)
+            responses.append(summary)
             if warnings:
-                yield event.plain_result("⚠️ 解析警告：\n" + "\n".join(warnings))
+                responses.append("⚠️ 解析警告：\n" + "\n".join(warnings))
             for w in await self._roster_warnings(group_id, report):
-                yield event.plain_result(w)
+                responses.append(w)
+
+        # 发送：>3 条合并为一个转发消息集，否则逐条
+        if len(responses) <= 3:
+            for r in responses:
+                yield event.plain_result(r)
+        else:
+            nodes = [
+                Node(
+                    name=event.get_sender_name(),
+                    uin=event.get_sender_id(),
+                    content=[Plain(r)],
+                )
+                for r in responses
+            ]
+            yield event.chain_result([Nodes(nodes)])
 
     # ---------- 查询 ----------
 
