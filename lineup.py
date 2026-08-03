@@ -87,7 +87,7 @@ def parse_lineup(text: str, default_rule: str) -> RosterResult:
                 continue
             errors.append(f"第 {lineno} 行：无法识别为队伍名单，格式应为『队伍名: 成员1 成员2』：{line}")
             continue
-        team_name = m.group(1).strip()
+        team_name = m.group(1).strip().upper()  # 队标含字母时统一转大写
         players = [p.strip() for p in re.split(r"[\s,，、]+", m.group(2).strip()) if p.strip()]
         if not team_name:
             errors.append(f"第 {lineno} 行：队伍名为空：{line}")

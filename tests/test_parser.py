@@ -75,6 +75,14 @@ def test_cn_to_int():
     assert _cn_to_int("3") == 3
 
 
+def test_parse_uppercase_team():
+    # 战队名含字母时统一转大写
+    r = parse_battle_report("战队: dyg VS kc\n时间: 2026.01.01\n------第一轮------\n红莲 2:0 老千")
+    assert not r.errors
+    assert r.report.team_a == "DYG"
+    assert r.report.team_b == "KC"
+
+
 def test_split_reports():
     text = (
         "战队: A VS B\n时间: 2026.01.01\n规则: 人头赛\n地点: 1\n------第一轮------\n红莲 2:0 蓝大\n"

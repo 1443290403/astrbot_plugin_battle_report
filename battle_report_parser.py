@@ -161,7 +161,8 @@ def parse_battle_report(text: str) -> ParseResult:
             if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
                 errors.append(f"第 {lineno} 行：战队格式应为『战队: A VS B』，得到：{line}")
                 continue
-            report.team_a, report.team_b = parts[0].strip(), parts[1].strip()
+            # 队标含字母时统一转大写（与排表名单一致）
+            report.team_a, report.team_b = parts[0].strip().upper(), parts[1].strip().upper()
             continue
 
         # 时间:

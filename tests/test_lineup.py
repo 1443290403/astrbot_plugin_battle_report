@@ -29,6 +29,14 @@ def test_parse_lineup_errors():
     assert r.errors
 
 
+def test_parse_lineup_uppercase_team():
+    # 队标含字母时统一转大写
+    r = parse_lineup("dyg:老千 蓝大\nkc:红莲 悠悠球", "2/3【KOF】")
+    assert not r.errors
+    assert r.teams[0] == ("DYG", ["老千", "蓝大"])
+    assert r.teams[1] == ("KC", ["红莲", "悠悠球"])
+
+
 def test_generate_template_equal():
     gen = generate_template(
         "KC", ["红莲", "悠悠球"], "DYG", ["老千", "蓝大"],
