@@ -5,11 +5,12 @@
 """
 
 import re
+import time
 from typing import Any
 
 import aiomysql
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -139,6 +140,27 @@ class Database:
                         group_id VARCHAR(64) PRIMARY KEY,
                         home_team VARCHAR(64) NOT NULL,
                         created_at INT NOT NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS users (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        home_team VARCHAR(64) NOT NULL,
+                        name VARCHAR(64) NOT NULL,
+                        qq_id VARCHAR(64) DEFAULT '',
+                        created_at INT NOT NULL,
+                        UNIQUE KEY uk_team_name (home_team, name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS player_ids (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        home_team VARCHAR(64) NOT NULL,
+                        player_name VARCHAR(64) NOT NULL,
+                        user_id INT NOT NULL,
+                        created_at INT NOT NULL,
+                        UNIQUE KEY uk_team_player (home_team, player_name),
+                        INDEX idx_team_user (home_team, user_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
                 # 迁移
@@ -290,7 +312,7 @@ class Database:
             """INSERT INTO group_home (group_id, home_team, created_at)
                VALUES (%s, %s, %s) AS new
                ON DUPLICATE KEY UPDATE home_team = new.home_team""",
-            (group_id, home_team, int(__import__("time").time())),
+            (group_id, home_team, int(time.time())),
         )
 
     async def get_group_home(self, group_id: str) -> str | None:
@@ -307,6 +329,148 @@ class Database:
             "UPDATE matches SET home_team = %s WHERE group_id = %s AND home_team = ''",
             (home_team, group_id),
         )
+
+    # ---------- 用户与参赛ID ----------
+
+    async def find_or_create_user(self, home_team: str, name: str, qq_id: str = "") -> int:
+        """按 战队+名字 查找用户，不存在则创建。返回 user_id。"""
+        rows = await self._query(
+            "SELECT id FROM users WHERE home_team = %s AND name = %s",
+            (home_team, name),
+        )
+        if rows:
+            return rows[0]["id"]
+        await self._execute(
+            "INSERT INTO users (home_team, name, qq_id, created_at) VALUES (%s, %s, %s, %s)",
+            (home_team, name, qq_id, int(time.time())),
+        )
+        rows = await self._query(
+            "SELECT id FROM users WHERE home_team = %s AND name = %s",
+            (home_team, name),
+        )
+        return rows[0]["id"]
+
+    async def get_user_by_qq(self, home_team: str, qq_id: str) -> dict | None:
+        """按 战队+QQ 查找用户。"""
+        rows = await self._query(
+            "SELECT id, name, qq_id FROM users WHERE home_team = %s AND qq_id = %s",
+            (home_team, qq_id),
+        )
+        return rows[0] if rows else None
+
+    async def get_user_by_id(self, user_id: int) -> dict | None:
+        rows = await self._query(
+            "SELECT id, home_team, name, qq_id FROM users WHERE id = %s",
+            (user_id,),
+        )
+        return rows[0] if rows else None
+
+    async def claim_user_by_name(self, home_team: str, name: str, qq_id: str) -> tuple[str, int]:
+        """把 QQ 认领到指定名字的用户。
+
+        Returns:
+            (状态, user_id)：状态为 'ok'（认领成功/已是本人）、'claimed_else'（已被他人认领）、
+            'not_found'（用户不存在，user_id 为 0）。
+        """
+        rows = await self._query(
+            "SELECT id, qq_id FROM users WHERE home_team = %s AND name = %s",
+            (home_team, name),
+        )
+        if not rows:
+            return "not_found", 0
+        uid = rows[0]["id"]
+        cur = rows[0]["qq_id"] or ""
+        if cur and str(cur) != str(qq_id):
+            return "claimed_else", uid
+        if not cur:
+            await self._execute(
+                "UPDATE users SET qq_id = %s WHERE id = %s",
+                (qq_id, uid),
+            )
+        return "ok", uid
+
+    async def get_player_pool(self, home_team: str, keyword: str | None = None, limit: int = 50) -> list[str]:
+        """从战报提取该战队出现过的参赛ID（选手名），可选模糊匹配。"""
+        like = f"%{keyword}%" if keyword else "%"
+        rows = await self._query(
+            """SELECT DISTINCT t.player FROM (
+                   SELECT d.player_a AS player FROM duels d JOIN matches m ON d.match_id = m.id
+                   WHERE m.home_team = %s AND d.player_a_team = %s
+                   UNION
+                   SELECT d.player_b FROM duels d JOIN matches m ON d.match_id = m.id
+                   WHERE m.home_team = %s AND d.player_b_team = %s
+               ) t WHERE t.player LIKE %s ORDER BY t.player LIMIT %s""",
+            (home_team, home_team, home_team, home_team, like, limit),
+        )
+        return [r["player"] for r in rows]
+
+    async def get_pool_status(self, home_team: str, keyword: str | None = None, limit: int = 20) -> list[dict]:
+        """参赛ID池及绑定状态（含所属用户）。"""
+        pool = await self.get_player_pool(home_team, keyword, limit)
+        if not pool:
+            return []
+        placeholders = ",".join(["%s"] * len(pool))
+        rows = await self._query(
+            f"""SELECT p.player_name, u.name AS user_name, u.qq_id
+                FROM player_ids p LEFT JOIN users u ON p.user_id = u.id
+                WHERE p.home_team = %s AND p.player_name IN ({placeholders})""",
+            (home_team, *pool),
+        )
+        bound = {r["player_name"]: r for r in rows}
+        result = []
+        for p in pool:
+            b = bound.get(p)
+            result.append({
+                "player": p,
+                "user_name": b["user_name"] if b else "",
+                "qq_id": b["qq_id"] if b else "",
+            })
+        return result
+
+    async def get_player_binding(self, home_team: str, player_name: str) -> dict | None:
+        """查询某个参赛ID的绑定情况。"""
+        rows = await self._query(
+            """SELECT p.id, p.player_name, p.user_id, u.name AS user_name, u.qq_id
+               FROM player_ids p LEFT JOIN users u ON p.user_id = u.id
+               WHERE p.home_team = %s AND p.player_name = %s""",
+            (home_team, player_name),
+        )
+        return rows[0] if rows else None
+
+    async def bind_player_to_user(self, home_team: str, player_name: str, user_id: int) -> None:
+        """把参赛ID绑定到用户（覆盖）。"""
+        await self._execute(
+            """INSERT INTO player_ids (home_team, player_name, user_id, created_at)
+               VALUES (%s, %s, %s, %s) AS new
+               ON DUPLICATE KEY UPDATE user_id = new.user_id""",
+            (home_team, player_name, user_id, int(time.time())),
+        )
+
+    async def get_user_players(self, home_team: str, user_id: int) -> list[str]:
+        """某用户绑定的参赛ID列表。"""
+        rows = await self._query(
+            "SELECT player_name FROM player_ids WHERE home_team = %s AND user_id = %s ORDER BY id",
+            (home_team, user_id),
+        )
+        return [r["player_name"] for r in rows]
+
+    async def get_players_aggregate(
+        self,
+        group_id: str | None,
+        players: list[str],
+        date_from: str | None = None,
+        date_to: str | None = None,
+        home_team: str | None = None,
+    ) -> dict:
+        """多个参赛ID合并战绩统计。group_id 为 None 时跨该战队全部群。"""
+        total = {"wins": 0, "losses": 0, "draws": 0, "total": 0}
+        for p in players:
+            rec = await self.get_player_record(group_id, p, date_from, date_to, home_team)
+            total["wins"] += int(rec.get("wins", 0))
+            total["losses"] += int(rec.get("losses", 0))
+            total["draws"] += int(rec.get("draws", 0))
+            total["total"] += int(rec.get("total", 0))
+        return total
 
     # ---------- 聚合统计 ----------
 
@@ -374,19 +538,24 @@ class Database:
 
     async def get_player_record(
         self,
-        group_id: str,
+        group_id: str | None,
         player: str,
         date_from: str | None = None,
         date_to: str | None = None,
         home_team: str | None = None,
     ) -> dict:
-        """单个玩家的战绩汇总。"""
+        """单个玩家的战绩汇总。group_id 为 None 时不按群过滤（跨该战队全部群）。"""
         d1, d2 = self._date_bounds(date_from, date_to)
+        group_clause = " AND m.group_id = %s" if group_id else ""
         home_clause = " AND m.home_team = %s" if home_team else ""
-        params = [group_id, player, d1, d2]
+        params: list = [player, d1, d2]
+        if group_id:
+            params.append(group_id)
         if home_team:
             params.append(home_team)
-        params += [group_id, player, d1, d2]
+        params += [player, d1, d2]
+        if group_id:
+            params.append(group_id)
         if home_team:
             params.append(home_team)
         params.append(player)
@@ -396,15 +565,15 @@ class Database:
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END AS loss,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
-                   WHERE m.group_id = %s AND d.player_a = %s
-                     AND m.match_time >= %s AND m.match_time <= %s{home_clause}
+                   WHERE d.player_a = %s
+                     AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_clause}
                    UNION ALL
                    SELECT CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
                    FROM duels d JOIN matches m ON d.match_id = m.id
-                   WHERE m.group_id = %s AND d.player_b = %s
-                     AND m.match_time >= %s AND m.match_time <= %s{home_clause}
+                   WHERE d.player_b = %s
+                     AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_clause}
                )
                SELECT player_name AS player,
                       SUM(win) wins, SUM(loss) losses, SUM(draw) draws, COUNT(*) total

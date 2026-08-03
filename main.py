@@ -83,6 +83,12 @@ _HELP_TEXT = (
     "▎战队绑定\n"
     "/绑定战队 <战队>        绑定本群战队（管理/群主）\n"
     "/查看战队              查看本群战队\n\n"
+    "▎用户与参赛ID\n"
+    "/查ID <关键词>          模糊查询本战队参赛ID\n"
+    "/绑定ID <参赛ID>        将参赛ID绑定到自己的用户\n"
+    "/认证                  查看/确认自己的身份\n"
+    "/我的战绩              查询自己的总战绩\n"
+    "/管理ID [参赛ID] [用户名] 管理/群主查看/绑定参赛ID\n\n"
     "▎管理\n"
     "/战报删除 <战报ID>      仅管理/群主\n"
     "/战报撤销              撤销自己最近一条\n"
@@ -102,7 +108,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.2.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -427,8 +433,172 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"🏠 本群战队：{home}")
         else:
             yield event.plain_result(
-                "本群尚未绑定战队战队，请管理/群主使用 /绑定战队 <战队> 绑定。"
+                "本群尚未绑定战队，请管理/群主使用 /绑定战队 <战队> 绑定。"
             )
+
+    # ---------- 用户与参赛ID ----------
+
+    async def _require_home(self, event) -> tuple[str | None, str | None]:
+        """获取群号与绑定战队；失败时返回 (错误文案, None)。"""
+        err = self._check_db()
+        if err:
+            return err, None
+        group_id = event.get_group_id()
+        if not group_id:
+            return "⚠️ 请在群聊中使用。", None
+        home = await self.db.get_group_home(group_id)
+        if not home:
+            return "❌ 本群未绑定战队，请管理/群主使用 /绑定战队 <战队> 绑定。", None
+        return None, home
+
+    @filter.command("认证", alias={"/认证"})
+    async def auth(self, event: AstrMessageEvent):
+        """查看/确认自己的用户身份"""
+        err, home = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        qq = event.get_sender_id()
+        user = await self.db.get_user_by_qq(home, qq)
+        if not user:
+            yield event.plain_result(
+                f"你尚未绑定参赛ID。\n用 /查ID <关键词> 查询本战队参赛ID，"
+                f"再用 /绑定ID <参赛ID> 绑定。"
+            )
+            return
+        players = await self.db.get_user_players(home, user["id"])
+        yield event.plain_result(
+            f"👤 你的身份：{user['name']}（{home}）\n"
+            f"📌 已绑参赛ID：{'、'.join(players) if players else '（无）'}"
+        )
+
+    @filter.command("查ID", alias={"/查ID"})
+    async def search_id(self, event: AstrMessageEvent, keyword: str = ""):
+        """模糊查询本战队参赛ID"""
+        err, home = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        status = await self.db.get_pool_status(home, keyword.strip() or None, 20)
+        if not status:
+            yield event.plain_result(f"未找到匹配的参赛ID（战队 {home}）。")
+            return
+        lines = [f"🔍 战队 {home} 参赛ID（/绑定ID <参赛ID> 绑定）："]
+        for s in status:
+            mark = f"（已绑 {s['user_name']}）" if s["user_name"] else "（未绑定）"
+            lines.append(f"{s['player']} {mark}")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("绑定ID", alias={"/绑定ID"})
+    async def bind_id(self, event: AstrMessageEvent, player: str = ""):
+        """将参赛ID绑定到自己的用户（或认领已有用户）"""
+        err, home = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        player = player.strip()
+        if not player:
+            yield event.plain_result("用法：绑定ID <参赛ID>")
+            return
+        pool = await self.db.get_player_pool(home, player, 50)
+        if player not in pool:
+            yield event.plain_result(
+                f"❌ 参赛ID「{player}」不在战队 {home} 的参赛记录中。\n用 /查ID <关键词> 查询。"
+            )
+            return
+
+        qq = event.get_sender_id()
+        binding = await self.db.get_player_binding(home, player)
+        if binding:
+            # 已被某用户绑定 → 认领该用户
+            status, uid = await self.db.claim_user_by_name(home, binding["user_name"], qq)
+            if status == "claimed_else":
+                yield event.plain_result(
+                    f"❌ 参赛ID「{player}」已被其他用户（{binding['user_name']}）绑定。"
+                )
+                return
+            if status == "not_found":
+                uid = await self.db.find_or_create_user(home, binding["user_name"], qq)
+                await self.db.bind_player_to_user(home, player, uid)
+            user = await self.db.get_user_by_id(uid)
+            players = await self.db.get_user_players(home, uid)
+            yield event.plain_result(
+                f"✅ 已绑定到用户「{user['name']}」（{home}）\n"
+                f"📌 该用户参赛ID：{'、'.join(players)}"
+            )
+            return
+
+        # 未绑定 → 创建用户并绑定
+        uid = await self.db.find_or_create_user(home, player, qq)
+        await self.db.bind_player_to_user(home, player, uid)
+        yield event.plain_result(
+            f"✅ 已创建用户「{player}」并绑定参赛ID。\n现在可用 /我的战绩 查询战绩。"
+        )
+
+    @filter.command("管理ID", alias={"/管理ID"})
+    async def admin_id(self, event: AstrMessageEvent, player: str = "", username: str = ""):
+        """管理/群主：查看/绑定本战队参赛ID"""
+        err, home = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        if not await self._is_manager(event):
+            yield event.plain_result("❌ 仅群管理或群主可管理参赛ID。")
+            return
+        if not player:
+            status = await self.db.get_pool_status(home, None, 50)
+            if not status:
+                yield event.plain_result(f"战队 {home} 暂无参赛ID（尚无战报记录）。")
+                return
+            lines = [f"📋 战队 {home} 参赛ID列表："]
+            for s in status:
+                mark = f"→ {s['user_name']}" if s["user_name"] else "（未绑定）"
+                lines.append(f"{s['player']} {mark}")
+            lines.append("绑定：/管理ID <参赛ID> <用户名>")
+            yield event.plain_result("\n".join(lines))
+            return
+        if not username:
+            yield event.plain_result("用法：管理ID <参赛ID> <用户名>")
+            return
+        pool = await self.db.get_player_pool(home, player, 50)
+        if player not in pool:
+            yield event.plain_result(
+                f"❌ 参赛ID「{player}」不在战队 {home} 的参赛记录中。"
+            )
+            return
+        uid = await self.db.find_or_create_user(home, username.strip())
+        await self.db.bind_player_to_user(home, player, uid)
+        yield event.plain_result(f"✅ 参赛ID「{player}」已绑定到用户「{username.strip()}」。")
+
+    @filter.command("我的战绩", alias={"/我的战绩"})
+    async def my_record(self, event: AstrMessageEvent):
+        """按自己绑定的参赛ID查询战绩"""
+        err, home = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        qq = event.get_sender_id()
+        user = await self.db.get_user_by_qq(home, qq)
+        if not user:
+            yield event.plain_result("你尚未绑定参赛ID，使用 /绑定ID <参赛ID> 绑定。")
+            return
+        players = await self.db.get_user_players(home, user["id"])
+        if not players:
+            yield event.plain_result(f"用户「{user['name']}」尚未绑定任何参赛ID。")
+            return
+        days = int(self.config.get("default_days", 0) or 0)
+        agg = await self.db.get_players_aggregate(
+            None, players, self._date_from(days), None, home_team=home
+        )
+        wins = int(agg["wins"])
+        losses = int(agg["losses"])
+        total = int(agg["total"])
+        wr = round(wins * 100.0 / (wins + losses), 1) if (wins + losses) else 0.0
+        yield event.plain_result(
+            f"👤 {user['name']}（{home}）\n"
+            f"📌 参赛ID：{'、'.join(players)}\n"
+            f"📊 战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  胜率{wr}%"
+        )
 
     # ---------- 追加轮次（/第N轮） ----------
 

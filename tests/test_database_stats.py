@@ -239,6 +239,44 @@ def test_group_home_and_home_team_filter():
     _with_db(ops)
 
 
+def test_user_and_player_ids():
+    async def ops(db):
+        # 上传一份 TEST1 视角的战报
+        r = parse_battle_report(
+            "战队: TEST1 VS DYG\n时间: 2026.08.01\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n红莲 2:1 老千"
+        )
+        rep = r.report
+        rep.group_id = GROUP_ID
+        rep.submitted_by = "x"
+        rep.submitted_name = "y"
+        rep.created_at = 0
+        await db.insert_report(rep, "TEST1", home_team="TEST1")
+
+        # 参赛ID池：仅从战报提取 TEST1 选手
+        pool = await db.get_player_pool("TEST1")
+        assert "红莲" in pool and "老千" not in pool
+
+        # 创建用户并绑定参赛ID
+        uid = await db.find_or_create_user("TEST1", "红莲", "10001")
+        await db.bind_player_to_user("TEST1", "红莲", uid)
+        binding = await db.get_player_binding("TEST1", "红莲")
+        assert binding["user_name"] == "红莲"
+
+        # 认领冲突与成功
+        status, _ = await db.claim_user_by_name("TEST1", "红莲", "20002")
+        assert status == "claimed_else"
+        status, _ = await db.claim_user_by_name("TEST1", "红莲", "10001")
+        assert status == "ok"
+
+        # 用户参赛ID + 合并战绩（跨群）
+        assert await db.get_user_players("TEST1", uid) == ["红莲"]
+        agg = await db.get_players_aggregate(None, ["红莲"], home_team="TEST1")
+        assert agg["wins"] == 1 and agg["losses"] == 0
+
+    _with_db(ops)
+
+
 def test_batch_reports_db_correct():
     """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
     text = """战队: KC VS DYG
