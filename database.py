@@ -9,7 +9,7 @@ from typing import Any
 
 import aiomysql
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -134,6 +134,13 @@ class Database:
                 await cur.execute(
                     "CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL)"
                 )
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS group_home (
+                        group_id VARCHAR(64) PRIMARY KEY,
+                        home_team VARCHAR(64) NOT NULL,
+                        created_at INT NOT NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
                 # 迁移
                 await cur.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version")
                 row = await cur.fetchone()
@@ -142,6 +149,11 @@ class Database:
                     # v2：matches 增加 winner 列（记录胜者战队）
                     await cur.execute(
                         "ALTER TABLE matches ADD COLUMN winner VARCHAR(64) DEFAULT ''"
+                    )
+                if current < 3:
+                    # v3：matches 增加 home_team 列（记录上传方主体战队）
+                    await cur.execute(
+                        "ALTER TABLE matches ADD COLUMN home_team VARCHAR(64) DEFAULT ''"
                     )
                 if current < SCHEMA_VERSION:
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
@@ -172,8 +184,8 @@ class Database:
 
     # ---------- 战报写入 / 删除 ----------
 
-    async def insert_report(self, report, winner: str = "") -> int:
-        """插入一份战报（match + duels），返回 match_id。winner 为胜者战队名。"""
+    async def insert_report(self, report, winner: str = "", home_team: str = "") -> int:
+        """插入一份战报（match + duels），返回 match_id。winner 为胜者，home_team 为上传方主体战队。"""
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             await conn.begin()
@@ -182,8 +194,8 @@ class Database:
                     await cur.execute(
                         """INSERT INTO matches
                            (group_id, team_a, team_b, match_time, rule, location,
-                            submitted_by, submitted_name, created_at, winner)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            submitted_by, submitted_name, created_at, winner, home_team)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             report.group_id,
                             report.team_a,
@@ -195,6 +207,7 @@ class Database:
                             report.submitted_name,
                             int(report.created_at) if report.created_at else 0,
                             winner or "",
+                            home_team or "",
                         ),
                     )
                     match_id = cur.lastrowid
@@ -269,6 +282,32 @@ class Database:
             (group_id,),
         )
 
+    # ---------- 群主体绑定 ----------
+
+    async def set_group_home(self, group_id: str, home_team: str) -> None:
+        """绑定群的主体战队（覆盖写入）。"""
+        await self._execute(
+            """INSERT INTO group_home (group_id, home_team, created_at)
+               VALUES (%s, %s, %s) AS new
+               ON DUPLICATE KEY UPDATE home_team = new.home_team""",
+            (group_id, home_team, int(__import__("time").time())),
+        )
+
+    async def get_group_home(self, group_id: str) -> str | None:
+        """获取群绑定的主体战队；未绑定返回 None。"""
+        rows = await self._query(
+            "SELECT home_team FROM group_home WHERE group_id = %s",
+            (group_id,),
+        )
+        return rows[0]["home_team"] if rows else None
+
+    async def backfill_group_home(self, group_id: str, home_team: str) -> None:
+        """把该群已有战报的 home_team 回填为当前主体。"""
+        await self._execute(
+            "UPDATE matches SET home_team = %s WHERE group_id = %s AND home_team = ''",
+            (home_team, group_id),
+        )
+
     # ---------- 聚合统计 ----------
 
     @staticmethod
@@ -283,14 +322,21 @@ class Database:
         min_games: int = 1,
         limit: int = 10,
         team: str | None = None,
+        home_team: str | None = None,
     ) -> list[dict]:
         """个人排行（积分 = 胜场 × 胜率，胜率用小数，保留两位）。
 
-        team 非空时只统计该战队选手。
+        team 非空时只统计该战队选手；home_team 非空时只统计该主体上传的战报。
         """
         d1, d2 = self._date_bounds(date_from, date_to)
+        home_clause = " AND m.home_team = %s" if home_team else ""
+        params: list = [group_id, d1, d2]
+        if home_team:
+            params.append(home_team)
+        params += [group_id, d1, d2]
+        if home_team:
+            params.append(home_team)
         team_clause = ""
-        params: list = [group_id, d1, d2, group_id, d1, d2]
         if team:
             team_clause = "WHERE sides.team = %s "
             params.append(team)
@@ -306,14 +352,14 @@ class Database:
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END AS loss,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
-                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s
+                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                    UNION ALL
                    SELECT d.player_b, d.player_b_team,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
                    FROM duels d JOIN matches m ON d.match_id = m.id
-                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s
+                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                )
                SELECT player, SUM(win) wins, SUM(loss) losses, SUM(draw) draws,
                       COUNT(*) total,
@@ -332,30 +378,39 @@ class Database:
         player: str,
         date_from: str | None = None,
         date_to: str | None = None,
+        home_team: str | None = None,
     ) -> dict:
         """单个玩家的战绩汇总。"""
         d1, d2 = self._date_bounds(date_from, date_to)
+        home_clause = " AND m.home_team = %s" if home_team else ""
+        params = [group_id, player, d1, d2]
+        if home_team:
+            params.append(home_team)
+        params += [group_id, player, d1, d2]
+        if home_team:
+            params.append(home_team)
+        params.append(player)
         rows = await self._query(
-            """WITH sides AS (
+            f"""WITH sides AS (
                    SELECT CASE d.result WHEN 'A' THEN 1 ELSE 0 END AS win,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END AS loss,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE m.group_id = %s AND d.player_a = %s
-                     AND m.match_time >= %s AND m.match_time <= %s
+                     AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                    UNION ALL
                    SELECT CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE m.group_id = %s AND d.player_b = %s
-                     AND m.match_time >= %s AND m.match_time <= %s
+                     AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                )
                SELECT player_name AS player,
                       SUM(win) wins, SUM(loss) losses, SUM(draw) draws, COUNT(*) total
                FROM (SELECT %s AS player_name, win, loss, draw FROM sides) t
                GROUP BY player_name""",
-            (group_id, player, d1, d2, group_id, player, d1, d2, player),
+            tuple(params),
         )
         return rows[0] if rows else {"player": player, "wins": 0, "losses": 0, "draws": 0, "total": 0}
 
@@ -365,11 +420,20 @@ class Database:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 10,
+        home_team: str | None = None,
     ) -> list[dict]:
         """队伍战绩排行（一场比赛胜者是该场对局赢得更多的一方）。"""
         d1, d2 = self._date_bounds(date_from, date_to)
+        home_clause = " AND m.home_team = %s" if home_team else ""
+        params = [group_id, d1, d2]
+        if home_team:
+            params.append(home_team)
+        params += [group_id, d1, d2]
+        if home_team:
+            params.append(home_team)
+        params.append(limit)
         return await self._query(
-            """WITH match_scores AS (
+            f"""WITH match_scores AS (
                    SELECT d.match_id,
                           SUM(CASE d.result WHEN 'A' THEN 1 ELSE 0 END) a_wins,
                           SUM(CASE d.result WHEN 'B' THEN 1 ELSE 0 END) b_wins
@@ -381,21 +445,21 @@ class Database:
                           CASE WHEN s.a_wins < s.b_wins THEN 1 ELSE 0 END loss,
                           CASE WHEN s.a_wins = s.b_wins THEN 1 ELSE 0 END draw
                    FROM matches m JOIN match_scores s ON m.id = s.match_id
-                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s
+                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                    UNION ALL
                    SELECT m.team_b,
                           CASE WHEN s.b_wins > s.a_wins THEN 1 ELSE 0 END,
                           CASE WHEN s.b_wins < s.a_wins THEN 1 ELSE 0 END,
                           CASE WHEN s.a_wins = s.b_wins THEN 1 ELSE 0 END
                    FROM matches m JOIN match_scores s ON m.id = s.match_id
-                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s
+                   WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                )
                SELECT team, SUM(win) wins, SUM(loss) losses, SUM(draw) draws, COUNT(*) total,
                       ROUND(SUM(win)*SUM(win)/NULLIF(SUM(win)+SUM(loss),0),2) AS points
                FROM team_sides GROUP BY team
                ORDER BY points DESC, wins DESC, total DESC, team ASC
                LIMIT %s""",
-            (group_id, d1, d2, group_id, d1, d2, limit),
+            tuple(params),
         )
 
     async def get_player_trend(
@@ -403,24 +467,32 @@ class Database:
         group_id: str,
         player: str,
         date_from: str | None = None,
+        home_team: str | None = None,
     ) -> list[tuple[str, int, int]]:
         """个人按日期的胜/负场次，返回 [(date, wins, losses)]。"""
         d1, _ = self._date_bounds(date_from, None)
+        home_clause = " AND m.home_team = %s" if home_team else ""
+        params = [group_id, player, d1]
+        if home_team:
+            params.append(home_team)
+        params += [group_id, player, d1]
+        if home_team:
+            params.append(home_team)
         rows = await self._query(
-            """SELECT m.match_time AS date,
+            f"""SELECT m.match_time AS date,
                       SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END) AS wins,
                       SUM(CASE WHEN d.result='B' THEN 1 ELSE 0 END) AS losses
                FROM duels d JOIN matches m ON d.match_id = m.id
-               WHERE m.group_id = %s AND d.player_a = %s AND m.match_time >= %s
+               WHERE m.group_id = %s AND d.player_a = %s AND m.match_time >= %s{home_clause}
                GROUP BY m.match_time
                UNION ALL
                SELECT m.match_time,
                       SUM(CASE WHEN d.result='B' THEN 1 ELSE 0 END),
                       SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END)
                FROM duels d JOIN matches m ON d.match_id = m.id
-               WHERE m.group_id = %s AND d.player_b = %s AND m.match_time >= %s
+               WHERE m.group_id = %s AND d.player_b = %s AND m.match_time >= %s{home_clause}
                GROUP BY m.match_time""",
-            (group_id, player, d1, group_id, player, d1),
+            tuple(params),
         )
         merged: dict[str, list[int]] = {}
         for row in rows:
@@ -436,11 +508,19 @@ class Database:
         group_id: str,
         team: str,
         date_from: str | None = None,
+        home_team: str | None = None,
     ) -> list[tuple[str, int, int]]:
         """队伍按日期的胜/负场次，返回 [(date, wins, losses)]。"""
         d1, _ = self._date_bounds(date_from, None)
+        home_clause = " AND m.home_team = %s" if home_team else ""
+        params = [group_id, team, d1]
+        if home_team:
+            params.append(home_team)
+        params += [group_id, team, d1]
+        if home_team:
+            params.append(home_team)
         rows = await self._query(
-            """WITH match_scores AS (
+            f"""WITH match_scores AS (
                    SELECT d.match_id,
                           SUM(CASE d.result WHEN 'A' THEN 1 ELSE 0 END) a_wins,
                           SUM(CASE d.result WHEN 'B' THEN 1 ELSE 0 END) b_wins
@@ -451,17 +531,17 @@ class Database:
                           CASE WHEN s.a_wins > s.b_wins THEN 1 ELSE 0 END win,
                           CASE WHEN s.a_wins < s.b_wins THEN 1 ELSE 0 END loss
                    FROM matches m JOIN match_scores s ON m.id = s.match_id
-                   WHERE m.group_id = %s AND m.team_a = %s AND m.match_time >= %s
+                   WHERE m.group_id = %s AND m.team_a = %s AND m.match_time >= %s{home_clause}
                    UNION ALL
                    SELECT m.match_time, m.team_b,
                           CASE WHEN s.b_wins > s.a_wins THEN 1 ELSE 0 END,
                           CASE WHEN s.b_wins < s.a_wins THEN 1 ELSE 0 END
                    FROM matches m JOIN match_scores s ON m.id = s.match_id
-                   WHERE m.group_id = %s AND m.team_b = %s AND m.match_time >= %s
+                   WHERE m.group_id = %s AND m.team_b = %s AND m.match_time >= %s{home_clause}
                )
                SELECT date, SUM(win) wins, SUM(loss) losses
                FROM team_sides GROUP BY date ORDER BY date""",
-            (group_id, team, d1, group_id, team, d1),
+            tuple(params),
         )
         return [(str(r["date"]), int(r["wins"] or 0), int(r["losses"] or 0)) for r in rows]
 

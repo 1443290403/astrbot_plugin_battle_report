@@ -198,6 +198,47 @@ def test_teams_replace():
     _with_db(ops)
 
 
+def test_group_home_and_home_team_filter():
+    async def ops(db):
+        # 绑定主体
+        await db.set_group_home("G1", "KC")
+        assert await db.get_group_home("G1") == "KC"
+        assert await db.get_group_home("G2") is None
+
+        # 以主体 KC 上传战报
+        rep = _make_report()
+        rep.group_id = "G1"
+        rep.submitted_by = "x"
+        rep.submitted_name = "y"
+        rep.created_at = 0
+        await db.insert_report(rep, "DYG", home_team="KC")
+
+        rows = await db._query("SELECT home_team FROM matches WHERE group_id='G1'")
+        assert rows[0]["home_team"] == "KC"
+
+        # 旧数据（空 home_team）绑定后回填
+        rep2 = _make_report()
+        rep2.group_id = "G1"
+        rep2.submitted_by = "x"
+        rep2.submitted_name = "y"
+        rep2.created_at = 0
+        await db.insert_report(rep2, "DYG", home_team="")
+        await db.backfill_group_home("G1", "KC")
+        rows = await db._query(
+            "SELECT home_team FROM matches WHERE group_id='G1' ORDER BY id"
+        )
+        assert rows[0]["home_team"] == "KC"
+        assert rows[1]["home_team"] == "KC"
+
+        # 分析按 home_team 过滤
+        pl = await db.get_player_ranking("G1", team="DYG", home_team="KC")
+        assert pl and pl[0]["player"] == "老千"
+        pl_other = await db.get_player_ranking("G1", team="DYG", home_team="OTHER")
+        assert not pl_other
+
+    _with_db(ops)
+
+
 def test_batch_reports_db_correct():
     """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
     text = """战队: KC VS DYG

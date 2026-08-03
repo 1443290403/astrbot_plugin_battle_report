@@ -80,8 +80,11 @@ _HELP_TEXT = (
     "/战报战绩 <玩家名>      个人战绩\n"
     "/战报趋势 <玩家名|队伍> [天数]  胜率走势图\n"
     "/战报导出 [csv|json]   导出数据\n\n"
+    "▎战队绑定\n"
+    "/绑定战队 <战队>        绑定本群战队（管理/群主）\n"
+    "/查看战队              查看本群战队\n\n"
     "▎管理\n"
-    "/战报删除 <战报ID>      仅管理员\n"
+    "/战报删除 <战报ID>      仅管理/群主\n"
     "/战报撤销              撤销自己最近一条\n"
     "/看排表                查看本群战队名单\n"
     "/战报帮助              本帮助"
@@ -99,7 +102,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.1.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.2.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -185,6 +188,14 @@ class BattleReportPlugin(Star):
         if not days or days <= 0:
             return None
         return (datetime.now() - timedelta(days=days)).date().isoformat()
+
+    async def _get_effective_home(self, group_id: str) -> str | None:
+        """群战队绑定优先，其次配置 home_team。"""
+        if self.db_ready and self.db:
+            bound = await self.db.get_group_home(group_id)
+            if bound:
+                return bound
+        return str(self.config.get("home_team", "") or "").strip() or None
 
     async def _is_manager(self, event: AstrMessageEvent) -> bool:
         """是否 AstrBot 管理员 / 群管理 / 群主。"""
@@ -376,6 +387,49 @@ class BattleReportPlugin(Star):
             "📋 本群战队名单：\n" + lineup.format_roster_display(list(grouped.items()))
         )
 
+    # ---------- 群战队绑定 ----------
+
+    @filter.command("绑定战队", alias={"/绑定战队"})
+    async def bind_home(self, event: AstrMessageEvent, team: str = ""):
+        """绑定本群战队（管理/群主）"""
+        err = self._check_db()
+        if err:
+            yield event.plain_result(err)
+            return
+        if not await self._is_manager(event):
+            yield event.plain_result("❌ 仅群管理或群主可绑定战队战队。")
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        team = team.strip().upper()
+        if not team:
+            yield event.plain_result("用法：绑定战队 <战队名>")
+            return
+        await self.db.set_group_home(group_id, team)
+        await self.db.backfill_group_home(group_id, team)
+        yield event.plain_result(f"✅ 本群战队已绑定为：{team}（已有战报已回填）")
+
+    @filter.command("查看战队", alias={"/查看战队"})
+    async def view_home(self, event: AstrMessageEvent):
+        """查看本群战队"""
+        err = self._check_db()
+        if err:
+            yield event.plain_result(err)
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        home = await self.db.get_group_home(group_id)
+        if home:
+            yield event.plain_result(f"🏠 本群战队：{home}")
+        else:
+            yield event.plain_result(
+                "本群尚未绑定战队战队，请管理/群主使用 /绑定战队 <战队> 绑定。"
+            )
+
     # ---------- 追加轮次（/第N轮） ----------
 
     @filter.custom_filter(RoundCommandFilter)
@@ -477,13 +531,6 @@ class BattleReportPlugin(Star):
         raw = event.get_message_str()
         payload = _strip_command(raw, _SUBMIT_CMDS)
 
-        # 队标：首行若不以战报字段开头，视为 /战报 后追加的指定战队
-        team_tag = None
-        first_lines = [ln.strip() for ln in payload.splitlines() if ln.strip()]
-        if first_lines and not first_lines[0].startswith(("战队:", "时间:", "规则:", "地点:")):
-            team_tag = first_lines[0]
-            payload = "\n".join(first_lines[1:])
-
         # 优先从回复引用（含合并转发）提取战报
         reply_reports = await self._extract_reply_reports(event)
         if reply_reports:
@@ -517,6 +564,15 @@ class BattleReportPlugin(Star):
                 )
                 return
 
+        # 上传需群已绑定战队战队
+        bound_home = await self.db.get_group_home(group_id)
+        if not bound_home:
+            yield event.plain_result(
+                "❌ 本群未绑定战队战队，无法上传战报。\n请管理/群主使用 /绑定战队 <战队> 绑定。"
+            )
+            return
+        home_team = bound_home
+
         # 逐个提交，收集回复
         responses: list[str] = []
         for report, warnings in parsed:
@@ -534,11 +590,6 @@ class BattleReportPlugin(Star):
                 )
                 continue
 
-            home_team = (
-                team_tag
-                or str(self.config.get("home_team", "") or "").strip()
-                or report.team_a
-            )
             if home_team == winner:
                 home_result = f"🏆 {home_team} 获胜！"
             elif home_team in (report.team_a, report.team_b):
@@ -547,7 +598,7 @@ class BattleReportPlugin(Star):
                 home_result = f"本场胜者：{winner}"
 
             try:
-                match_id = await self.db.insert_report(report, winner)
+                match_id = await self.db.insert_report(report, winner, home_team)
             except Exception as e:
                 logger.exception("战报入库失败")
                 responses.append(
@@ -603,25 +654,28 @@ class BattleReportPlugin(Star):
         scope = (scope or "个人").strip()
         limit = int(self.config.get("ranking_limit", 10) or 10)
 
-        home_team = str(self.config.get("home_team", "") or "").strip()
+        home_team = await self._get_effective_home(group_id)
         try:
             if scope in ("队伍", "战队", "队"):
-                rows = await self.db.get_team_ranking(group_id, date_from, None, limit)
+                rows = await self.db.get_team_ranking(
+                    group_id, date_from, None, limit, home_team=home_team
+                )
                 yield event.plain_result(stats.format_team_ranking(rows, limit))
             else:
                 min_games = int(self.config.get("min_games", 1) or 1)
                 if scope in ("全部", "所有"):
                     rows = await self.db.get_player_ranking(
-                        group_id, date_from, None, min_games, limit, team=None
+                        group_id, date_from, None, min_games, limit,
+                        team=None, home_team=home_team,
                     )
                     yield event.plain_result(stats.format_player_ranking(rows, limit, min_games))
                 else:
-                    # 默认只统计主体战队选手，显示全部队员（不设上限）
+                    # 默认只统计战队选手，显示全部队员（不设上限）
                     rows = await self.db.get_player_ranking(
                         group_id, date_from, None, min_games, None,
-                        team=(home_team or None),
+                        team=home_team, home_team=home_team,
                     )
-                    note = f"\n（主体战队 {home_team}，共 {len(rows)} 人）" if home_team else ""
+                    note = f"\n（战队 {home_team}，共 {len(rows)} 人）" if home_team else ""
                     yield event.plain_result(stats.format_player_ranking(rows, None, min_games) + note)
         except Exception:
             logger.exception("排行查询失败")
@@ -642,8 +696,11 @@ class BattleReportPlugin(Star):
             yield event.plain_result("用法：战报战绩 <玩家名>")
             return
         days = int(self.config.get("default_days", 0) or 0)
+        home_team = await self._get_effective_home(group_id)
         try:
-            agg = await self.db.get_player_record(group_id, name.strip(), self._date_from(days), None)
+            agg = await self.db.get_player_record(
+                group_id, name.strip(), self._date_from(days), None, home_team=home_team
+            )
             yield event.plain_result(stats.format_player_record(name.strip(), agg))
         except Exception:
             logger.exception("战绩查询失败")
@@ -661,9 +718,10 @@ class BattleReportPlugin(Star):
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
         name = name.strip()
+        home_team = await self._get_effective_home(group_id)
         if not name:
-            # 未指定时默认展示主体战队
-            name = str(self.config.get("home_team", "") or "").strip()
+            # 未指定时默认展示战队
+            name = home_team or ""
         if not name:
             yield event.plain_result("用法：战报趋势 <玩家名或队伍名> [最近N天]")
             return
@@ -671,9 +729,9 @@ class BattleReportPlugin(Star):
         date_from = self._date_from(d)
 
         try:
-            pts = await self.db.get_player_trend(group_id, name, date_from)
+            pts = await self.db.get_player_trend(group_id, name, date_from, home_team=home_team)
             if not pts:
-                pts = await self.db.get_team_trend(group_id, name, date_from)
+                pts = await self.db.get_team_trend(group_id, name, date_from, home_team=home_team)
             if not pts:
                 yield event.plain_result(f"未找到「{name}」最近 {d} 天的数据。")
                 return
