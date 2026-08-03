@@ -10,7 +10,7 @@ from typing import Any
 
 import aiomysql
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -157,19 +157,10 @@ class Database:
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         home_team VARCHAR(64) NOT NULL,
                         player_name VARCHAR(64) NOT NULL,
-                        user_id INT NOT NULL,
+                        user_id INT NULL,
                         created_at INT NOT NULL,
                         UNIQUE KEY uk_team_player (home_team, player_name),
                         INDEX idx_team_user (home_team, user_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-                )
-                await cur.execute(
-                    """CREATE TABLE IF NOT EXISTS team_players (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        home_team VARCHAR(64) NOT NULL,
-                        player_name VARCHAR(64) NOT NULL,
-                        created_at INT NOT NULL,
-                        UNIQUE KEY uk_team_player_pool (home_team, player_name)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
                 # 迁移
@@ -186,18 +177,34 @@ class Database:
                     await cur.execute(
                         "ALTER TABLE matches ADD COLUMN home_team VARCHAR(64) DEFAULT ''"
                     )
-                if current < 5:
-                    # v5：参赛ID表 + 从已有战报回填（按队伍去重）
+                if current < 6:
+                    # v6：单表存储参赛ID池与绑定（player_ids.user_id 可空，NULL=未绑定）
+                    await cur.execute("ALTER TABLE player_ids MODIFY user_id INT NULL")
                     now = int(time.time())
                     await cur.execute(
-                        """INSERT IGNORE INTO team_players (home_team, player_name, created_at)
-                           SELECT d.player_a_team, d.player_a, %s FROM duels d
-                           WHERE d.player_a_team != ''
-                           UNION
-                           SELECT d.player_b_team, d.player_b, %s FROM duels d
-                           WHERE d.player_b_team != ''""",
-                        (now, now),
+                        "SELECT COUNT(*) AS c FROM information_schema.tables "
+                        "WHERE table_schema = DATABASE() AND table_name = 'team_players'"
                     )
+                    has_tp = (await cur.fetchone())[0] > 0
+                    if has_tp:
+                        # 从旧 team_players 迁移池数据（未绑定），再删表
+                        await cur.execute(
+                            """INSERT IGNORE INTO player_ids (home_team, player_name, user_id, created_at)
+                               SELECT home_team, player_name, NULL, %s FROM team_players""",
+                            (now,),
+                        )
+                        await cur.execute("DROP TABLE team_players")
+                    else:
+                        # 从已有战报回填参赛ID池（按队伍去重）
+                        await cur.execute(
+                            """INSERT IGNORE INTO player_ids (home_team, player_name, user_id, created_at)
+                               SELECT d.player_a_team, d.player_a, NULL, %s FROM duels d
+                               WHERE d.player_a_team != ''
+                               UNION
+                               SELECT d.player_b_team, d.player_b, NULL, %s FROM duels d
+                               WHERE d.player_b_team != ''""",
+                            (now, now),
+                        )
                 if current < SCHEMA_VERSION:
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
 
@@ -274,16 +281,16 @@ class Database:
                                 else ("B" if duel.score_a < duel.score_b else "DRAW"),
                             ),
                         )
-                        # 参赛ID按队伍去重入库（发送战报时处理）
+                        # 参赛ID按队伍去重入库（发送战报时处理，保留已有绑定）
                         await cur.execute(
-                            """INSERT INTO team_players (home_team, player_name, created_at)
-                               VALUES (%s, %s, %s) AS new
+                            """INSERT INTO player_ids (home_team, player_name, user_id, created_at)
+                               VALUES (%s, %s, NULL, %s) AS new
                                ON DUPLICATE KEY UPDATE player_name = new.player_name""",
                             (report.team_a, duel.player_a, now),
                         )
                         await cur.execute(
-                            """INSERT INTO team_players (home_team, player_name, created_at)
-                               VALUES (%s, %s, %s) AS new
+                            """INSERT INTO player_ids (home_team, player_name, user_id, created_at)
+                               VALUES (%s, %s, NULL, %s) AS new
                                ON DUPLICATE KEY UPDATE player_name = new.player_name""",
                             (report.team_b, duel.player_b, now),
                         )
@@ -436,10 +443,10 @@ class Database:
         return "ok", uid
 
     async def get_player_pool(self, home_team: str, keyword: str | None = None, limit: int = 50) -> list[str]:
-        """该战队已入库的参赛ID（发送战报时写入 team_players），可选模糊匹配。"""
+        """该战队已入库的参赛ID（发送战报时写入 player_ids），可选模糊匹配。"""
         like = f"%{keyword}%" if keyword else "%"
         rows = await self._query(
-            "SELECT player_name FROM team_players "
+            "SELECT player_name FROM player_ids "
             "WHERE home_team = %s AND player_name LIKE %s ORDER BY player_name LIMIT %s",
             (home_team, like, limit),
         )
