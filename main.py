@@ -86,6 +86,7 @@ _HELP_TEXT = (
     "▎用户与参赛ID\n"
     "/查ID <关键词>          模糊查询本战队参赛ID\n"
     "/绑定ID <参赛ID>        将参赛ID绑定到自己的用户\n"
+    "/改名 <新名字>          修改自己的用户名称\n"
     "/认证                  查看/确认自己的身份\n"
     "/我的战绩              查询自己的总战绩\n"
     "/管理ID [参赛ID] [用户名] 管理/群主查看/绑定参赛ID\n\n"
@@ -108,7 +109,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.6")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.7")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -633,6 +634,31 @@ class BattleReportPlugin(Star):
                 wr2 = round(w * 100.0 / (w + l), 1) if (w + l) else 0.0
                 lines.append(f"  · {p}：胜{w} 负{l} 平{d} 总{t} 胜率{wr2}%")
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("改名", alias={"/改名"})
+    async def rename_me(self, event: AstrMessageEvent, name: str = ""):
+        """修改自己的用户名称（角色名）"""
+        err, home = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        qq = event.get_sender_id()
+        user = await self.db.get_user_by_qq(home, qq)
+        if not user:
+            yield event.plain_result("你尚未绑定参赛ID，使用 /绑定ID <参赛ID> 绑定。")
+            return
+        name = name.strip()
+        if not name:
+            yield event.plain_result("用法：改名 <新名字>")
+            return
+        if len(name) > 30:
+            yield event.plain_result("名字过长（最多 30 字）。")
+            return
+        status = await self.db.rename_user(home, user["id"], name)
+        if status == "conflict":
+            yield event.plain_result(f"❌ 名字「{name}」已被本战队其他用户使用。")
+            return
+        yield event.plain_result(f"✅ 已改名为「{name}」（{home}）。")
 
     # ---------- 追加轮次（/第N轮） ----------
 

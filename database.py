@@ -418,6 +418,20 @@ class Database:
         )
         return rows[0] if rows else None
 
+    async def rename_user(self, home_team: str, user_id: int, new_name: str) -> str:
+        """修改用户角色名（战队内唯一）。返回状态：'ok' / 'conflict'。"""
+        rows = await self._query(
+            "SELECT id FROM users WHERE home_team = %s AND name = %s AND id != %s",
+            (home_team, new_name, user_id),
+        )
+        if rows:
+            return "conflict"
+        await self._execute(
+            "UPDATE users SET name = %s WHERE id = %s",
+            (new_name, user_id),
+        )
+        return "ok"
+
     async def claim_user_by_name(self, home_team: str, name: str, qq_id: str) -> tuple[str, int]:
         """把 QQ 认领到指定名字的用户。
 

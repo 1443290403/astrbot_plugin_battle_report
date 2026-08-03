@@ -315,6 +315,20 @@ def test_player_record_excludes_same_name_other_team():
     _with_db(ops)
 
 
+def test_rename_user():
+    async def ops(db):
+        uid = await db.find_or_create_user("KC", "红莲", "10001")
+        await db.find_or_create_user("KC", "老千", "20002")
+        # 改名成功
+        assert await db.rename_user("KC", uid, "红莲2") == "ok"
+        # 名字冲突（同战队已有）
+        assert await db.rename_user("KC", uid, "老千") == "conflict"
+        user = await db.get_user_by_qq("KC", "10001")
+        assert user["name"] == "红莲2"
+
+    _with_db(ops)
+
+
 def test_batch_reports_db_correct():
     """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
     text = """战队: KC VS DYG
