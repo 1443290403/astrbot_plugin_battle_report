@@ -87,7 +87,7 @@ _HELP_TEXT = (
     "/查ID <关键词>          模糊查询本战队参赛ID\n"
     "/绑定ID <参赛ID>        将参赛ID绑定到自己的用户\n"
     "/改名 <新名字>          修改自己的用户名称\n"
-    "/认证                  查看/确认自己的身份\n"
+    "/我的ID                查看/确认自己的身份\n"
     "/我的战绩              查询自己的总战绩\n"
     "/管理ID [参赛ID] [用户名] 管理/群主查看/绑定参赛ID\n\n"
     "▎管理\n"
@@ -109,7 +109,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.7")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.3.8")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -452,7 +452,7 @@ class BattleReportPlugin(Star):
             return "❌ 本群未绑定战队，请管理/群主使用 /绑定战队 <战队> 绑定。", None
         return None, home
 
-    @filter.command("认证", alias={"/认证"})
+    @filter.command("我的ID", alias={"/我的ID"})
     async def auth(self, event: AstrMessageEvent):
         """查看/确认自己的用户身份"""
         err, home = await self._require_home(event)
@@ -548,7 +548,7 @@ class BattleReportPlugin(Star):
         user = await self.db.get_user_by_id(uid)
         yield event.plain_result(
             f"✅ 参赛ID「{player}」已绑定到你的角色「{user['name']}」。\n"
-            f"可用 /认证 查看身份、/我的战绩 查询汇总战绩。"
+            f"可用 /我的ID 查看身份、/我的战绩 查询汇总战绩。"
         )
 
     @filter.command("管理ID", alias={"/管理ID"})
