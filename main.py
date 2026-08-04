@@ -95,7 +95,7 @@ _HELP_TEXT = (
     "/战报撤销              撤销自己最近一条\n"
     "/战报帮助              本帮助\n\n"
     "▎查询\n"
-    "/查战队                查看全部战队\n\n"
+    "/战队列表               查看全部战队\n\n"
     "▎超级管理（仅超管）\n"
     "/禁群 <群号>            禁用该群全部功能\n"
     "/启群 <群号>            开启该群全部功能\n"
@@ -115,7 +115,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -479,7 +479,7 @@ class BattleReportPlugin(Star):
             f"🚫 群 {gid} 已禁用插件功能。" if banned else f"✅ 群 {gid} 插件功能正常。"
         )
 
-    @filter.command("查战队", alias={"/查战队"})
+    @filter.command("战队列表", alias={"/战队列表"})
     async def list_teams(self, event: AstrMessageEvent):
         """查看全部战队"""
         err = self._check_db()
