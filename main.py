@@ -24,7 +24,6 @@ from astrbot.api.star import Star, StarTools, register
 from . import chart, lineup, stats
 from .lineup import format_duel_results
 from .battle_report_parser import (
-    BattleReport,
     determine_match_winner,
     parse_battle_report,
     split_reports,
@@ -115,7 +114,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.5")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.6")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -177,25 +176,6 @@ class BattleReportPlugin(Star):
         if not self.db_ready or self.db is None:
             return "❌ 数据库未连接，请检查插件配置中的 MySQL 连接信息。"
         return None
-
-    async def _roster_warnings(self, group_id: str, report: BattleReport) -> list[str]:
-        """战报玩家是否都在已排表名单中（软校验，不阻断）。"""
-        try:
-            teams = await self.db.get_teams(group_id)
-        except Exception:
-            return []
-        if not teams:
-            return []
-        declared = {t["player_name"] for t in teams}
-        unknown: list[str] = []
-        for d in report.duels:
-            if d.player_a not in declared:
-                unknown.append(d.player_a)
-            if d.player_b not in declared:
-                unknown.append(d.player_b)
-        if unknown:
-            return [f"⚠️ 以下玩家不在已排表的名单中：{'、'.join(dict.fromkeys(unknown))}"]
-        return []
 
     def _date_from(self, days: int) -> str | None:
         if not days or days <= 0:
@@ -966,8 +946,6 @@ class BattleReportPlugin(Star):
             responses.append(summary)
             if warnings:
                 responses.append("⚠️ 解析警告：\n" + "\n".join(warnings))
-            for w in await self._roster_warnings(group_id, report):
-                responses.append(w)
 
         # 发送：>3 条合并为一个转发消息集，否则逐条
         if len(responses) <= 3:
