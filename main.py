@@ -115,7 +115,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.4")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -346,6 +346,13 @@ class BattleReportPlugin(Star):
         except Exception as e:
             logger.warning(f"提取回复战报失败: {e}")
             return None
+
+    async def _has_reply(self, event: AstrMessageEvent) -> bool:
+        """消息是否带回复引用（轻量检查）。"""
+        try:
+            return any(isinstance(c, Reply) for c in event.get_messages())
+        except Exception:
+            return False
 
     # ---------- 排表 ----------
 
@@ -871,6 +878,15 @@ class BattleReportPlugin(Star):
 
             raw = event.get_message_str()
             payload = _strip_command(raw, _SUBMIT_CMDS)
+
+            # 无参数且无引用时直接提示
+            if not payload.strip() and not await self._has_reply(event):
+                yield event.plain_result(
+                    "请提供战报内容：\n"
+                    "· /战报 + 粘贴战报文本\n"
+                    "· 或回复引用合并转发的战报消息后发送 /战报"
+                )
+                return
 
             # 优先从回复引用（含合并转发）提取战报
             reply_reports = await self._extract_reply_reports(event)
