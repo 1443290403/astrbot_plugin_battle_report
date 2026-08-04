@@ -48,6 +48,12 @@
     "default": "KC",
     "hint": "所有统计默认展示该战队战绩；留空时未绑定战报的群默认展示该战队战绩"
   },
+  "super_admin": {
+    "description": "超级管理员QQ（可禁用/开启群功能）",
+    "type": "string",
+    "default": "1443290403",
+    "hint": "仅该QQ可用 /禁群 /启群 /查群 控制群级功能开关"
+  },
   "pairing_seed": {
     "description": "排表随机种子（留空则每次随机；填写则固定以便复现）",
     "type": "string",

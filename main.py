@@ -93,7 +93,11 @@ _HELP_TEXT = (
     "▎管理\n"
     "/战报删除 <战报ID>      仅管理/群主\n"
     "/战报撤销              撤销自己最近一条\n"
-    "/战报帮助              本帮助"
+    "/战报帮助              本帮助\n\n"
+    "▎超级管理（仅超管）\n"
+    "/禁群 <群号>            禁用该群全部功能\n"
+    "/启群 <群号>            开启该群全部功能\n"
+    "/查群 <群号>            查询群禁用状态"
 )
 
 
@@ -108,7 +112,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.4.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -338,7 +342,7 @@ class BattleReportPlugin(Star):
     @filter.command("排表", alias={"/排表"})
     async def lineup_cmd(self, event: AstrMessageEvent):
         """排表：解析名单 → 存库 → 生成随机配对模板"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -379,7 +383,7 @@ class BattleReportPlugin(Star):
     @filter.command("绑定战队", alias={"/绑定战队"})
     async def bind_home(self, event: AstrMessageEvent, team: str = ""):
         """绑定本群战队（管理/群主）"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -401,7 +405,7 @@ class BattleReportPlugin(Star):
     @filter.command("查看战队", alias={"/查看战队"})
     async def view_home(self, event: AstrMessageEvent):
         """查看本群战队"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -417,11 +421,87 @@ class BattleReportPlugin(Star):
                 "本群尚未绑定战队，请管理/群主使用 /绑定战队 <战队> 绑定。"
             )
 
+    # ---------- 群禁用管理（超级管理员） ----------
+
+    async def _admin_check(self, event) -> str | None:
+        """组合检查：数据库就绪 + 超级管理员。"""
+        err = self._check_db()
+        if err:
+            return err
+        if not self._is_super_admin(event):
+            return "❌ 仅超级管理员可执行此操作。"
+        return None
+
+    @filter.command("禁群", alias={"/禁群"})
+    async def ban_group(self, event: AstrMessageEvent, group_id: str = ""):
+        """禁用某个群的全部插件功能（仅超级管理员）"""
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        gid = group_id.strip()
+        if not gid:
+            yield event.plain_result("用法：禁群 <群号>")
+            return
+        await self.db.set_group_ban(gid, True)
+        yield event.plain_result(f"🚫 群 {gid} 已禁用插件功能。")
+
+    @filter.command("启群", alias={"/启群"})
+    async def enable_group(self, event: AstrMessageEvent, group_id: str = ""):
+        """开启某个群的全部插件功能（仅超级管理员）"""
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        gid = group_id.strip()
+        if not gid:
+            yield event.plain_result("用法：启群 <群号>")
+            return
+        await self.db.set_group_ban(gid, False)
+        yield event.plain_result(f"✅ 群 {gid} 已启用插件功能。")
+
+    @filter.command("查群", alias={"/查群"})
+    async def check_group(self, event: AstrMessageEvent, group_id: str = ""):
+        """查询群的禁用状态（仅超级管理员）"""
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        gid = group_id.strip()
+        if not gid:
+            yield event.plain_result("用法：查群 <群号>")
+            return
+        banned = await self.db.get_group_ban(gid)
+        yield event.plain_result(
+            f"🚫 群 {gid} 已禁用插件功能。" if banned else f"✅ 群 {gid} 插件功能正常。"
+        )
+
     # ---------- 用户与参赛ID ----------
+
+    def _is_super_admin(self, event) -> bool:
+        """是否超级管理员。"""
+        return str(event.get_sender_id()) == str(
+            self.config.get("super_admin", "1443290403") or ""
+        )
+
+    async def _check_enabled(self, event) -> str | None:
+        """群被禁用时返回提示文案。"""
+        group_id = event.get_group_id()
+        if group_id and self.db_ready and self.db:
+            if await self.db.get_group_ban(group_id):
+                return "🚫 本群已被管理员禁用插件功能。"
+        return None
+
+    async def _group_check(self, event) -> str | None:
+        """组合检查：数据库就绪 + 群未被禁用。"""
+        err = await self._group_check(event)
+        if err:
+            return err
+        return await self._check_enabled(event)
 
     async def _require_home(self, event) -> tuple[str | None, str | None]:
         """获取群号与绑定战队；失败时返回 (错误文案, None)。"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             return err, None
         group_id = event.get_group_id()
@@ -648,6 +728,10 @@ class BattleReportPlugin(Star):
         if not group_id:
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
+        disabled = await self._check_enabled(event)
+        if disabled:
+            yield event.plain_result(disabled)
+            return
 
         text = event.get_message_str().strip()
         m = _ROUND_CMD_RE.match(text)
@@ -684,6 +768,10 @@ class BattleReportPlugin(Star):
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        disabled = await self._check_enabled(event)
+        if disabled:
+            yield event.plain_result(disabled)
             return
 
         raw = event.get_message_str()
@@ -727,7 +815,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报", alias={"/战报"})
     async def submit_report(self, event: AstrMessageEvent):
         """提交战报（可一次粘贴多份，按『战队:』行拆分）"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -847,7 +935,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报排行", alias={"/战报排行"})
     async def ranking(self, event: AstrMessageEvent, scope: str = ""):
         """排行榜（个人/队伍）"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -891,7 +979,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报战绩", alias={"/战报战绩"})
     async def record(self, event: AstrMessageEvent, name: str = ""):
         """个人战绩"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -916,7 +1004,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报趋势", alias={"/战报趋势"})
     async def trend(self, event: AstrMessageEvent, name: str = "", days: str = ""):
         """胜率走势图"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -962,7 +1050,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报导出", alias={"/战报导出"})
     async def export(self, event: AstrMessageEvent, fmt: str = ""):
         """导出战报数据（csv/json）"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -1017,7 +1105,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报删除", alias={"/战报删除"})
     async def delete(self, event: AstrMessageEvent, match_id: str = ""):
         """按 ID 删除战报（仅管理员）"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
@@ -1037,7 +1125,7 @@ class BattleReportPlugin(Star):
     @filter.command("战报撤销", alias={"/战报撤销"})
     async def undo(self, event: AstrMessageEvent):
         """撤销自己最近一条战报"""
-        err = self._check_db()
+        err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return

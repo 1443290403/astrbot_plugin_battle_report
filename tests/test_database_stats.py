@@ -329,6 +329,17 @@ def test_rename_user():
     _with_db(ops)
 
 
+def test_group_ban():
+    async def ops(db):
+        assert await db.get_group_ban("G1") is False
+        await db.set_group_ban("G1", True)
+        assert await db.get_group_ban("G1") is True
+        await db.set_group_ban("G1", False)
+        assert await db.get_group_ban("G1") is False
+
+    _with_db(ops)
+
+
 def test_batch_reports_db_correct():
     """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
     text = """战队: KC VS DYG

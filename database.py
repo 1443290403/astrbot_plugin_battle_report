@@ -10,7 +10,7 @@ from typing import Any
 
 import aiomysql
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -176,6 +176,15 @@ class Database:
                     # v3：matches 增加 home_team 列（记录上传方主体战队）
                     await cur.execute(
                         "ALTER TABLE matches ADD COLUMN home_team VARCHAR(64) DEFAULT ''"
+                    )
+                if current < 7:
+                    # v7：群禁用表（超级管理员控制群级功能开关）
+                    await cur.execute(
+                        """CREATE TABLE IF NOT EXISTS group_ban (
+                            group_id VARCHAR(64) PRIMARY KEY,
+                            banned INT NOT NULL,
+                            created_at INT NOT NULL
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                     )
                 if current < 6:
                     # v6：单表存储参赛ID池与绑定（player_ids.user_id 可空，NULL=未绑定）
@@ -371,6 +380,25 @@ class Database:
             "UPDATE matches SET home_team = %s WHERE group_id = %s AND home_team = ''",
             (home_team, group_id),
         )
+
+    # ---------- 群禁用 ----------
+
+    async def set_group_ban(self, group_id: str, banned: bool) -> None:
+        """设置群禁用状态（超级管理员控制）。"""
+        await self._execute(
+            """INSERT INTO group_ban (group_id, banned, created_at)
+               VALUES (%s, %s, %s) AS new
+               ON DUPLICATE KEY UPDATE banned = new.banned""",
+            (group_id, 1 if banned else 0, int(time.time())),
+        )
+
+    async def get_group_ban(self, group_id: str) -> bool:
+        """群是否被禁用。"""
+        rows = await self._query(
+            "SELECT banned FROM group_ban WHERE group_id = %s",
+            (group_id,),
+        )
+        return bool(rows and rows[0]["banned"])
 
     # ---------- 用户与参赛ID ----------
 
