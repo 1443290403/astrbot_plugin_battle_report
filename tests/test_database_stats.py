@@ -340,6 +340,25 @@ def test_group_ban():
     _with_db(ops)
 
 
+def test_get_all_teams_and_groups():
+    async def ops(db):
+        await db.set_group_home("G1", "KC")
+        await db.set_group_home("G2", "DYG")
+        await db.set_group_ban("G3", True)  # 禁用但未绑定
+        teams = await db.get_all_teams()
+        assert "KC" in teams and "DYG" in teams
+        groups = await db.get_all_groups()
+        by_id = {g["group_id"]: g for g in groups}
+        assert by_id["G1"]["home_team"] == "KC" and by_id["G1"]["banned"] == 0
+        assert by_id["G2"]["home_team"] == "DYG"
+        assert by_id["G3"]["banned"] == 1  # 禁用群也列出
+        # 按战队过滤
+        kc = await db.get_all_groups("KC")
+        assert [g["group_id"] for g in kc] == ["G1"]
+
+    _with_db(ops)
+
+
 def test_batch_reports_db_correct():
     """批量提交两份战报（队伍顺序相反），数据库数据必须各自正确。"""
     text = """战队: KC VS DYG

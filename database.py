@@ -400,6 +400,34 @@ class Database:
         )
         return bool(rows and rows[0]["banned"])
 
+    async def get_all_teams(self) -> list[str]:
+        """全部战队（来自绑定、参赛ID、战报对阵）。"""
+        rows = await self._query(
+            """SELECT DISTINCT t.team FROM (
+                   SELECT home_team AS team FROM group_home WHERE home_team != ''
+                   UNION SELECT home_team FROM player_ids WHERE home_team != ''
+                   UNION SELECT team_a FROM matches WHERE team_a != ''
+                   UNION SELECT team_b FROM matches WHERE team_b != ''
+               ) t ORDER BY t.team"""
+        )
+        return [r["team"] for r in rows]
+
+    async def get_all_groups(self, home_team: str | None = None) -> list[dict]:
+        """全部群及其绑定战队与禁用状态；可按战队过滤。"""
+        rows = await self._query(
+            """SELECT t.group_id, t.home_team, t.banned FROM (
+                   SELECT g.group_id, g.home_team, COALESCE(b.banned, 0) AS banned
+                   FROM group_home g LEFT JOIN group_ban b ON g.group_id = b.group_id
+                   UNION
+                   SELECT b.group_id, '', b.banned FROM group_ban b
+                   LEFT JOIN group_home g ON b.group_id = g.group_id
+                   WHERE g.group_id IS NULL
+               ) t ORDER BY t.group_id"""
+        )
+        if home_team:
+            rows = [r for r in rows if r["home_team"] == home_team]
+        return rows
+
     # ---------- 用户与参赛ID ----------
 
     async def find_or_create_user(self, home_team: str, name: str, qq_id: str = "") -> int:

@@ -2,6 +2,6 @@ name: astrbot_plugin_battle_report
 display_name: 战队对战战报
 desc: 面向 QQ 群聊的战队对战战报插件：排表、战报提交、个人/队伍排行、趋势图、数据导出。数据存储于线上 MySQL。
 short_desc: 战队战报：排表、提交、排行、趋势、导出
-version: 1.5.0
+version: 1.5.1
 author: RLotusX
 repo: https://github.com/1443290403/astrbot_plugin_battle_report

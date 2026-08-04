@@ -94,10 +94,13 @@ _HELP_TEXT = (
     "/战报删除 <战报ID>      仅管理/群主\n"
     "/战报撤销              撤销自己最近一条\n"
     "/战报帮助              本帮助\n\n"
+    "▎查询\n"
+    "/查战队                查看全部战队\n\n"
     "▎超级管理（仅超管）\n"
     "/禁群 <群号>            禁用该群全部功能\n"
     "/启群 <群号>            开启该群全部功能\n"
-    "/查群 <群号>            查询群禁用状态"
+    "/查群 <群号>            查询群禁用状态\n"
+    "/群列表 [战队]          查看全部群（可按战队过滤）"
 )
 
 
@@ -112,7 +115,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -475,6 +478,41 @@ class BattleReportPlugin(Star):
         yield event.plain_result(
             f"🚫 群 {gid} 已禁用插件功能。" if banned else f"✅ 群 {gid} 插件功能正常。"
         )
+
+    @filter.command("查战队", alias={"/查战队"})
+    async def list_teams(self, event: AstrMessageEvent):
+        """查看全部战队"""
+        err = self._check_db()
+        if err:
+            yield event.plain_result(err)
+            return
+        teams = await self.db.get_all_teams()
+        if not teams:
+            yield event.plain_result("暂无战队。")
+            return
+        yield event.plain_result("🏆 全部战队：\n" + "、".join(teams))
+
+    @filter.command("群列表", alias={"/群列表"})
+    async def list_groups(self, event: AstrMessageEvent, team: str = ""):
+        """查看全部群及其绑定战队（可按战队过滤，仅超管）"""
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        filter_team = team.strip().upper() or None
+        groups = await self.db.get_all_groups(filter_team)
+        if not groups:
+            yield event.plain_result(
+                f"暂无群。" if not filter_team else f"暂无绑定 {filter_team} 的群。"
+            )
+            return
+        title = "📋 群列表：" if not filter_team else f"📋 绑定 {filter_team} 的群："
+        lines = [title]
+        for g in groups:
+            mark = "🚫" if g["banned"] else "✅"
+            home = g["home_team"] or "未绑定"
+            lines.append(f"{mark} {g['group_id']} → {home}")
+        yield event.plain_result("\n".join(lines))
 
     # ---------- 用户与参赛ID ----------
 
