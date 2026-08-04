@@ -13,9 +13,9 @@
     规则: 人头赛
     地点: 435823386
     ------第一轮------
-    红莲 0:0 红大
-    凯撒亮 0:0 蓝大
-    悠悠球 0:0 老千
+    红莲  0:0  红大
+    凯撒亮  0:0  蓝大
+    悠悠球  0:0  老千
     ------第二轮------
 
 一方人数较少时，缺人的位置以 TK 占位，由用户替换为实际玩家名。
@@ -146,7 +146,7 @@ def generate_template(
     for i in range(count):
         p_a = a[i] if i < len(a) else "TK"
         p_b = b[i] if i < len(b) else "TK"
-        round1_lines.append(f"{p_a} 0:0 {p_b}")
+        round1_lines.append(f"{p_a}  0:0  {p_b}")
 
     lines = [
         f"战队: {team_a} VS {team_b}",
@@ -283,7 +283,7 @@ def build_next_round(
         for i in range(count):
             pa = a[i] if i < len(a) else "TK"
             pb = b[i] if i < len(b) else "TK"
-            added.append(f"{pa} 0:0 {pb}")
+            added.append(f"{pa}  0:0  {pb}")
     else:
         # 玩家→队伍映射（左=team_a，右=team_b），用于按队伍对齐对局顺序
         team_map = {}
@@ -321,7 +321,7 @@ def build_next_round(
                     continue
             if team_a:
                 pa, sa, pb, sb = _align_team_order(pa, sa, pb, sb, team_map, team_a)
-            added.append(f"{pa} {sa}:{sb} {pb}")
+            added.append(f"{pa}  {sa}:{sb}  {pb}")
         if errors and not added:
             return RoundBuildResult(False, draft_text, [], errors)
         if not added:
@@ -428,10 +428,10 @@ def record_result(
     if target:
         line_idx, pa, pb, player_is_a = target
         if player_is_a:
-            new_line = f"{pa} {my_score}:{opp_score} {pb}"
+            new_line = f"{pa}  {my_score}:{opp_score}  {pb}"
         else:
             # 选手在右侧：保持左侧玩家不变，右侧填选手比分
-            new_line = f"{pa} {opp_score}:{my_score} {pb}"
+            new_line = f"{pa}  {opp_score}:{my_score}  {pb}"
         lines[line_idx] = new_line
         new_text = "\n".join(lines).rstrip() + "\n"
         return RecordResult(True, new_text, [new_line], [])
@@ -452,7 +452,7 @@ def record_result(
     p1, s1, p2, s2 = player, my_score, opponent, opp_score
     if team_a:
         p1, s1, p2, s2 = _align_team_order(p1, s1, p2, s2, team_map, team_a)
-    new_line = f"{p1} {s1}:{s2} {p2}"
+    new_line = f"{p1}  {s1}:{s2}  {p2}"
     new_text = _append_round(draft_text, latest_round, [new_line])
     return RecordResult(True, new_text, [new_line], [])
 
@@ -481,7 +481,8 @@ def record_from_info(draft_text: str, info: str) -> RecordResult:
 def format_duel_results(report, home_team: str) -> str:
     """每场对阵结果（主体战队视角），供提交后核对。
 
-    格式：第一轮 玩家 比分 vs 对手 ✅ 胜 / ❌ 负 / ➖ 平
+    格式：第一轮 玩家 比分 vs 对手 ✅ 胜 / ❌ 负 / ➖ 平。
+    玩家 ID 一律显示干净 ID（替补由 duels.a_sub/b_sub 标志记录，不在核对信息中标出）。
     """
     home = home_team if home_team in (report.team_a, report.team_b) else report.team_a
     lines = []
@@ -500,3 +501,84 @@ def format_duel_results(report, home_team: str) -> str:
             f"第{_int_to_cn(d.round_no)}轮 {hp} {hs}:{os_} vs {op} {mark}"
         )
     return "\n".join(lines)
+
+
+def format_duels_block(duels: list[dict]) -> str:
+    """对局段（含轮次分隔），对阵行双空格：`玩家A  比分  玩家B`，替补玩家名后标 (替)。"""
+    rounds: dict[int, list[dict]] = {}
+    for d in duels:
+        rounds.setdefault(d["round_no"], []).append(d)
+    lines = []
+    for round_no in sorted(rounds):
+        lines.append(f"------第{_int_to_cn(round_no)}轮------")
+        for d in rounds[round_no]:
+            pa = f"{d['player_a']}(替)" if d.get("a_sub") else d["player_a"]
+            pb = f"{d['player_b']}(替)" if d.get("b_sub") else d["player_b"]
+            lines.append(f"{pa}  {d['score_a']}:{d['score_b']}  {pb}")
+    return "\n".join(lines)
+
+
+def format_report(
+    team_a: str, team_b: str, match_time: str, rule: str, location: str,
+    duels: list[dict],
+) -> str:
+    """从结构化字段还原战报文本（raw_text 缺失时的兜底路径）。
+
+    duels 为按 seq 排序的对局 dict 列表（round_no/player_a/score_a/player_b/score_b）。
+    按轮次分组输出，对阵行双空格，顺序与输入一致。
+    """
+    lines = [
+        f"战队: {team_a} VS {team_b}",
+        f"时间: {match_time}",
+        f"规则: {rule}",
+        f"地点: {location}",
+    ]
+    body = format_duels_block(duels)
+    return "\n".join(lines) + (("\n" + body) if body else "")
+
+
+def _header_block(raw: str) -> str:
+    """取原始文本中第一个轮次分隔符之前的头部行（战队/时间/规则/地点）。"""
+    lines = raw.split("\n")
+    for i, ln in enumerate(lines):
+        if ROUND_RE.match(ln):
+            return "\n".join(lines[:i])
+    return raw.strip()
+
+
+def report_to_text(r: dict) -> str:
+    """生成单份战报的导出文本。
+
+    raw_text 存在时头部逐字保留（时间格式等不变），对局段按双空格重建，保证
+    『参赛ID与比分间为两个空格』；raw_text 缺失时全量结构化兜底。
+    """
+    body = format_duels_block(r["duels"])
+    if r["raw_text"]:
+        head = _header_block(r["raw_text"])
+        return (head + "\n" + body) if head else body
+    return format_report(
+        r["team_a"], r["team_b"], r["match_time"], r["rule"], r["location"], r["duels"]
+    )
+
+
+def filter_report_outcome(reports: list[dict], outcome: str) -> list[dict]:
+    """按导出范围过滤战报聚合 dict 列表。
+
+    - 全部：不过滤
+    - 胜场：matches.winner == matches.home_team（主体战队获胜）
+    - 负场：主体战队在对阵内且胜负已定且 winner != home_team（主体战队战败）
+    主体不在对阵内或胜负未定的，胜/负过滤中排除。
+    """
+    if outcome != "胜场" and outcome != "负场":
+        return list(reports)
+    result = []
+    for r in reports:
+        home = r["home_team"] or ""
+        winner = r["winner"] or ""
+        if outcome == "胜场":
+            if home and winner == home:
+                result.append(r)
+        else:  # 负场
+            if home and home in (r["team_a"], r["team_b"]) and winner and winner != home:
+                result.append(r)
+    return result

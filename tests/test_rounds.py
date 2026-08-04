@@ -58,35 +58,35 @@ def test_random_match_prev_winners():
 def test_names_only():
     r = build_next_round(DRAFT, 2, ["红莲 蓝大"])
     assert r.ok
-    assert "红莲 0:0 蓝大" in r.new_text
+    assert "红莲  0:0  蓝大" in r.new_text
 
 
 def test_names_with_scores():
-    r = build_next_round(DRAFT, 2, ["红莲 2:0 蓝大"])
+    r = build_next_round(DRAFT, 2, ["红莲  2:0  蓝大"])
     assert r.ok
-    assert "红莲 2:0 蓝大" in r.new_text
+    assert "红莲  2:0  蓝大" in r.new_text
 
 
 def test_compact_score_20_means_2_0():
     r = build_next_round(DRAFT, 2, ["红莲 20 蓝大"])
     assert r.ok
-    assert "红莲 2:0 蓝大" in r.new_text
+    assert "红莲  2:0  蓝大" in r.new_text
 
 
 def test_compact_score_12_means_1_2():
     r = build_next_round(DRAFT, 2, ["凯撒亮 12 老千"])
     assert r.ok
-    assert "凯撒亮 1:2 老千" in r.new_text
+    assert "凯撒亮  1:2  老千" in r.new_text
 
 
 def test_append_multiple_lines():
-    r1 = build_next_round(DRAFT, 2, ["红莲 2:0 蓝大"])
+    r1 = build_next_round(DRAFT, 2, ["红莲  2:0  蓝大"])
     assert r1.ok
-    r2 = build_next_round(r1.new_text, 2, ["凯撒亮 1:2 老千"])
+    r2 = build_next_round(r1.new_text, 2, ["凯撒亮  1:2  老千"])
     assert r2.ok
     section = _round_section(r2.new_text, 2)
-    assert "红莲 2:0 蓝大" in section
-    assert "凯撒亮 1:2 老千" in section
+    assert "红莲  2:0  蓝大" in section
+    assert "凯撒亮  1:2  老千" in section
 
 
 def test_prev_round_all_zero_fails():
@@ -113,14 +113,14 @@ def test_round_align_team_order():
     # 空枭属 TEST（右），YE 属 TEST1（左）；输入顺序反了 → 对齐为 YE 1:2 空枭
     r = build_next_round(TEAM_DRAFT, 2, ["空枭 21 YE"])
     assert r.ok
-    assert "YE 1:2 空枭" in r.new_text
-    assert "空枭 2:1 YE" not in r.new_text
+    assert "YE  1:2  空枭" in r.new_text
+    assert "空枭  2:1  YE" not in r.new_text
 
 
 def test_round_align_team_order_names_only():
     r = build_next_round(TEAM_DRAFT, 2, ["空枭 YE"])
     assert r.ok
-    assert "YE 0:0 空枭" in r.new_text
+    assert "YE  0:0  空枭" in r.new_text
 
 
 def test_format_duel_results():
@@ -138,11 +138,32 @@ def test_format_duel_results():
     assert "第一轮 红大 0:2 vs YE ❌ 负" in text2
 
 
+def test_format_duel_results_sub_clean_id():
+    # 替补在核对信息里只显示干净 ID（替补标志在库中，不在核对信息标出）
+    from battle_report_parser import parse_battle_report
+    from lineup import format_duel_results
+
+    r = parse_battle_report("""战队: TEST1 VS TEST
+时间: 2026.08.02
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+YE 2:0 红大（替）
+悠悠球 （替） 1:2 空枭""")
+    assert not r.errors, r.errors
+    assert r.report.duels[0].b_sub is True  # 替补标志已记录
+    assert r.report.duels[1].a_sub is True
+    text = format_duel_results(r.report, "TEST1")
+    assert "YE 2:0 vs 红大 ✅ 胜" in text
+    assert "悠悠球 1:2 vs 空枭 ❌ 负" in text
+    assert "(替)" not in text
+
+
 def test_round_partial_success():
     # 一行有效一行无效：有效照加，无效进 errors
     r = build_next_round(TEAM_DRAFT, 2, ["红莲 20 黄大", "这一行无法解析"])
     assert r.ok
-    assert "红莲 2:0 黄大" in r.new_text
+    assert "红莲  2:0  黄大" in r.new_text
     assert r.errors and any("无法解析" in e for e in r.errors)
 
 

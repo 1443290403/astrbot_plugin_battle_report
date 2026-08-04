@@ -58,6 +58,19 @@ def format_team_ranking(rows: list[dict], limit: int = 10) -> str:
     return "\n".join(_rank_lines(rows, "team", f"🏆 队伍积分榜（前 {limit}）"))
 
 
+def format_home_team_vs(home_team: str, rows: list[dict]) -> str:
+    """主体战队对战各对手的记录文本（胜/负/总场/胜率）。"""
+    if not rows:
+        return f"{home_team} 暂无对战记录。"
+    lines = [f"🏆 {home_team} 对战记录："]
+    for r in rows:
+        lines.append(
+            f"vs {r['opponent']}  胜{r['wins']} 负{r['losses']}  "
+            f"总{r['total']}  胜率{r['win_rate']}%"
+        )
+    return "\n".join(lines)
+
+
 def format_player_record(player: str, agg: dict) -> str:
     """单个玩家战绩文本。agg 含 wins/losses/draws/total。"""
     wins = int(agg.get("wins", 0))

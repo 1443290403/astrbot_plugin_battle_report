@@ -10,7 +10,7 @@ from typing import Any
 
 import aiomysql
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 10
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -84,7 +84,7 @@ class Database:
                 await cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS matches (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         group_id VARCHAR(64) NOT NULL,
                         team_a VARCHAR(64) NOT NULL,
                         team_b VARCHAR(64) NOT NULL,
@@ -93,7 +93,7 @@ class Database:
                         location VARCHAR(64) DEFAULT '',
                         submitted_by VARCHAR(64) DEFAULT '',
                         submitted_name VARCHAR(128) DEFAULT '',
-                        created_at INT NOT NULL,
+                        created_at BIGINT NOT NULL,
                         INDEX idx_matches_group_time (group_id, match_time),
                         INDEX idx_matches_group (group_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -102,8 +102,8 @@ class Database:
                 await cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS duels (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        match_id INT NOT NULL,
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        match_id BIGINT NOT NULL,
                         round_no INT NOT NULL,
                         player_a VARCHAR(64) NOT NULL,
                         score_a INT NOT NULL,
@@ -123,7 +123,7 @@ class Database:
                 await cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS teams (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         group_id VARCHAR(64) NOT NULL,
                         team_name VARCHAR(64) NOT NULL,
                         player_name VARCHAR(64) NOT NULL,
@@ -139,26 +139,26 @@ class Database:
                     """CREATE TABLE IF NOT EXISTS group_home (
                         group_id VARCHAR(64) PRIMARY KEY,
                         home_team VARCHAR(64) NOT NULL,
-                        created_at INT NOT NULL
+                        created_at BIGINT NOT NULL
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
                 await cur.execute(
                     """CREATE TABLE IF NOT EXISTS users (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         home_team VARCHAR(64) NOT NULL,
                         name VARCHAR(64) NOT NULL,
                         qq_id VARCHAR(64) DEFAULT '',
-                        created_at INT NOT NULL,
+                        created_at BIGINT NOT NULL,
                         UNIQUE KEY uk_team_name (home_team, name)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
                 await cur.execute(
                     """CREATE TABLE IF NOT EXISTS player_ids (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
                         home_team VARCHAR(64) NOT NULL,
                         player_name VARCHAR(64) NOT NULL,
-                        user_id INT NULL,
-                        created_at INT NOT NULL,
+                        user_id BIGINT NULL,
+                        created_at BIGINT NOT NULL,
                         UNIQUE KEY uk_team_player (home_team, player_name),
                         INDEX idx_team_user (home_team, user_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
@@ -183,7 +183,7 @@ class Database:
                         """CREATE TABLE IF NOT EXISTS group_ban (
                             group_id VARCHAR(64) PRIMARY KEY,
                             banned INT NOT NULL,
-                            created_at INT NOT NULL
+                            created_at BIGINT NOT NULL
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                     )
                 if current < 6:
@@ -214,6 +214,53 @@ class Database:
                                WHERE d.player_b_team != ''""",
                             (now, now),
                         )
+                if current < 8:
+                    # v8：matches 记录原始战报文本（逐字回放导出）；duels 记录对阵顺序
+                    await cur.execute("ALTER TABLE matches ADD COLUMN raw_text MEDIUMTEXT")
+                    await cur.execute("ALTER TABLE duels ADD COLUMN seq INT NOT NULL DEFAULT 0")
+                    # 回填旧数据 seq：按 match 内 id 顺序编号
+                    await cur.execute(
+                        """UPDATE duels d JOIN (
+                               SELECT id, ROW_NUMBER() OVER (PARTITION BY match_id ORDER BY id) rn
+                               FROM duels
+                           ) x ON d.id = x.id SET d.seq = x.rn"""
+                    )
+                if current < 9:
+                    # v9：duels 记录替补标识（a_sub / b_sub，1=替补）
+                    await cur.execute("ALTER TABLE duels ADD COLUMN a_sub TINYINT NOT NULL DEFAULT 0")
+                    await cur.execute("ALTER TABLE duels ADD COLUMN b_sub TINYINT NOT NULL DEFAULT 0")
+                if current < 10:
+                    # v10：自增主键/外键/QQ用户ID/时间戳从 INT 扩容到 BIGINT，
+                    # 防止数据量达十位后自增溢出、QQ号溢出、以及 2038 年时间戳溢出。
+                    await cur.execute(
+                        "SELECT COUNT(*) AS n FROM information_schema.TABLE_CONSTRAINTS "
+                        "WHERE constraint_schema = DATABASE() AND table_name = 'duels' "
+                        "AND constraint_name = 'fk_duels_match'"
+                    )
+                    fk_exists = (await cur.fetchone())[0] > 0
+                    if fk_exists:
+                        # 外键会阻止 match_id 类型变更，先删后加
+                        await cur.execute("ALTER TABLE duels DROP FOREIGN KEY fk_duels_match")
+                    for sql in (
+                        "ALTER TABLE matches MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                        "ALTER TABLE matches MODIFY created_at BIGINT NOT NULL",
+                        "ALTER TABLE duels MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                        "ALTER TABLE duels MODIFY match_id BIGINT NOT NULL",
+                        "ALTER TABLE teams MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                        "ALTER TABLE users MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                        "ALTER TABLE users MODIFY created_at BIGINT NOT NULL",
+                        "ALTER TABLE player_ids MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                        "ALTER TABLE player_ids MODIFY user_id BIGINT NULL",
+                        "ALTER TABLE player_ids MODIFY created_at BIGINT NOT NULL",
+                        "ALTER TABLE group_home MODIFY created_at BIGINT NOT NULL",
+                        "ALTER TABLE group_ban MODIFY created_at BIGINT NOT NULL",
+                    ):
+                        await cur.execute(sql)
+                    if fk_exists:
+                        await cur.execute(
+                            "ALTER TABLE duels ADD CONSTRAINT fk_duels_match FOREIGN KEY (match_id) "
+                            "REFERENCES matches(id) ON DELETE CASCADE"
+                        )
                 if current < SCHEMA_VERSION:
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
 
@@ -243,8 +290,8 @@ class Database:
 
     # ---------- 战报写入 / 删除 ----------
 
-    async def insert_report(self, report, winner: str = "", home_team: str = "") -> int:
-        """插入一份战报（match + duels），返回 match_id。winner 为胜者，home_team 为上传方主体战队。"""
+    async def insert_report(self, report, winner: str = "", home_team: str = "", raw_text: str = "") -> int:
+        """插入一份战报（match + duels），返回 match_id。winner 为胜者，home_team 为上传方主体战队，raw_text 为原始战报文本（逐字回放导出用）。"""
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             await conn.begin()
@@ -253,8 +300,8 @@ class Database:
                     await cur.execute(
                         """INSERT INTO matches
                            (group_id, team_a, team_b, match_time, rule, location,
-                            submitted_by, submitted_name, created_at, winner, home_team)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            submitted_by, submitted_name, created_at, winner, home_team, raw_text)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             report.group_id,
                             report.team_a,
@@ -267,16 +314,17 @@ class Database:
                             int(report.created_at) if report.created_at else 0,
                             winner or "",
                             home_team or "",
+                            raw_text or "",
                         ),
                     )
                     match_id = cur.lastrowid
                     now = int(time.time())
-                    for duel in report.duels:
+                    for seq, duel in enumerate(report.duels):
                         await cur.execute(
                             """INSERT INTO duels
                                (match_id, round_no, player_a, score_a, player_b, score_b,
-                                player_a_team, player_b_team, result)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                player_a_team, player_b_team, result, seq, a_sub, b_sub)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             (
                                 match_id,
                                 duel.round_no,
@@ -288,6 +336,9 @@ class Database:
                                 report.team_b,
                                 "A" if duel.score_a > duel.score_b
                                 else ("B" if duel.score_a < duel.score_b else "DRAW"),
+                                seq,
+                                1 if getattr(duel, "a_sub", False) else 0,
+                                1 if getattr(duel, "b_sub", False) else 0,
                             ),
                         )
                         # 参赛ID按队伍去重入库（发送战报时处理，保留已有绑定）
@@ -310,12 +361,32 @@ class Database:
                 raise
 
     async def delete_match(self, group_id: str, match_id: int) -> bool:
-        """删除指定群、指定 ID 的战报（校验群归属），返回是否删除成功。"""
-        cur = await self._execute(
-            "DELETE FROM matches WHERE id = %s AND group_id = %s",
-            (match_id, group_id),
-        )
-        return cur > 0
+        """删除指定群、指定 ID 的战报及其关联对局（校验群归属），返回是否删除成功。
+
+        先按群归属校验后删除 duels 关联数据，再删除 matches 本身。若外键
+        ON DELETE CASCADE 未生效（旧表结构），duels 不会残留。
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """DELETE FROM duels
+                           WHERE match_id IN (SELECT id FROM matches
+                                              WHERE id = %s AND group_id = %s)""",
+                        (match_id, group_id),
+                    )
+                    await cur.execute(
+                        "DELETE FROM matches WHERE id = %s AND group_id = %s",
+                        (match_id, group_id),
+                    )
+                    deleted = cur.rowcount
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return deleted > 0
 
     async def get_last_match_by_submitter(self, group_id: str, submitter: str) -> int | None:
         """查询某提交者在该群最近一条战报 ID。"""
@@ -564,6 +635,13 @@ class Database:
             (home_team, player_name, user_id, int(time.time())),
         )
 
+    async def unbind_player(self, home_team: str, player_name: str) -> None:
+        """解除参赛ID绑定（user_id 置 NULL）。"""
+        await self._execute(
+            "UPDATE player_ids SET user_id = NULL WHERE home_team = %s AND player_name = %s",
+            (home_team, player_name),
+        )
+
     async def get_user_players(self, home_team: str, user_id: int) -> list[str]:
         """某用户绑定的参赛ID列表。"""
         rows = await self._query(
@@ -571,6 +649,29 @@ class Database:
             (home_team, user_id),
         )
         return [r["player_name"] for r in rows]
+
+    async def resolve_role(self, home_team: str, name: str) -> dict | None:
+        """把名字解析为角色：name 可以是已绑定的参赛ID 或 角色名。
+
+        命中返回 {"user_name": 角色名, "players": [该角色全部参赛ID]}；无绑定或角色无参赛ID返回 None。
+        """
+        rows = await self._query(
+            """SELECT u.id AS user_id, u.name AS user_name
+               FROM player_ids pi JOIN users u ON u.home_team = pi.home_team AND u.id = pi.user_id
+               WHERE pi.home_team = %s AND pi.player_name = %s LIMIT 1""",
+            (home_team, name),
+        )
+        if not rows:
+            rows = await self._query(
+                "SELECT id AS user_id, name AS user_name FROM users WHERE home_team = %s AND name = %s LIMIT 1",
+                (home_team, name),
+            )
+        if not rows:
+            return None
+        players = await self.get_user_players(home_team, rows[0]["user_id"])
+        if not players:
+            return None
+        return {"user_name": rows[0]["user_name"], "players": players}
 
     async def get_players_aggregate(
         self,
@@ -629,18 +730,24 @@ class Database:
             params.append(limit)
         return await self._query(
             f"""WITH sides AS (
-                   SELECT d.player_a AS player, d.player_a_team AS team,
+                   SELECT COALESCE(u.name, d.player_a) AS player, d.player_a_team AS team,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END AS win,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END AS loss,
-                          CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
+                          CASE WHEN d.result = 'DRAW' AND NOT (d.score_a = 0 AND d.score_b = 0)
+                               THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
+                   LEFT JOIN player_ids pi ON pi.home_team = d.player_a_team AND pi.player_name = d.player_a
+                   LEFT JOIN users u ON u.home_team = pi.home_team AND u.id = pi.user_id
                    WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                    UNION ALL
-                   SELECT d.player_b, d.player_b_team,
+                   SELECT COALESCE(u.name, d.player_b), d.player_b_team,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
-                          CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
+                          CASE WHEN d.result = 'DRAW' AND NOT (d.score_a = 0 AND d.score_b = 0)
+                               THEN 1 ELSE 0 END
                    FROM duels d JOIN matches m ON d.match_id = m.id
+                   LEFT JOIN player_ids pi ON pi.home_team = d.player_b_team AND pi.player_name = d.player_b
+                   LEFT JOIN users u ON u.home_team = pi.home_team AND u.id = pi.user_id
                    WHERE m.group_id = %s AND m.match_time >= %s AND m.match_time <= %s{home_clause}
                )
                SELECT player, SUM(win) wins, SUM(loss) losses, SUM(draw) draws,
@@ -688,14 +795,16 @@ class Database:
             f"""WITH sides AS (
                    SELECT CASE d.result WHEN 'A' THEN 1 ELSE 0 END AS win,
                           CASE d.result WHEN 'B' THEN 1 ELSE 0 END AS loss,
-                          CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END AS draw
+                          CASE WHEN d.result = 'DRAW' AND NOT (d.score_a = 0 AND d.score_b = 0)
+                               THEN 1 ELSE 0 END AS draw
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE d.player_a = %s
                      AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_match}{team_clause_a}
                    UNION ALL
                    SELECT CASE d.result WHEN 'B' THEN 1 ELSE 0 END,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END,
-                          CASE d.result WHEN 'DRAW' THEN 1 ELSE 0 END
+                          CASE WHEN d.result = 'DRAW' AND NOT (d.score_a = 0 AND d.score_b = 0)
+                               THEN 1 ELSE 0 END
                    FROM duels d JOIN matches m ON d.match_id = m.id
                    WHERE d.player_b = %s
                      AND m.match_time >= %s AND m.match_time <= %s{group_clause}{home_match}{team_clause_b}
@@ -756,6 +865,42 @@ class Database:
             tuple(params),
         )
 
+    async def get_home_team_vs_opponents(
+        self,
+        group_id: str,
+        home_team: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict]:
+        """主体战队对战各对手的胜负记录，返回 [{opponent, wins, losses, total, win_rate}]。"""
+        d1, d2 = self._date_bounds(date_from, date_to)
+        rows = await self._query(
+            """SELECT opponent,
+                      SUM(CASE WHEN winner = %s THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN winner != %s THEN 1 ELSE 0 END) AS losses,
+                      COUNT(*) AS total
+               FROM (
+                   SELECT CASE WHEN m.team_a = %s THEN m.team_b ELSE m.team_a END AS opponent,
+                          m.winner
+                   FROM matches m
+                   WHERE m.group_id = %s AND (m.team_a = %s OR m.team_b = %s)
+                     AND m.winner != '' AND m.match_time >= %s AND m.match_time <= %s
+               ) t
+               GROUP BY opponent
+               ORDER BY total DESC, wins DESC""",
+            (home_team, home_team, home_team, group_id, home_team, home_team, d1, d2),
+        )
+        result = []
+        for r in rows:
+            w, l = int(r["wins"] or 0), int(r["losses"] or 0)
+            total = int(r["total"] or 0)
+            wr = round(w * 100.0 / (w + l), 1) if (w + l) else 0.0
+            result.append({
+                "opponent": r["opponent"], "wins": w, "losses": l,
+                "total": total, "win_rate": wr,
+            })
+        return result
+
     async def get_player_trend(
         self,
         group_id: str,
@@ -785,6 +930,47 @@ class Database:
                       SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END)
                FROM duels d JOIN matches m ON d.match_id = m.id
                WHERE m.group_id = %s AND d.player_b = %s AND m.match_time >= %s{home_clause}
+               GROUP BY m.match_time""",
+            tuple(params),
+        )
+        merged: dict[str, list[int]] = {}
+        for row in rows:
+            key = str(row["date"])
+            if key not in merged:
+                merged[key] = [0, 0]
+            merged[key][0] += int(row["wins"] or 0)
+            merged[key][1] += int(row["losses"] or 0)
+        return [(d, w, l) for d, (w, l) in sorted(merged.items())]
+
+    async def get_players_trend(
+        self,
+        group_id: str,
+        players: list[str],
+        date_from: str | None = None,
+        home_team: str | None = None,
+    ) -> list[tuple[str, int, int]]:
+        """多个参赛ID合并按日期的胜/负场次（限定战队避免同名混淆），返回 [(date, wins, losses)]。"""
+        if not players:
+            return []
+        d1, _ = self._date_bounds(date_from, None)
+        ph = ",".join(["%s"] * len(players))
+        params = [group_id, d1, home_team or ""] + list(players)
+        params += [group_id, d1, home_team or ""] + list(players)
+        rows = await self._query(
+            f"""SELECT m.match_time AS date,
+                      SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN d.result='B' THEN 1 ELSE 0 END) AS losses
+               FROM duels d JOIN matches m ON d.match_id = m.id
+               WHERE m.group_id = %s AND m.match_time >= %s
+                 AND d.player_a_team = %s AND d.player_a IN ({ph})
+               GROUP BY m.match_time
+               UNION ALL
+               SELECT m.match_time,
+                      SUM(CASE WHEN d.result='B' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END)
+               FROM duels d JOIN matches m ON d.match_id = m.id
+               WHERE m.group_id = %s AND m.match_time >= %s
+                 AND d.player_b_team = %s AND d.player_b IN ({ph})
                GROUP BY m.match_time""",
             tuple(params),
         )
@@ -844,9 +1030,58 @@ class Database:
         return await self._query(
             """SELECT m.id AS match_id, m.group_id, m.team_a, m.team_b,
                       m.match_time, m.rule, m.location,
-                      d.round_no, d.player_a, d.score_a, d.player_b, d.score_b, d.result
+                      d.round_no, d.player_a, d.score_a, d.player_b, d.score_b, d.result,
+                      d.a_sub, d.b_sub
                FROM matches m LEFT JOIN duels d ON d.match_id = m.id
                WHERE m.group_id = %s
-               ORDER BY m.id, d.round_no, d.id""",
+               ORDER BY m.id, d.round_no, d.seq, d.id""",
             (group_id,),
         )
+
+    async def get_reports_for_export(self, group_id: str) -> list[dict]:
+        """按战报聚合返回某群全部战报（含原始文本与按 seq 排序的对局），供合并转发导出。
+
+        每份战报一个 dict：match_id / team_a / team_b / match_time / rule / location /
+        winner / home_team / raw_text / submitted_by / submitted_name / duels。
+        """
+        rows = await self._query(
+            """SELECT m.id AS match_id, m.team_a, m.team_b, m.match_time, m.rule, m.location,
+                      m.winner, m.home_team, m.raw_text, m.submitted_by, m.submitted_name,
+                      d.seq, d.round_no, d.player_a, d.score_a, d.player_b, d.score_b,
+                      d.a_sub, d.b_sub
+               FROM matches m LEFT JOIN duels d ON d.match_id = m.id
+               WHERE m.group_id = %s
+               ORDER BY m.id, d.seq, d.id""",
+            (group_id,),
+        )
+        reports: list[dict] = []
+        current: dict | None = None
+        for r in rows:
+            if current is None or current["match_id"] != r["match_id"]:
+                current = {
+                    "match_id": r["match_id"],
+                    "team_a": r["team_a"],
+                    "team_b": r["team_b"],
+                    "match_time": str(r["match_time"]),
+                    "rule": r["rule"],
+                    "location": r["location"],
+                    "winner": r["winner"] or "",
+                    "home_team": r["home_team"] or "",
+                    "raw_text": r["raw_text"] or "",
+                    "submitted_by": r["submitted_by"] or "",
+                    "submitted_name": r["submitted_name"] or "",
+                    "duels": [],
+                }
+                reports.append(current)
+            if r["player_a"] is not None:
+                current["duels"].append({
+                    "seq": r["seq"] or 0,
+                    "round_no": r["round_no"],
+                    "player_a": r["player_a"],
+                    "score_a": r["score_a"],
+                    "player_b": r["player_b"],
+                    "score_b": r["score_b"],
+                    "a_sub": bool(r["a_sub"]),
+                    "b_sub": bool(r["b_sub"]),
+                })
+        return reports

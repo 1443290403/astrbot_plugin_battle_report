@@ -88,8 +88,9 @@ if not asyncio.run(_mysql_reachable()):
 
 
 def _with_db(coro_factory):
-    """在单个事件循环内 初始化测试库 → 执行操作 → 清理测试库。"""
+    """在单个事件循环内 初始化测试库 → 执行操作 → 清理测试库（每次先清库避免污染）。"""
     async def run():
+        await _drop_test_db()
         db = Database(**_conn_params())
         await db.initialize()
         try:
@@ -135,6 +136,57 @@ def test_player_ranking_team_filter():
     _with_db(ops)
 
 
+def test_player_ranking_role_aggregation():
+    async def ops(db):
+        await db.insert_report(_make_report())
+        # 把红莲、凯撒亮绑定到同一角色 小明 → 排行合并为角色名
+        uid = await db.find_or_create_user("KC", "小明")
+        await db.bind_player_to_user("KC", "红莲", uid)
+        await db.bind_player_to_user("KC", "凯撒亮", uid)
+        pl = await db.get_player_ranking(GROUP_ID, team="KC", limit=None)
+        names = {r["player"] for r in pl}
+        assert "小明" in names
+        assert "红莲" not in names and "凯撒亮" not in names
+        ming = next(r for r in pl if r["player"] == "小明")
+        assert ming["wins"] == 2 and ming["losses"] == 2 and ming["total"] == 4
+
+    _with_db(ops)
+
+
+def test_resolve_role():
+    async def ops(db):
+        await db.insert_report(_make_report())
+        # 未绑定 → None
+        assert await db.resolve_role("KC", "红莲") is None
+        uid = await db.find_or_create_user("KC", "小明")
+        await db.bind_player_to_user("KC", "红莲", uid)
+        await db.bind_player_to_user("KC", "凯撒亮", uid)
+        # 按参赛ID解析
+        r1 = await db.resolve_role("KC", "红莲")
+        assert r1 and r1["user_name"] == "小明"
+        assert set(r1["players"]) == {"红莲", "凯撒亮"}
+        # 按角色名解析
+        r2 = await db.resolve_role("KC", "小明")
+        assert r2 and r2["user_name"] == "小明"
+        assert set(r2["players"]) == {"红莲", "凯撒亮"}
+
+    _with_db(ops)
+
+
+def test_get_players_trend():
+    async def ops(db):
+        await db.insert_report(_make_report())
+        # 红莲、凯撒亮同一天各 1胜1负 → 合并 2胜2负
+        pts = await db.get_players_trend(GROUP_ID, ["红莲", "凯撒亮"], None, home_team="KC")
+        assert len(pts) == 1
+        _, w, l = pts[0]
+        assert w == 2 and l == 2
+        # 空列表
+        assert await db.get_players_trend(GROUP_ID, [], None, home_team="KC") == []
+
+    _with_db(ops)
+
+
 def test_team_ranking():
     async def ops(db):
         await db.insert_report(_make_report())
@@ -143,6 +195,44 @@ def test_team_ranking():
         assert team[0]["wins"] == 1
         kc = next(r for r in team if r["team"] == "KC")
         assert kc["losses"] == 1
+
+    _with_db(ops)
+
+
+def test_unbind_player():
+    async def ops(db):
+        await db.insert_report(_make_report())
+        uid = await db.find_or_create_user("KC", "小明")
+        await db.bind_player_to_user("KC", "红莲", uid)
+        assert (await db.get_player_binding("KC", "红莲"))["user_id"] == uid
+        # 解除绑定
+        await db.unbind_player("KC", "红莲")
+        assert (await db.get_player_binding("KC", "红莲"))["user_id"] is None
+        # 未绑定 ID 无影响
+        await db.unbind_player("KC", "不存在的选手")
+
+    _with_db(ops)
+
+
+def test_home_team_vs_opponents():
+    async def ops(db):
+        # KC 对 DYG 一胜
+        await db.insert_report(_make_report(), winner="KC", home_team="KC")
+        # KC 对 FH 一负
+        rep2 = _make_report()
+        rep2.team_b = "FH"
+        await db.insert_report(rep2, winner="FH", home_team="KC")
+        # KC 对 FH 一胜
+        rep3 = _make_report()
+        rep3.team_b = "FH"
+        await db.insert_report(rep3, winner="KC", home_team="KC")
+
+        rows = await db.get_home_team_vs_opponents(GROUP_ID, "KC")
+        by_opp = {r["opponent"]: r for r in rows}
+        assert by_opp["DYG"]["wins"] == 1 and by_opp["DYG"]["losses"] == 0
+        assert by_opp["DYG"]["total"] == 1 and by_opp["DYG"]["win_rate"] == 100.0
+        assert by_opp["FH"]["wins"] == 1 and by_opp["FH"]["losses"] == 1
+        assert by_opp["FH"]["total"] == 2 and by_opp["FH"]["win_rate"] == 50.0
 
     _with_db(ops)
 
@@ -175,14 +265,165 @@ def test_delete_and_undo():
         mid = await db.insert_report(_make_report())
         last = await db.get_last_match_by_submitter(GROUP_ID, "10001")
         assert last == mid
+        # 插入时 duels 有 5 局
+        before = await db._query(
+            "SELECT COUNT(*) AS n FROM duels WHERE match_id=%s", (mid,)
+        )
+        assert before[0]["n"] == 5
+        # 跨群保护：其他群删不掉，duels 关联数据不受影响
+        assert not await db.delete_match("999999999", mid)
+        still = await db._query(
+            "SELECT COUNT(*) AS n FROM duels WHERE match_id=%s", (mid,)
+        )
+        assert still[0]["n"] == 5
+        # 正常删除：matches 与其关联 duels 一并删除
         ok = await db.delete_match(GROUP_ID, mid)
         assert ok
         assert not await db.get_export_rows(GROUP_ID)
-        # 跨群保护：其他群删不掉
-        await db.insert_report(_make_report())
-        assert not await db.delete_match("999999999", mid)
+        after = await db._query(
+            "SELECT COUNT(*) AS n FROM duels WHERE match_id=%s", (mid,)
+        )
+        assert after[0]["n"] == 0
 
     _with_db(ops)
+
+
+def test_insert_raw_text_and_seq():
+    async def ops(db):
+        mid = await db.insert_report(
+            _make_report(), winner="KC", home_team="KC", raw_text="原始战报文本"
+        )
+        m = await db._query("SELECT raw_text FROM matches WHERE id=%s", (mid,))
+        assert m[0]["raw_text"] == "原始战报文本"
+        duels = await db._query(
+            "SELECT seq, round_no, player_a FROM duels WHERE match_id=%s ORDER BY seq",
+            (mid,),
+        )
+        assert [d["seq"] for d in duels] == [0, 1, 2, 3, 4]
+        assert duels[0]["player_a"] == "红莲"
+        assert duels[4]["player_a"] == "红莲"  # 第二轮最后一场，顺序保持
+
+    _with_db(ops)
+
+
+def test_get_reports_for_export():
+    async def ops(db):
+        mid = await db.insert_report(
+            _make_report(), winner="KC", home_team="KC", raw_text="第一份"
+        )
+        rep2 = _make_report()
+        rep2.submitted_by = "10002"
+        mid2 = await db.insert_report(rep2, winner="DYG", home_team="KC")
+
+        reports = await db.get_reports_for_export(GROUP_ID)
+        assert [r["match_id"] for r in reports] == [mid, mid2]
+        first = reports[0]
+        assert first["raw_text"] == "第一份"
+        assert first["winner"] == "KC" and first["home_team"] == "KC"
+        assert [d["seq"] for d in first["duels"]] == [0, 1, 2, 3, 4]
+        assert [d["round_no"] for d in first["duels"]] == [1, 1, 1, 2, 2]
+        assert reports[1]["raw_text"] == ""
+        assert reports[1]["submitted_by"] == "10002"
+
+    _with_db(ops)
+
+
+def test_insert_sub_flags():
+    async def ops(db):
+        text = """战队: KC VS DYG
+时间: 2026.08.01
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+红莲(替) 2:0 老千（替）
+凯撒亮 2:1 蓝大"""
+        parsed = parse_battle_report(text)
+        assert not parsed.errors, parsed.errors
+        report = parsed.report
+        report.group_id = GROUP_ID
+        report.submitted_by = "10001"
+        report.submitted_name = "提交者"
+        report.created_at = 0
+        mid = await db.insert_report(report, winner="KC", home_team="KC")
+        duels = await db._query(
+            "SELECT player_a, a_sub, player_b, b_sub FROM duels WHERE match_id=%s ORDER BY seq",
+            (mid,),
+        )
+        assert duels[0]["player_a"] == "红莲" and duels[0]["a_sub"] == 1
+        assert duels[0]["player_b"] == "老千" and duels[0]["b_sub"] == 1
+        assert duels[1]["player_a"] == "凯撒亮" and duels[1]["a_sub"] == 0
+        assert duels[1]["b_sub"] == 0
+
+    _with_db(ops)
+
+
+def test_migration_v10_int_to_bigint():
+    """模拟旧 INT schema 的库升级：v10 迁移把主键/外键/用户ID/时间戳扩为 BIGINT。"""
+    async def run():
+        import aiomysql
+
+        base = dict(_conn_params())
+        base.pop("db", None)
+        conn = await aiomysql.connect(**base, charset="utf8mb4", autocommit=True)
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"DROP DATABASE IF EXISTS `{TEST_DB}`"
+            )
+            await cur.execute(
+                f"CREATE DATABASE `{TEST_DB}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+        conn.close()
+
+        conn = await aiomysql.connect(**_conn_params(), charset="utf8mb4", autocommit=True)
+        async with conn.cursor() as cur:
+            # 旧 schema：INT 主键/外键/用户ID/时间戳
+            await cur.execute(
+                "CREATE TABLE matches (id INT AUTO_INCREMENT PRIMARY KEY, created_at INT NOT NULL)"
+            )
+            await cur.execute(
+                "CREATE TABLE duels (id INT AUTO_INCREMENT PRIMARY KEY, match_id INT NOT NULL, "
+                "score_a INT NOT NULL, score_b INT NOT NULL, result ENUM('A','B','DRAW') NOT NULL, "
+                "CONSTRAINT fk_duels_match FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE)"
+            )
+            await cur.execute("CREATE TABLE teams (id INT AUTO_INCREMENT PRIMARY KEY)")
+            await cur.execute("CREATE TABLE users (id INT AUTO_INCREMENT PRIMARY KEY, created_at INT NOT NULL)")
+            await cur.execute("CREATE TABLE player_ids (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NULL, created_at INT NOT NULL)")
+            await cur.execute("CREATE TABLE group_home (group_id VARCHAR(64) PRIMARY KEY, created_at INT NOT NULL)")
+            await cur.execute("CREATE TABLE group_ban (group_id VARCHAR(64) PRIMARY KEY, created_at INT NOT NULL)")
+            await cur.execute("CREATE TABLE schema_version (version INT NOT NULL)")
+            await cur.execute("INSERT INTO schema_version (version) VALUES (9)")
+        conn.close()
+
+        db = Database(**_conn_params())
+        try:
+            await db.initialize()
+            rows = await db._query(
+                "SELECT table_name AS tbl, column_name AS col, data_type AS dt "
+                "FROM information_schema.COLUMNS "
+                "WHERE table_schema = DATABASE() AND column_name IN ('id','match_id','user_id','created_at')"
+            )
+            types = {(r["tbl"], r["col"]): r["dt"] for r in rows}
+            for t, c in [
+                ("matches", "id"), ("duels", "id"), ("duels", "match_id"),
+                ("teams", "id"), ("users", "id"), ("player_ids", "id"),
+                ("player_ids", "user_id"),
+                ("matches", "created_at"), ("users", "created_at"),
+                ("player_ids", "created_at"), ("group_home", "created_at"),
+                ("group_ban", "created_at"),
+            ]:
+                assert types.get((t, c)) == "bigint", f"{t}.{c} = {types.get((t, c))}"
+            # 外键已重建
+            fk = await db._query(
+                "SELECT COUNT(*) AS n FROM information_schema.TABLE_CONSTRAINTS "
+                "WHERE constraint_schema = DATABASE() AND table_name='duels' "
+                "AND constraint_name='fk_duels_match'"
+            )
+            assert fk[0]["n"] == 1
+        finally:
+            await _drop_test_db()
+            await db.close()
+
+    asyncio.run(run())
 
 
 def test_teams_replace():

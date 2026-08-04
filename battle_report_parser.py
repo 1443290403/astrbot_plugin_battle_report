@@ -30,6 +30,8 @@ class Duel:
     score_a: int
     player_b: str
     score_b: int
+    a_sub: bool = False  # 玩家 A 是否为替补
+    b_sub: bool = False  # 玩家 B 是否为替补
 
 
 @dataclass
@@ -72,6 +74,16 @@ LOC_RE = re.compile(r"^\s*地点\s*[:：]\s*(.+)$", re.IGNORECASE)
 SCORE_RE = re.compile(r"(\d+)\s*[:：]\s*(\d+)")
 # 战队分隔符 "VS"（两侧有空格）
 VS_RE = re.compile(r"\s+VS\s+", re.IGNORECASE)
+# 替补标记（玩家名末尾）：红莲(替) / 红莲（替） / 红莲 （替） / 红莲(替补) / 红莲（ 替补 ）等
+_SUB_RE = re.compile(r"[\s　]*[\(（][\s　]*替(?:补)?[\s　]*[\)）]$")
+
+
+def _strip_sub(name: str) -> tuple[str, bool]:
+    """剥离玩家名末尾的替补标记，返回（干净ID, 是否替补）。"""
+    m = _SUB_RE.search(name)
+    if m:
+        return name[: m.start()].strip(), True
+    return name.strip(), False
 
 # 中文数字
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -201,13 +213,13 @@ def parse_battle_report(text: str) -> ParseResult:
 
         m = hits[0]
         score_a, score_b = int(m.group(1)), int(m.group(2))
-        player_a = line[: m.start()].strip()
-        player_b = line[m.end():].strip()
+        player_a, a_sub = _strip_sub(line[: m.start()].strip())
+        player_b, b_sub = _strip_sub(line[m.end():].strip())
         if not player_a or not player_b:
             errors.append(f"第 {lineno} 行：玩家名缺失：{line}")
             continue
 
-        report.duels.append(Duel(round_no, player_a, score_a, player_b, score_b))
+        report.duels.append(Duel(round_no, player_a, score_a, player_b, score_b, a_sub, b_sub))
         duel_count += 1
 
     # 完整性校验
@@ -273,22 +285,38 @@ def _winner_headcount(report: BattleReport) -> str | None:
 
 
 def _winner_kof(report: BattleReport) -> str | None:
-    """2/3 KOF：一方所有选手最后一场均为负（全员败北）时另一方胜。"""
-    a_last: dict[str, tuple[int, bool]] = {}  # 选手 -> (对局序号, 该场是否负)
-    b_last: dict[str, tuple[int, bool]] = {}
-    for idx, d in enumerate(report.duels):
-        if d.score_a == 0 and d.score_b == 0:
-            continue  # 未打的占位不计
-        a_last[d.player_a] = (idx, d.score_a < d.score_b)
-        b_last[d.player_b] = (idx, d.score_b < d.score_a)
+    """2/3 KOF：一方可出战人数 = 第一轮出场的不同选手数（含 0:0 未打选手）。
 
-    def all_defeated(m: dict[str, tuple[int, bool]]) -> bool:
-        if not m:
-            return False
-        return all(is_loss for _, is_loss in m.values())
+    累计『不可出战』（各自最后一场为负或非零平分）的人数达到该数即『无人可出战』，
+    另一方胜。0:0 为未完结：该选手仍可出战（计入人数、不计落败），平局只可能是
+    1:1 等非零平分。替补不增加可出战总人数。
+    """
+    a_last: dict[tuple[str, bool], bool] = {}  # (选手, 是否替补) -> 是否不可出战
+    b_last: dict[tuple[str, bool], bool] = {}
+    a_capacity = b_capacity = 0
+    seen_a_r1: set[tuple[str, bool]] = set()
+    seen_b_r1: set[tuple[str, bool]] = set()
+    for d in report.duels:
+        key_a = (d.player_a, d.a_sub)
+        key_b = (d.player_b, d.b_sub)
+        played = not (d.score_a == 0 and d.score_b == 0)
+        if played:
+            # 负 或 非零平分 → 不可出战；0:0 未打不更新状态（仍可出战）
+            a_last[key_a] = d.score_a <= d.score_b
+            b_last[key_b] = d.score_b <= d.score_a
+        if d.round_no == 1:
+            if key_a not in seen_a_r1:
+                seen_a_r1.add(key_a)
+                a_capacity += 1
+            if key_b not in seen_b_r1:
+                seen_b_r1.add(key_b)
+                b_capacity += 1
 
-    a_def = all_defeated(a_last)
-    b_def = all_defeated(b_last)
+    a_lost = sum(1 for loss in a_last.values() if loss)
+    b_lost = sum(1 for loss in b_last.values() if loss)
+    a_def = a_capacity > 0 and a_lost >= a_capacity
+    b_def = b_capacity > 0 and b_lost >= b_capacity
+
     if a_def and not b_def:
         return report.team_b
     if b_def and not a_def:

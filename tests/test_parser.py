@@ -75,6 +75,51 @@ def test_cn_to_int():
     assert _cn_to_int("3") == 3
 
 
+def test_sub_marker_stripped():
+    # 替补标记剥离：只记录 ID，并标记替补
+    r = parse_battle_report("战队: A VS B\n时间: 2026.01.01\n------第一轮------\n红莲(替) 2:1 蓝大（替）")
+    assert not r.errors, r.errors
+    d = r.report.duels[0]
+    assert d.player_a == "红莲" and d.a_sub is True
+    assert d.player_b == "蓝大" and d.b_sub is True
+
+
+def test_sub_marker_variants():
+    # 各种写法：半角/全角/前后空格/替补
+    cases = [
+        "红莲(替)",
+        "红莲（替）",
+        "红莲 （替）",
+        "红莲(替补)",
+        "红莲 （替补）",
+        "红莲（ 替 ）",
+    ]
+    for name in cases:
+        r = parse_battle_report(f"战队: A VS B\n时间: 2026.01.01\n------第一轮------\n{name} 2:0 蓝大")
+        assert not r.errors, f"{name}: {r.errors}"
+        d = r.report.duels[0]
+        assert d.player_a == "红莲", f"{name} → {d.player_a!r}"
+        assert d.a_sub is True, name
+
+
+def test_sub_both_sides():
+    # 双方都是替补：耗子 （替） 2:0 蓝大（替）
+    r = parse_battle_report("战队: A VS B\n时间: 2026.01.01\n------第一轮------\n耗子 （替） 2:0 蓝大（替）")
+    assert not r.errors, r.errors
+    d = r.report.duels[0]
+    assert d.player_a == "耗子" and d.a_sub is True
+    assert d.player_b == "蓝大" and d.b_sub is True
+
+
+def test_no_marker_not_sub():
+    # 无标记不误判
+    r = parse_battle_report("战队: A VS B\n时间: 2026.01.01\n------第一轮------\n红莲 2:0 蓝大")
+    assert not r.errors
+    d = r.report.duels[0]
+    assert d.player_a == "红莲" and d.a_sub is False
+    assert d.player_b == "蓝大" and d.b_sub is False
+
+
 def test_parse_uppercase_team():
     # 战队名含字母时统一转大写
     r = parse_battle_report("战队: dyg VS kc\n时间: 2026.01.01\n------第一轮------\n红莲 2:0 老千")
