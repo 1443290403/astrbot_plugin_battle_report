@@ -115,7 +115,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.5.5")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -303,49 +303,42 @@ class BattleReportPlugin(Star):
         """从回复引用中提取战报文本列表。
 
         支持：引用的消息本身是战报文本，或引用的消息是合并转发（内含多条战报）。
-        无回复/获取失败返回 None。消息结构过深（递归异常）时降级返回 None。
+        无回复/获取失败返回 None。
         """
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            return None
+        reply = next(
+            (c for c in event.get_messages() if isinstance(c, Reply)),
+            None,
+        )
+        if reply is None or not reply.id:
+            return None
         try:
-            bot = getattr(event, "bot", None)
-            if bot is None:
-                return None
-            reply = next(
-                (c for c in event.get_messages() if isinstance(c, Reply)),
-                None,
-            )
-            if reply is None or not reply.id:
-                return None
-            try:
-                msg = await bot.call_action("get_msg", message_id=int(reply.id))
-            except Exception as e:
-                logger.warning(f"获取被引用消息失败: {e}")
-                return None
-            if not isinstance(msg, dict):
-                return None
-
-            forward_id = self._find_forward_id(msg)
-            if forward_id:
-                try:
-                    ret = await bot.call_action("get_forward_msg", id=forward_id)
-                except Exception as e:
-                    logger.warning(f"获取合并转发消息失败: {e}")
-                    return None
-                inner = (ret or {}).get("messages", []) if isinstance(ret, dict) else []
-                texts = [self._extract_forward_text(m) for m in inner]
-                # 只取以『战队:』开头的战报消息
-                return [t for t in texts if t and t.lstrip().startswith("战队:")]
-
-            # 非转发：被引用消息自身的文本（须为战报）
-            text = self._extract_msg_text(msg)
-            if text and text.lstrip().startswith("战队:"):
-                return [text]
-            return None
-        except RecursionError:
-            logger.warning("回复引用消息结构过深，跳过转发提取，回退到文本解析")
-            return None
+            msg = await bot.call_action("get_msg", message_id=int(reply.id))
         except Exception as e:
-            logger.warning(f"提取回复战报失败: {e}")
+            logger.warning(f"获取被引用消息失败: {e}")
             return None
+        if not isinstance(msg, dict):
+            return None
+
+        forward_id = self._find_forward_id(msg)
+        if forward_id:
+            try:
+                ret = await bot.call_action("get_forward_msg", id=forward_id)
+            except Exception as e:
+                logger.warning(f"获取合并转发消息失败: {e}")
+                return None
+            inner = (ret or {}).get("messages", []) if isinstance(ret, dict) else []
+            texts = [self._extract_forward_text(m) for m in inner]
+            # 只取以『战队:』开头的战报消息
+            return [t for t in texts if t and t.lstrip().startswith("战队:")]
+
+        # 非转发：被引用消息自身的文本（须为战报）
+        text = self._extract_msg_text(msg)
+        if text and text.lstrip().startswith("战队:"):
+            return [text]
+        return None
 
     async def _has_reply(self, event: AstrMessageEvent) -> bool:
         """消息是否带回复引用（轻量检查）。"""
@@ -546,7 +539,7 @@ class BattleReportPlugin(Star):
 
     async def _group_check(self, event) -> str | None:
         """组合检查：数据库就绪 + 群未被禁用。"""
-        err = await self._group_check(event)
+        err = self._check_db()
         if err:
             return err
         return await self._check_enabled(event)
@@ -867,133 +860,345 @@ class BattleReportPlugin(Star):
     @filter.command("战报", alias={"/战报"})
     async def submit_report(self, event: AstrMessageEvent):
         """提交战报（可一次粘贴多份，按『战队:』行拆分）"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        if self.config.get("submit_requires_admin", False) and not event.is_admin():
+            yield event.plain_result("❌ 当前配置下仅管理员可提交战报。")
+            return
+
+        raw = event.get_message_str()
+        payload = _strip_command(raw, _SUBMIT_CMDS)
+
+        # 无参数且无引用时直接提示
+        if not payload.strip() and not await self._has_reply(event):
+            yield event.plain_result(
+                "请提供战报内容：\n"
+                "· /战报 + 粘贴战报文本\n"
+                "· 或回复引用合并转发的战报消息后发送 /战报"
+            )
+            return
+
+        # 优先从回复引用（含合并转发）提取战报
+        reply_reports = await self._extract_reply_reports(event)
+        if reply_reports:
+            report_chunks = reply_reports
+        else:
+            report_chunks = split_reports(payload)
+        if not report_chunks:
+            yield event.plain_result("❌ 战报内容为空。")
+            return
+
+        # 解析所有战报
+        parsed: list = []
+        for chunk in report_chunks:
+            result = parse_battle_report(chunk)
+            if result.errors:
+                yield event.plain_result(
+                    "❌ 战报解析失败：\n" + "\n".join(result.errors) + "\n\n" + _FORMAT_EXAMPLE
+                )
+                return
+            parsed.append((result.report, result.warnings))
+
+        # 确定群号
+        group_id = event.get_group_id()
+        if not group_id:
+            loc = parsed[0][0].location or ""
+            if self.config.get("allow_private_chat", True) and loc.strip():
+                group_id = loc.strip()
+            else:
+                yield event.plain_result(
+                    "⚠️ 无法确定群号：请在群聊提交，或让战报中的『地点:』填写群号。"
+                )
+                return
+
+        # 上传需群已绑定战队
+        bound_home = await self.db.get_group_home(group_id)
+        if not bound_home:
+            yield event.plain_result(
+                "❌ 本群未绑定战队，无法上传战报。\n请管理/群主使用 /绑定战队 <战队> 绑定。"
+            )
+            return
+        home_team = bound_home
+
+        # 逐个提交，收集回复
+        responses: list[str] = []
+        for report, warnings in parsed:
+            report.group_id = group_id
+            report.submitted_by = event.get_sender_id()
+            report.submitted_name = event.get_sender_name()
+            report.created_at = int(time.time())
+
+            # 判定胜者：胜负未定则不记录
+            winner = determine_match_winner(report)
+            if winner is None:
+                responses.append(
+                    f"❌ 比赛胜负未定，未记录：\n{report.team_a} VS {report.team_b} | "
+                    f"{report.match_time}\n（请补全比分后重试）"
+                )
+                continue
+
+            if home_team == winner:
+                home_result = f"🏆 {home_team} 获胜！"
+            elif home_team in (report.team_a, report.team_b):
+                home_result = f"💀 {home_team} 战败"
+            else:
+                home_result = f"本场胜者：{winner}"
+
+            try:
+                match_id = await self.db.insert_report(report, winner, home_team)
+            except Exception as e:
+                logger.exception("战报入库失败")
+                responses.append(
+                    f"❌ 写入失败：{report.team_a} VS {report.team_b} | {report.match_time}\n{e}"
+                )
+                continue
+
+            # 汇总 + 每场对阵结果（供核对）
+            summary = (
+                f"✅ 战报已记录（ID {match_id}）\n"
+                f"{report.team_a} VS {report.team_b} | {report.match_time} | "
+                f"共 {len(report.duels)} 局\n"
+                f"{home_result}\n"
+                f"{format_duel_results(report, home_team)}"
+            )
+            responses.append(summary)
+            if warnings:
+                responses.append("⚠️ 解析警告：\n" + "\n".join(warnings))
+            for w in await self._roster_warnings(group_id, report):
+                responses.append(w)
+
+        # 发送：>3 条合并为一个转发消息集，否则逐条
+        if len(responses) <= 3:
+            for r in responses:
+                yield event.plain_result(r)
+        else:
+            nodes = [
+                Node(
+                    name=event.get_sender_name(),
+                    uin=event.get_sender_id(),
+                    content=[Plain(r)],
+                )
+                for r in responses
+            ]
+            yield event.chain_result([Nodes(nodes)])
+
+    # ---------- 查询 ----------
+
+    @filter.command("战报排行", alias={"/战报排行"})
+    async def ranking(self, event: AstrMessageEvent, scope: str = ""):
+        """排行榜（个人/队伍）"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+
+        days = int(self.config.get("default_days", 0) or 0)
+        date_from = self._date_from(days)
+        scope = (scope or "个人").strip()
+        limit = int(self.config.get("ranking_limit", 10) or 10)
+
+        home_team = await self._get_effective_home(group_id)
         try:
-            err = await self._group_check(event)
-            if err:
-                yield event.plain_result(err)
-                return
-            if self.config.get("submit_requires_admin", False) and not event.is_admin():
-                yield event.plain_result("❌ 当前配置下仅管理员可提交战报。")
-                return
-
-            raw = event.get_message_str()
-            payload = _strip_command(raw, _SUBMIT_CMDS)
-
-            # 无参数且无引用时直接提示
-            if not payload.strip() and not await self._has_reply(event):
-                yield event.plain_result(
-                    "请提供战报内容：\n"
-                    "· /战报 + 粘贴战报文本\n"
-                    "· 或回复引用合并转发的战报消息后发送 /战报"
+            if scope in ("队伍", "战队", "队"):
+                rows = await self.db.get_team_ranking(
+                    group_id, date_from, None, limit, home_team=home_team
                 )
-                return
-
-            # 优先从回复引用（含合并转发）提取战报
-            reply_reports = await self._extract_reply_reports(event)
-            if reply_reports:
-                report_chunks = reply_reports
+                yield event.plain_result(stats.format_team_ranking(rows, limit))
             else:
-                report_chunks = split_reports(payload)
-            if not report_chunks:
-                yield event.plain_result("❌ 战报内容为空。")
-                return
-
-            # 解析所有战报
-            parsed: list = []
-            for chunk in report_chunks:
-                result = parse_battle_report(chunk)
-                if result.errors:
-                    yield event.plain_result(
-                        "❌ 战报解析失败：\n" + "\n".join(result.errors) + "\n\n" + _FORMAT_EXAMPLE
+                min_games = int(self.config.get("min_games", 1) or 1)
+                if scope in ("全部", "所有"):
+                    rows = await self.db.get_player_ranking(
+                        group_id, date_from, None, min_games, limit,
+                        team=None, home_team=home_team,
                     )
-                    return
-                parsed.append((result.report, result.warnings))
-
-            # 确定群号
-            group_id = event.get_group_id()
-            if not group_id:
-                loc = parsed[0][0].location or ""
-                if self.config.get("allow_private_chat", True) and loc.strip():
-                    group_id = loc.strip()
+                    yield event.plain_result(stats.format_player_ranking(rows, limit, min_games))
                 else:
-                    yield event.plain_result(
-                        "⚠️ 无法确定群号：请在群聊提交，或让战报中的『地点:』填写群号。"
+                    # 默认只统计战队选手，显示全部队员（不设上限）
+                    rows = await self.db.get_player_ranking(
+                        group_id, date_from, None, min_games, None,
+                        team=home_team, home_team=home_team,
                     )
-                    return
+                    note = f"\n（战队 {home_team}，共 {len(rows)} 人）" if home_team else ""
+                    yield event.plain_result(stats.format_player_ranking(rows, None, min_games) + note)
+        except Exception:
+            logger.exception("排行查询失败")
+            yield event.plain_result("❌ 查询出错，请稍后重试。")
 
-            # 上传需群已绑定战队
-            bound_home = await self.db.get_group_home(group_id)
-            if not bound_home:
-                yield event.plain_result(
-                    "❌ 本群未绑定战队，无法上传战报。\n请管理/群主使用 /绑定战队 <战队> 绑定。"
-                )
+    @filter.command("战报战绩", alias={"/战报战绩"})
+    async def record(self, event: AstrMessageEvent, name: str = ""):
+        """个人战绩"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        if not name.strip():
+            yield event.plain_result("用法：战报战绩 <玩家名>")
+            return
+        days = int(self.config.get("default_days", 0) or 0)
+        home_team = await self._get_effective_home(group_id)
+        try:
+            agg = await self.db.get_player_record(
+                group_id, name.strip(), self._date_from(days), None, home_team=home_team
+            )
+            yield event.plain_result(stats.format_player_record(name.strip(), agg))
+        except Exception:
+            logger.exception("战绩查询失败")
+            yield event.plain_result("❌ 查询出错，请稍后重试。")
+
+    @filter.command("战报趋势", alias={"/战报趋势"})
+    async def trend(self, event: AstrMessageEvent, name: str = "", days: str = ""):
+        """胜率走势图"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        name = name.strip()
+        home_team = await self._get_effective_home(group_id)
+        if not name:
+            # 未指定时默认展示战队
+            name = home_team or ""
+        if not name:
+            yield event.plain_result("用法：战报趋势 <玩家名或队伍名> [最近N天]")
+            return
+        d = int(days) if days.isdigit() else int(self.config.get("default_days", 30) or 30)
+        date_from = self._date_from(d)
+
+        try:
+            pts = await self.db.get_player_trend(group_id, name, date_from, home_team=home_team)
+            if not pts:
+                pts = await self.db.get_team_trend(group_id, name, date_from, home_team=home_team)
+            if not pts:
+                yield event.plain_result(f"未找到「{name}」最近 {d} 天的数据。")
                 return
-            home_team = bound_home
+            points = stats.compute_cumulative(pts)
+            out = self.data_dir / "trends" / f"trend_{int(time.time())}.png"
+            path = chart.make_trend_chart(
+                points,
+                f"{name} 胜率走势（最近 {d} 天）",
+                out,
+                int(self.config.get("trend_chart_width", 960) or 960),
+                int(self.config.get("trend_chart_height", 480) or 480),
+            )
+            yield event.chain_result([
+                Plain(f"📈 {name} 胜率走势："),
+                Image.fromFileSystem(str(path)),
+            ])
+        except Exception:
+            logger.exception("趋势图生成失败")
+            yield event.plain_result("❌ 趋势生成出错，请稍后重试。")
 
-            # 逐个提交，收集回复
-            responses: list[str] = []
-            for report, warnings in parsed:
-                report.group_id = group_id
-                report.submitted_by = event.get_sender_id()
-                report.submitted_name = event.get_sender_name()
-                report.created_at = int(time.time())
+    @filter.command("战报导出", alias={"/战报导出"})
+    async def export(self, event: AstrMessageEvent, fmt: str = ""):
+        """导出战报数据（csv/json）"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        fmt = (fmt or "csv").lower()
+        if fmt not in ("csv", "json"):
+            yield event.plain_result("❌ 格式仅支持 csv / json。")
+            return
 
-                # 判定胜者：胜负未定则不记录
-                winner = determine_match_winner(report)
-                if winner is None:
-                    responses.append(
-                        f"❌ 比赛胜负未定，未记录：\n{report.team_a} VS {report.team_b} | "
-                        f"{report.match_time}\n（请补全比分后重试）"
-                    )
-                    continue
+        try:
+            rows = await self.db.get_export_rows(group_id)
+        except Exception:
+            logger.exception("导出查询失败")
+            yield event.plain_result("❌ 导出失败，请稍后重试。")
+            return
+        if not rows:
+            yield event.plain_result("当前群暂无战报数据。")
+            return
 
-                if home_team == winner:
-                    home_result = f"🏆 {home_team} 获胜！"
-                elif home_team in (report.team_a, report.team_b):
-                    home_result = f"💀 {home_team} 战败"
-                else:
-                    home_result = f"本场胜者：{winner}"
+        if fmt == "csv":
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow([
+                "战报ID", "群号", "队伍A", "队伍B", "日期", "规则", "地点",
+                "轮次", "玩家A", "比分A", "玩家B", "比分B", "胜者",
+            ])
+            for r in rows:
+                writer.writerow([
+                    r["match_id"], r["group_id"], r["team_a"], r["team_b"], r["match_time"],
+                    r["rule"], r["location"], r["round_no"], r["player_a"], r["score_a"],
+                    r["player_b"], r["score_b"], r["result"],
+                ])
+            content = buffer.getvalue()
+            encoding = "utf-8-sig"
+        else:
+            content = json.dumps(rows, ensure_ascii=False, indent=2, default=str)
+            encoding = "utf-8"
 
-                try:
-                    match_id = await self.db.insert_report(report, winner, home_team)
-                except Exception as e:
-                    logger.exception("战报入库失败")
-                    responses.append(
-                        f"❌ 写入失败：{report.team_a} VS {report.team_b} | {report.match_time}\n{e}"
-                    )
-                    continue
+        out = self.data_dir / "exports" / f"battle_report_{group_id}.{fmt}"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(content, encoding=encoding)
+        yield event.chain_result([
+            Plain("📦 战报数据："),
+            File(name=out.name, file=str(out)),
+        ])
 
-                # 汇总 + 每场对阵结果（供核对）
-                summary = (
-                    f"✅ 战报已记录（ID {match_id}）\n"
-                    f"{report.team_a} VS {report.team_b} | {report.match_time} | "
-                    f"共 {len(report.duels)} 局\n"
-                    f"{home_result}\n"
-                    f"{format_duel_results(report, home_team)}"
-                )
-                responses.append(summary)
-                if warnings:
-                    responses.append("⚠️ 解析警告：\n" + "\n".join(warnings))
-                for w in await self._roster_warnings(group_id, report):
-                    responses.append(w)
+    # ---------- 管理 ----------
 
-            # 发送：>3 条合并为一个转发消息集，否则逐条
-            if len(responses) <= 3:
-                for r in responses:
-                    yield event.plain_result(r)
-            else:
-                nodes = [
-                    Node(
-                        name=event.get_sender_name(),
-                        uin=event.get_sender_id(),
-                        content=[Plain(r)],
-                    )
-                    for r in responses
-                ]
-                yield event.chain_result([Nodes(nodes)])
-        except RecursionError:
-            logger.warning("submit_report 处理消息结构过深，已降级为提示")
-            yield event.plain_result("❌ 消息结构过于复杂，无法处理。请直接粘贴战报文本。")
+    @filter.command("战报删除", alias={"/战报删除"})
+    async def delete(self, event: AstrMessageEvent, match_id: str = ""):
+        """按 ID 删除战报（仅管理员）"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        if not await self._is_manager(event):
+            yield event.plain_result("❌ 仅群管理或群主可删除战报。")
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        if not match_id.isdigit():
+            yield event.plain_result("用法：战报删除 <战报ID>")
+            return
+        ok = await self.db.delete_match(group_id, int(match_id))
+        yield event.plain_result("✅ 已删除战报。" if ok else "❌ 未找到该战报或不属于当前群。")
+
+    @filter.command("战报撤销", alias={"/战报撤销"})
+    async def undo(self, event: AstrMessageEvent):
+        """撤销自己最近一条战报"""
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 请在群聊中使用。")
+            return
+        mid = await self.db.get_last_match_by_submitter(group_id, event.get_sender_id())
+        if not mid:
+            yield event.plain_result("没有可撤销的记录。")
+            return
+        ok = await self.db.delete_match(group_id, mid)
+        yield event.plain_result("✅ 已撤销最近一条战报。" if ok else "❌ 撤销失败。")
+
+    @filter.command("战报帮助", alias={"/战报帮助"})
+    async def help_cmd(self, event: AstrMessageEvent):
+        """帮助"""
+        yield event.plain_result(_HELP_TEXT)
+
 
     # ---------- 查询 ----------
 
