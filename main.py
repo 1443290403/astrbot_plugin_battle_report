@@ -122,7 +122,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.9.2")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.9.3")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -742,9 +742,8 @@ class BattleReportPlugin(Star):
             if my_user and my_user["id"] == binding["user_id"]:
                 return f"✅ 参赛ID「{player}」已在你自己的角色下。", my_user
             if my_user:
-                # 我已有角色 → 把该ID挂到我的角色下（多ID绑定到一个角色）
-                await self.db.bind_player_to_user(home, player, my_user["id"])
-                return f"✅ 参赛ID「{player}」已绑定到你的角色「{my_user['name']}」。", my_user
+                # 已绑定其他角色：无论该角色是否被认领，都不得改绑到自己的角色
+                return f"❌ 参赛ID「{player}」已绑定角色「{binding['user_name']}」，不能绑定到你的角色「{my_user['name']}」。", my_user
             # 我无角色 → 认领该ID所在的角色
             status, uid = await self.db.claim_user_by_name(home, binding["user_name"], qq)
             if status == "claimed_else":
