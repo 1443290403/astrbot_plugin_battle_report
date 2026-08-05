@@ -18,6 +18,7 @@
 回复提示）。"""
 
 import re
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
 
@@ -32,6 +33,7 @@ class Duel:
     score_b: int
     a_sub: bool = False  # 玩家 A 是否为替补
     b_sub: bool = False  # 玩家 B 是否为替补
+    ruled: bool = False  # 本场对局是否被规则（判罚方比分更低、必为败方）
 
 
 @dataclass
@@ -76,6 +78,10 @@ SCORE_RE = re.compile(r"(\d+)\s*[:：]\s*(\d+)")
 VS_RE = re.compile(r"\s+VS\s+", re.IGNORECASE)
 # 替补标记（玩家名末尾）：红莲(替) / 红莲（替） / 红莲 （替） / 红莲(替补) / 红莲（ 替补 ）等
 _SUB_RE = re.compile(r"[\s　]*[\(（][\s　]*替(?:补)?[\s　]*[\)）]$")
+# 判罚落败标记（玩家名末尾）：红莲(规则) / 红莲（规则）等
+_RULED_RE = re.compile(r"[\s　]*[\(（][\s　]*规则[\s　]*[\)）]$")
+# 命令末尾的 时间=X月 参数：时间=7月 / 时间：七月 / 时间 = 7 等
+_MONTH_RE = re.compile(r"[\s　]*时间\s*[:：=]\s*([一二三四五六七八九十百\d]+)\s*月?[\s　]*$")
 
 
 def _strip_sub(name: str) -> tuple[str, bool]:
@@ -84,6 +90,57 @@ def _strip_sub(name: str) -> tuple[str, bool]:
     if m:
         return name[: m.start()].strip(), True
     return name.strip(), False
+
+
+def _strip_ruled(name: str) -> tuple[str, bool]:
+    """剥离玩家名末尾的判罚落败标记，返回（干净ID, 是否判罚落败）。"""
+    m = _RULED_RE.search(name)
+    if m:
+        return name[: m.start()].strip(), True
+    return name.strip(), False
+
+
+def _clean_player_name(name: str) -> tuple[str, bool, bool]:
+    """依次剥离替补/判罚标记（循环直到无标记），返回（干净ID, 是否替补, 是否判罚落败）。"""
+    is_sub = is_ruled = False
+    while True:
+        changed = False
+        name, s = _strip_sub(name)
+        if s:
+            is_sub = True
+            changed = True
+        name, r = _strip_ruled(name)
+        if r:
+            is_ruled = True
+            changed = True
+        if not changed:
+            return name, is_sub, is_ruled
+
+
+def _parse_month_filter(payload: str) -> tuple[str, int | None]:
+    """从命令 payload 提取末尾的 `时间=X月` 参数。
+
+    Returns:
+        (清理后的 payload, 月份 int | None)。未指定时月份为 None（调用方默认本月）。
+    """
+    m = _MONTH_RE.search(payload)
+    if not m:
+        return payload, None
+    month = _cn_to_int(m.group(1))
+    return payload[: m.start()].rstrip(), month
+
+
+def month_range(month: int | None = None) -> tuple[str, str]:
+    """某月的日期区间 [当月1号, 当月月末]。month 缺省/非法时取当前月。"""
+    now = datetime.now()
+    m = month if month and 1 <= month <= 12 else now.month
+    start = f"{now.year}-{m:02d}-01"
+    if m == 12:
+        end = f"{now.year}-12-31"
+    else:
+        end = (datetime(now.year, m + 1, 1) - timedelta(days=1)).strftime("%Y-%m-%d")
+    return start, end
+
 
 # 中文数字
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -213,13 +270,15 @@ def parse_battle_report(text: str) -> ParseResult:
 
         m = hits[0]
         score_a, score_b = int(m.group(1)), int(m.group(2))
-        player_a, a_sub = _strip_sub(line[: m.start()].strip())
-        player_b, b_sub = _strip_sub(line[m.end():].strip())
+        player_a, a_sub, a_ruled = _clean_player_name(line[: m.start()].strip())
+        player_b, b_sub, b_ruled = _clean_player_name(line[m.end():].strip())
         if not player_a or not player_b:
             errors.append(f"第 {lineno} 行：玩家名缺失：{line}")
             continue
 
-        report.duels.append(Duel(round_no, player_a, score_a, player_b, score_b, a_sub, b_sub))
+        report.duels.append(
+            Duel(round_no, player_a, score_a, player_b, score_b, a_sub, b_sub, a_ruled or b_ruled)
+        )
         duel_count += 1
 
     # 完整性校验
@@ -270,7 +329,7 @@ def determine_match_winner(report: BattleReport) -> str | None:
 
 
 def _winner_headcount(report: BattleReport) -> str | None:
-    """人头赛：只有一轮，按获胜对局数判定。"""
+    """人头赛：只有一轮，按获胜对局数判定。判罚方比分更低（必为败方），由比分自然判定。"""
     wins_a = wins_b = 0
     for d in report.duels:
         if d.score_a == 0 and d.score_b == 0:
@@ -301,7 +360,8 @@ def _winner_kof(report: BattleReport) -> str | None:
         key_b = (d.player_b, d.b_sub)
         played = not (d.score_a == 0 and d.score_b == 0)
         if played:
-            # 负 或 非零平分 → 不可出战；0:0 未打不更新状态（仍可出战）
+            # 负 或 非零平分 → 不可出战；0:0 未打不更新状态（仍可出战）。
+            # 判罚方比分更低（必为败方），由比分自然判定。
             a_last[key_a] = d.score_a <= d.score_b
             b_last[key_b] = d.score_b <= d.score_a
         if d.round_no == 1:

@@ -278,12 +278,14 @@ def build_next_round(
             random.seed(seed)
         random.shuffle(a)
         random.shuffle(b)
-        count = max(len(a), len(b))
-        added = []
-        for i in range(count):
-            pa = a[i] if i < len(a) else "TK"
-            pb = b[i] if i < len(b) else "TK"
-            added.append(f"{pa}  0:0  {pb}")
+        # 只配对双方实际胜者（TK 占位仅用于 /排表，不在追加轮次出现）
+        count = min(len(a), len(b))
+        added = [f"{a[i]}  0:0  {b[i]}" for i in range(count)]
+        if not added:
+            return RoundBuildResult(
+                False, draft_text, [],
+                ["上一轮没有可配对的胜者（一侧无人可战）。"],
+            )
     else:
         # 玩家→队伍映射（左=team_a，右=team_b），用于按队伍对齐对局顺序
         team_map = {}
@@ -504,7 +506,7 @@ def format_duel_results(report, home_team: str) -> str:
 
 
 def format_duels_block(duels: list[dict]) -> str:
-    """对局段（含轮次分隔），对阵行双空格：`玩家A  比分  玩家B`，替补玩家名后标 (替)。"""
+    """对局段（含轮次分隔），对阵行双空格：`玩家A  比分  玩家B`，替补补 (替)、判罚补 (规则)。"""
     rounds: dict[int, list[dict]] = {}
     for d in duels:
         rounds.setdefault(d["round_no"], []).append(d)
@@ -512,8 +514,18 @@ def format_duels_block(duels: list[dict]) -> str:
     for round_no in sorted(rounds):
         lines.append(f"------第{_int_to_cn(round_no)}轮------")
         for d in rounds[round_no]:
-            pa = f"{d['player_a']}(替)" if d.get("a_sub") else d["player_a"]
-            pb = f"{d['player_b']}(替)" if d.get("b_sub") else d["player_b"]
+            pa = d["player_a"]
+            if d.get("a_sub"):
+                pa += "(替)"
+            pb = d["player_b"]
+            if d.get("b_sub"):
+                pb += "(替)"
+            if d.get("ruled"):
+                # 判罚方比分更低，为败方 → 给败方 ID 补 (规则)
+                if d["score_a"] < d["score_b"]:
+                    pa += "(规则)"
+                elif d["score_b"] < d["score_a"]:
+                    pb += "(规则)"
             lines.append(f"{pa}  {d['score_a']}:{d['score_b']}  {pb}")
     return "\n".join(lines)
 

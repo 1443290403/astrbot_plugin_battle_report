@@ -54,6 +54,24 @@ def test_format_duels_block_sub_marker():
     assert "红莲  2:1  秋风" in text
 
 
+def test_format_duels_block_ruled_marker():
+    """对局段重建时：ruled 字段为真则给败方（比分低的一侧）补 (规则)。"""
+    from lineup import format_duels_block
+
+    duels = [
+        {"seq": 0, "round_no": 1, "player_a": "红莲", "score_a": 1, "player_b": "老千", "score_b": 2,
+         "a_sub": False, "b_sub": False, "ruled": True},
+        {"seq": 1, "round_no": 1, "player_a": "凯撒亮", "score_a": 2, "player_b": "蓝大", "score_b": 1,
+         "a_sub": True, "b_sub": False, "ruled": True},
+    ]
+    text = format_duels_block(duels)
+    assert "红莲(规则)  1:2  老千" in text       # 败方（A，比分低）补 (规则)
+    assert "凯撒亮(替)  2:1  蓝大(规则)" in text  # 替补补 (替)、败方（B）补 (规则)
+    # 未规则的对局不补
+    duels[0]["ruled"] = False
+    assert "红莲  1:2  老千" in format_duels_block(duels)
+
+
 def test_format_report_round_order():
     """乱序对局按轮次分组后输出顺序正确。"""
     duels = [

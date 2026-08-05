@@ -152,6 +152,36 @@ def test_headcount_tie():
     assert determine_match_winner(_report(text)) is None
 
 
+def test_kof_ruled_report_determines():
+    # 含判罚(规则)标记的战报：判罚方比分更低、视为落败 → KC 全员不可出战 → DYG 胜
+    text = """战队: KC VS DYG
+时间: 2026.08.01
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+红莲(规则) 0:2 老千
+凯撒亮 0:2 蓝大
+悠悠球 0:2 牌大"""
+    r = _report(text)
+    assert r.duels[0].ruled is True  # 规则标记已记录
+    assert determine_match_winner(r) == "DYG"
+
+
+def test_headcount_ruled_report_determines():
+    # 人头赛：含判罚(规则)标记，判罚方比分更低 → 按比分判定 → DYG 胜
+    text = """战队: KC VS DYG
+时间: 2026.08.01
+规则: 人头赛
+地点: 123
+------第一轮------
+红莲(规则) 1:2 老千
+凯撒亮 0:2 蓝大
+悠悠球 2:0 牌大"""
+    r = _report(text)
+    assert r.duels[0].ruled is True
+    assert determine_match_winner(r) == "DYG"
+
+
 def test_empty_duels():
     # 无对局的战报无法判定胜负
     from battle_report_parser import BattleReport

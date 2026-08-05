@@ -48,6 +48,17 @@ def _make_report():
     return r.report
 
 
+TEAM = "KC"
+
+
+async def _ins(db, rep=None, winner="", **kw):
+    """插入一份默认归属 TEAM 的战报。"""
+    rep = rep or _make_report()
+    kw.setdefault("home_team", TEAM)
+    return await db.insert_report(rep, winner=winner, **kw)
+
+
+
 async def _drop_test_db():
     import aiomysql
 
@@ -105,9 +116,9 @@ def _with_db(coro_factory):
 
 def test_player_ranking():
     async def ops(db):
-        mid = await db.insert_report(_make_report())
+        mid = await _ins(db)
         assert mid > 0
-        pl = await db.get_player_ranking(GROUP_ID)
+        pl = await db.get_player_ranking(TEAM)
         assert pl[0]["player"] == "老千"
         assert pl[0]["wins"] == 3
         assert pl[0]["losses"] == 0
@@ -121,16 +132,16 @@ def test_player_ranking():
 
 def test_player_ranking_team_filter():
     async def ops(db):
-        await db.insert_report(_make_report())
+        await _ins(db)
         # 只统计 DYG 选手
-        pl = await db.get_player_ranking(GROUP_ID, team="DYG")
+        pl = await db.get_player_ranking(TEAM, team="DYG")
         assert pl[0]["player"] == "老千"
         assert {r["player"] for r in pl} == {"老千", "牌大", "蓝大"}
         # 只统计 KC 选手
-        pl_kc = await db.get_player_ranking(GROUP_ID, team="KC")
+        pl_kc = await db.get_player_ranking(TEAM, team="KC")
         assert {r["player"] for r in pl_kc} == {"红莲", "凯撒亮", "悠悠球"}
         # limit=None 返回主体战队全部选手（不受排名条数限制）
-        pl_all = await db.get_player_ranking(GROUP_ID, team="KC", limit=None)
+        pl_all = await db.get_player_ranking(TEAM, team="KC", limit=None)
         assert {r["player"] for r in pl_all} == {"红莲", "凯撒亮", "悠悠球"}
 
     _with_db(ops)
@@ -138,12 +149,12 @@ def test_player_ranking_team_filter():
 
 def test_player_ranking_role_aggregation():
     async def ops(db):
-        await db.insert_report(_make_report())
+        await _ins(db)
         # 把红莲、凯撒亮绑定到同一角色 小明 → 排行合并为角色名
         uid = await db.find_or_create_user("KC", "小明")
         await db.bind_player_to_user("KC", "红莲", uid)
         await db.bind_player_to_user("KC", "凯撒亮", uid)
-        pl = await db.get_player_ranking(GROUP_ID, team="KC", limit=None)
+        pl = await db.get_player_ranking(TEAM, team="KC", limit=None)
         names = {r["player"] for r in pl}
         assert "小明" in names
         assert "红莲" not in names and "凯撒亮" not in names
@@ -155,7 +166,7 @@ def test_player_ranking_role_aggregation():
 
 def test_resolve_role():
     async def ops(db):
-        await db.insert_report(_make_report())
+        await _ins(db)
         # 未绑定 → None
         assert await db.resolve_role("KC", "红莲") is None
         uid = await db.find_or_create_user("KC", "小明")
@@ -175,22 +186,22 @@ def test_resolve_role():
 
 def test_get_players_trend():
     async def ops(db):
-        await db.insert_report(_make_report())
+        await _ins(db)
         # 红莲、凯撒亮同一天各 1胜1负 → 合并 2胜2负
-        pts = await db.get_players_trend(GROUP_ID, ["红莲", "凯撒亮"], None, home_team="KC")
+        pts = await db.get_players_trend(TEAM, ["红莲", "凯撒亮"], None)
         assert len(pts) == 1
         _, w, l = pts[0]
         assert w == 2 and l == 2
         # 空列表
-        assert await db.get_players_trend(GROUP_ID, [], None, home_team="KC") == []
+        assert await db.get_players_trend(TEAM, [], None) == []
 
     _with_db(ops)
 
 
 def test_team_ranking():
     async def ops(db):
-        await db.insert_report(_make_report())
-        team = await db.get_team_ranking(GROUP_ID)
+        await _ins(db)
+        team = await db.get_team_ranking(TEAM)
         assert team[0]["team"] == "DYG"
         assert team[0]["wins"] == 1
         kc = next(r for r in team if r["team"] == "KC")
@@ -201,7 +212,7 @@ def test_team_ranking():
 
 def test_unbind_player():
     async def ops(db):
-        await db.insert_report(_make_report())
+        await _ins(db)
         uid = await db.find_or_create_user("KC", "小明")
         await db.bind_player_to_user("KC", "红莲", uid)
         assert (await db.get_player_binding("KC", "红莲"))["user_id"] == uid
@@ -217,17 +228,17 @@ def test_unbind_player():
 def test_home_team_vs_opponents():
     async def ops(db):
         # KC 对 DYG 一胜
-        await db.insert_report(_make_report(), winner="KC", home_team="KC")
+        await _ins(db, winner="KC")
         # KC 对 FH 一负
         rep2 = _make_report()
         rep2.team_b = "FH"
-        await db.insert_report(rep2, winner="FH", home_team="KC")
+        await _ins(db, rep2, winner="FH")
         # KC 对 FH 一胜
         rep3 = _make_report()
         rep3.team_b = "FH"
-        await db.insert_report(rep3, winner="KC", home_team="KC")
+        await _ins(db, rep3, winner="KC")
 
-        rows = await db.get_home_team_vs_opponents(GROUP_ID, "KC")
+        rows = await db.get_home_team_vs_opponents("KC")
         by_opp = {r["opponent"]: r for r in rows}
         assert by_opp["DYG"]["wins"] == 1 and by_opp["DYG"]["losses"] == 0
         assert by_opp["DYG"]["total"] == 1 and by_opp["DYG"]["win_rate"] == 100.0
@@ -237,32 +248,98 @@ def test_home_team_vs_opponents():
     _with_db(ops)
 
 
+def test_home_team_record():
+    async def ops(db):
+        await _ins(db, winner="KC")        # 一胜
+        rep2 = _make_report()
+        rep2.team_b = "FH"
+        await _ins(db, rep2, winner="FH")  # 一负
+        rep3 = _make_report()
+        rep3.team_b = "FH"
+        await _ins(db, rep3, winner="KC")  # 一胜
+
+        rec = await db.get_home_team_record(TEAM)
+        assert rec["wins"] == 2 and rec["losses"] == 1 and rec["total"] == 3
+        assert rec["win_rate"] == 66.7
+
+    _with_db(ops)
+
+
+def test_date_filtered_trend_and_export():
+    async def ops(db):
+        # 8月战报
+        await _ins(db, winner="KC")
+        # 7月战报
+        rep2 = _make_report()
+        rep2.match_time = "2026-07-15"
+        await _ins(db, rep2, winner="KC")
+
+        # 趋势：7月区间只返回7月数据（老千7、8月都打了）
+        jul = await db.get_player_trend(TEAM, "老千", "2026-07-01", "2026-07-31")
+        assert [d for d, _, _ in jul] == ["2026-07-15"]
+        aug = await db.get_player_trend(TEAM, "老千", "2026-08-01", "2026-08-31")
+        assert [d for d, _, _ in aug] == ["2026-08-01"]
+
+        # 导出 rows：7月区间只有7月那份的5局
+        rows = await db.get_export_rows(TEAM, "2026-07-01", "2026-07-31")
+        assert len(rows) == 5
+        assert all(str(r["match_time"]) == "2026-07-15" for r in rows)
+        # 无过滤 → 10局
+        assert len(await db.get_export_rows(TEAM)) == 10
+
+        # 合并转发导出 reports：7月只有1份
+        reports = await db.get_reports_for_export(TEAM, "2026-07-01", "2026-07-31")
+        assert len(reports) == 1
+        assert str(reports[0]["match_time"]) == "2026-07-15"
+
+    _with_db(ops)
+
+
 def test_player_record_and_trend():
     async def ops(db):
-        await db.insert_report(_make_report())
-        rec = await db.get_player_record(GROUP_ID, "老千")
-        assert rec["wins"] == 3 and rec["losses"] == 0
+        await _ins(db)
+        # 红莲是 KC 选手：1胜1负
+        rec = await db.get_player_record(TEAM, "红莲")
+        assert rec["wins"] == 1 and rec["losses"] == 1
 
-        trend = await db.get_player_trend(GROUP_ID, "老千")
-        assert trend and trend[0][1] == 3  # (date, wins, losses)
-        assert trend[0][2] == 0
+        trend = await db.get_player_trend(TEAM, "红莲")
+        assert trend and trend[0][1] == 1  # (date, wins, losses)
+        assert trend[0][2] == 1
 
     _with_db(ops)
 
 
 def test_export_rows():
     async def ops(db):
-        await db.insert_report(_make_report())
-        rows = await db.get_export_rows(GROUP_ID)
+        await _ins(db)
+        rows = await db.get_export_rows(TEAM)
         assert len(rows) == 5
         assert rows[0]["team_a"] == "KC"
 
     _with_db(ops)
 
 
+def test_team_scope_cross_group():
+    async def ops(db):
+        # 两个不同群的 KC 战报，按战队跨群查询应都返回
+        await _ins(db)  # group_id=GROUP_ID
+        rep2 = _make_report()
+        rep2.group_id = "OTHER_GROUP"
+        await _ins(db, rep2)  # group_id=OTHER_GROUP
+
+        rows = await db.get_export_rows(TEAM)
+        assert len(rows) == 10  # 两份 × 5 局
+        assert {r["group_id"] for r in rows} == {GROUP_ID, "OTHER_GROUP"}
+
+        pl = await db.get_player_ranking(TEAM, None, None, 1, None, team=None)
+        assert len(pl) >= 5
+
+    _with_db(ops)
+
+
 def test_delete_and_undo():
     async def ops(db):
-        mid = await db.insert_report(_make_report())
+        mid = await _ins(db)
         last = await db.get_last_match_by_submitter(GROUP_ID, "10001")
         assert last == mid
         # 插入时 duels 有 5 局
@@ -279,7 +356,7 @@ def test_delete_and_undo():
         # 正常删除：matches 与其关联 duels 一并删除
         ok = await db.delete_match(GROUP_ID, mid)
         assert ok
-        assert not await db.get_export_rows(GROUP_ID)
+        assert not await db.get_export_rows(TEAM)
         after = await db._query(
             "SELECT COUNT(*) AS n FROM duels WHERE match_id=%s", (mid,)
         )
@@ -290,9 +367,7 @@ def test_delete_and_undo():
 
 def test_insert_raw_text_and_seq():
     async def ops(db):
-        mid = await db.insert_report(
-            _make_report(), winner="KC", home_team="KC", raw_text="原始战报文本"
-        )
+        mid = await _ins(db, winner="KC", raw_text="原始战报文本")
         m = await db._query("SELECT raw_text FROM matches WHERE id=%s", (mid,))
         assert m[0]["raw_text"] == "原始战报文本"
         duels = await db._query(
@@ -308,14 +383,12 @@ def test_insert_raw_text_and_seq():
 
 def test_get_reports_for_export():
     async def ops(db):
-        mid = await db.insert_report(
-            _make_report(), winner="KC", home_team="KC", raw_text="第一份"
-        )
+        mid = await _ins(db, winner="KC", raw_text="第一份")
         rep2 = _make_report()
         rep2.submitted_by = "10002"
-        mid2 = await db.insert_report(rep2, winner="DYG", home_team="KC")
+        mid2 = await _ins(db, rep2, winner="DYG")
 
-        reports = await db.get_reports_for_export(GROUP_ID)
+        reports = await db.get_reports_for_export(TEAM)
         assert [r["match_id"] for r in reports] == [mid, mid2]
         first = reports[0]
         assert first["raw_text"] == "第一份"
@@ -324,6 +397,33 @@ def test_get_reports_for_export():
         assert [d["round_no"] for d in first["duels"]] == [1, 1, 1, 2, 2]
         assert reports[1]["raw_text"] == ""
         assert reports[1]["submitted_by"] == "10002"
+
+    _with_db(ops)
+
+
+def test_insert_ruled_flags():
+    async def ops(db):
+        text = """战队: KC VS DYG
+时间: 2026.08.01
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+红莲(规则) 1:2 老千
+凯撒亮 2:1 蓝大"""
+        parsed = parse_battle_report(text)
+        assert not parsed.errors, parsed.errors
+        report = parsed.report
+        report.group_id = GROUP_ID
+        report.submitted_by = "10001"
+        report.submitted_name = "提交者"
+        report.created_at = 0
+        mid = await _ins(db, report, winner="DYG")
+        duels = await db._query(
+            "SELECT player_a, ruled, player_b FROM duels WHERE match_id=%s ORDER BY seq",
+            (mid,),
+        )
+        assert duels[0]["player_a"] == "红莲" and duels[0]["ruled"] == 1
+        assert duels[1]["ruled"] == 0
 
     _with_db(ops)
 
@@ -344,7 +444,7 @@ def test_insert_sub_flags():
         report.submitted_by = "10001"
         report.submitted_name = "提交者"
         report.created_at = 0
-        mid = await db.insert_report(report, winner="KC", home_team="KC")
+        mid = await _ins(db, report, winner="KC")
         duels = await db._query(
             "SELECT player_a, a_sub, player_b, b_sub FROM duels WHERE match_id=%s ORDER BY seq",
             (mid,),
@@ -452,7 +552,7 @@ def test_group_home_and_home_team_filter():
         rep.submitted_by = "x"
         rep.submitted_name = "y"
         rep.created_at = 0
-        await db.insert_report(rep, "DYG", home_team="KC")
+        await _ins(db, rep, "DYG")
 
         rows = await db._query("SELECT home_team FROM matches WHERE group_id='G1'")
         assert rows[0]["home_team"] == "KC"
@@ -463,7 +563,7 @@ def test_group_home_and_home_team_filter():
         rep2.submitted_by = "x"
         rep2.submitted_name = "y"
         rep2.created_at = 0
-        await db.insert_report(rep2, "DYG", home_team="")
+        await _ins(db, rep2, "DYG", home_team="")
         await db.backfill_group_home("G1", "KC")
         rows = await db._query(
             "SELECT home_team FROM matches WHERE group_id='G1' ORDER BY id"
@@ -472,9 +572,9 @@ def test_group_home_and_home_team_filter():
         assert rows[1]["home_team"] == "KC"
 
         # 分析按 home_team 过滤
-        pl = await db.get_player_ranking("G1", team="DYG", home_team="KC")
+        pl = await db.get_player_ranking("KC", team="DYG")
         assert pl and pl[0]["player"] == "老千"
-        pl_other = await db.get_player_ranking("G1", team="DYG", home_team="OTHER")
+        pl_other = await db.get_player_ranking("OTHER", team="DYG")
         assert not pl_other
 
     _with_db(ops)
@@ -492,7 +592,7 @@ def test_user_and_player_ids():
         rep.submitted_by = "x"
         rep.submitted_name = "y"
         rep.created_at = 0
-        await db.insert_report(rep, "TEST1", home_team="TEST1")
+        await _ins(db, rep, "TEST1", home_team="TEST1")
 
         # 参赛ID池：仅从战报提取 TEST1 选手
         pool = await db.get_player_pool("TEST1")
@@ -518,7 +618,7 @@ def test_user_and_player_ids():
         assert set(await db.get_user_players("TEST1", uid)) == {"红莲", "凯撒亮"}
 
         # 用户参赛ID + 合并战绩（跨群）
-        agg = await db.get_players_aggregate(None, ["红莲"], home_team="TEST1")
+        agg = await db.get_players_aggregate("TEST1", ["红莲"])
         assert agg["wins"] == 1 and agg["losses"] == 0
 
     _with_db(ops)
@@ -536,7 +636,7 @@ def test_player_record_excludes_same_name_other_team():
         rep1.submitted_by = "x"
         rep1.submitted_name = "y"
         rep1.created_at = 0
-        await db.insert_report(rep1, "KC", home_team="KC")
+        await _ins(db, rep1, "KC")
         # KC 上传 vs DYG：红莲是己方（player_a_team=KC）
         r2 = parse_battle_report(
             "战队: KC VS DYG\n时间: 2026.08.01\n规则: 2/3【KOF】\n地点: 1\n"
@@ -547,9 +647,9 @@ def test_player_record_excludes_same_name_other_team():
         rep2.submitted_by = "x"
         rep2.submitted_name = "y"
         rep2.created_at = 0
-        await db.insert_report(rep2, "KC", home_team="KC")
+        await _ins(db, rep2, "KC")
 
-        rec = await db.get_player_record(None, "红莲", home_team="KC")
+        rec = await db.get_player_record("KC", "红莲")
         # 只算 KC 的红莲（1胜），不含 RF 的同名红莲
         assert rec["wins"] == 1 and rec["losses"] == 0
 
@@ -566,6 +666,20 @@ def test_rename_user():
         assert await db.rename_user("KC", uid, "老千") == "conflict"
         user = await db.get_user_by_qq("KC", "10001")
         assert user["name"] == "红莲2"
+
+    _with_db(ops)
+
+
+def test_group_chat_type():
+    async def ops(db):
+        # 缺省为友谊群
+        assert await db.get_group_chat_type("G1") == "友谊群"
+        await db.set_group_chat_type("G1", "战报群")
+        assert await db.get_group_chat_type("G1") == "战报群"
+        await db.set_group_chat_type("G1", "主群")
+        assert await db.get_group_chat_type("G1") == "主群"
+        # 其他群不受影响
+        assert await db.get_group_chat_type("G2") == "友谊群"
 
     _with_db(ops)
 
@@ -634,7 +748,7 @@ TSUKI 2:1 宏大
             rep.submitted_name = "batch"
             rep.created_at = 0
             winner = determine_match_winner(rep)
-            await db.insert_report(rep, winner)
+            await _ins(db, rep, winner)
 
         rows = await db._query(
             "SELECT id, team_a, team_b, winner FROM matches WHERE group_id=%s ORDER BY id",

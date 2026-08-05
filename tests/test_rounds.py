@@ -42,17 +42,27 @@ def test_parse_round_no():
 
 
 def test_random_match_prev_winners():
-    # 第一轮胜者：A 侧 红莲/凯撒亮，B 侧 红大
+    # 第一轮胜者：A 侧 红莲/凯撒亮，B 侧 红大 → 只配对 1 场，不补 TK
     r = build_next_round(DRAFT, 2, [], seed="test")
     assert r.ok
     section = _round_section(r.new_text, 2)
-    assert len(section) == 2  # max(2 A胜, 1 B胜)
-    assert any("TK" in ln for ln in section)  # B 侧只有 1 名胜者，补 TK
+    assert len(section) == 1  # min(2 A胜, 1 B胜)
+    assert all("TK" not in ln for ln in section)
     assert any("红莲" in ln or "凯撒亮" in ln for ln in section)
+    assert all("红大" in ln for ln in section)  # B 侧唯一胜者必定出场
     # 败者不进入
     assert all("悠悠球" not in ln for ln in section)
     assert all("老千" not in ln for ln in section)
     assert all("蓝大" not in ln for ln in section)
+
+
+def test_random_match_no_pairable_fails():
+    # 一侧无人可战（0 胜者 vs 2 胜者）→ 不补 TK，返回失败
+    draft = DRAFT.replace("红莲 2:0 老千", "红莲 0:2 老千") \
+                 .replace("凯撒亮 2:0 蓝大", "凯撒亮 0:2 蓝大")
+    r = build_next_round(draft, 2, [])
+    assert not r.ok
+    assert any("可配对" in e for e in r.errors)
 
 
 def test_names_only():
