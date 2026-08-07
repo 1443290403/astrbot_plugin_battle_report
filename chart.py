@@ -20,19 +20,27 @@ _FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/arphic/uming.ttc",
 ]
 
-_font_cache: dict[int, object] = {}
+# 粗体候选：优先微软雅黑粗体/黑体/Noto Bold，缺则回退到常规字体列表
+_FONT_CANDIDATES_BOLD = [
+    r"C:\Windows\Fonts\msyhbd.ttc",        # 微软雅黑 粗体
+    r"C:\Windows\Fonts\simhei.ttf",        # 黑体（近似粗）
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+] + _FONT_CANDIDATES
+
+_font_cache: dict[tuple, object] = {}
 _warned = False
 
 
-def _load_font(size: int):
+def _load_font(size: int, bold: bool = False):
     """加载指定字号的中文字体，带缓存；找不到则退回默认字体并告警一次。"""
     global _warned
-    if size in _font_cache:
-        return _font_cache[size]
+    key = (size, bold)
+    if key in _font_cache:
+        return _font_cache[key]
     from PIL import ImageFont
 
     font = None
-    for p in _FONT_CANDIDATES:
+    for p in (_FONT_CANDIDATES_BOLD if bold else _FONT_CANDIDATES):
         if os.path.exists(p):
             try:
                 font = ImageFont.truetype(p, size)
@@ -45,7 +53,7 @@ def _load_font(size: int):
             print("[battle_report] 未找到中文字体，图表中文可能显示为方块。"
                   "请安装 微软雅黑 / Noto Sans CJK。")
         font = ImageFont.load_default()
-    _font_cache[size] = font
+    _font_cache[key] = font
     return font
 
 
@@ -159,6 +167,131 @@ def make_trend_chart(
     # 图例
     draw.text((width - margin_right - 150, margin_top + 4),
               "■ 胜率   -- 累计场次", font=font_small, fill="#2f6fed")
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(str(out_path))
+    return out_path.resolve()
+
+
+# ---------- 排行表格图片 ----------
+
+# 浅色简洁配色
+_HEADER_BG = "#2f6fed"     # 表头蓝
+_HEADER_FG = "#ffffff"
+_ROW_STRIPE = "#f2f6ff"    # 隔行浅条纹
+_ROW_LINE = "#dce4f0"      # 行间分隔线
+_BORDER = "#c9d4e8"        # 外边框
+_MEDAL = {1: "#b8860b", 2: "#808080", 3: "#a0522d"}  # 金银铜
+_CELL_PAD_X = 16
+_TITLE_SIZE = 22
+_HEADER_FONT_SIZE = 15
+_DATA_FONT_SIZE = 15
+_NOTE_FONT_SIZE = 13
+
+
+def make_ranking_image(
+    cells: list[list[object]],
+    aligns: list[str],
+    title: str,
+    out_path: Path,
+    max_rows: int = 30,
+) -> Path:
+    """把排行单元格网格渲染成 PNG 表格图片（浅色简洁风格）。
+
+    Args:
+        cells: stats.build_ranking_cells 的输出（首行=表头，其后为数据行）。
+        aligns: 各列对齐方式（"left"/"right"/"center"），表头行同样适用。
+        title: 图片顶部标题。
+        out_path: PNG 保存路径（目录自动创建）。
+        max_rows: 最多渲染的数据行数，超出部分以省略行提示；传 None 则显示全部。
+
+    Returns:
+        保存后的绝对路径。
+    """
+    from PIL import Image, ImageDraw
+
+    if not cells or len(cells) < 2:
+        raise ValueError("无可渲染的排行数据")
+    ncols = len(cells[0])
+    data_rows = cells[1:]
+    if max_rows is None:
+        truncated = 0  # 显示全部，不截断
+    else:
+        max_rows = max(int(max_rows), 1)
+        truncated = len(data_rows) - max_rows
+    shown = data_rows if truncated <= 0 else data_rows[:max_rows]
+
+    font_title = _load_font(_TITLE_SIZE, bold=True)
+    font_head = _load_font(_HEADER_FONT_SIZE, bold=True)
+    font_data = _load_font(_DATA_FONT_SIZE)
+    font_note = _load_font(_NOTE_FONT_SIZE)
+    note_text = f"… 其余 {truncated} 人未显示" if truncated > 0 else None
+
+    # 列宽 = 该列表头与数据单元格像素宽度最大值
+    col_w = []
+    for c in range(ncols):
+        w = max(font_head.getlength(str(cells[0][c])),
+                max(font_data.getlength(str(r[c])) for r in shown))
+        col_w.append(w)
+
+    margin = 28
+    title_h = 58
+    head_h = 44
+    row_h = 42
+    note_h = 38 if note_text else 0
+    img_w = int(sum(col_w) + 2 * _CELL_PAD_X * ncols) + 2 * margin
+    img_h = int(margin + title_h + head_h + row_h * len(shown) + note_h + margin)
+
+    img = Image.new("RGB", (img_w, img_h), "white")
+    draw = ImageDraw.Draw(img)
+
+    # 标题
+    draw.text((img_w / 2, margin + title_h / 2), title, font=font_title,
+              fill="#1a1a1a", anchor="mm")
+
+    # 表格列边界
+    x0 = margin
+    xs = [x0]
+    for w in col_w:
+        xs.append(xs[-1] + w + 2 * _CELL_PAD_X)
+
+    def draw_cell(x, y, w, h, text, font, fill, align):
+        t = str(text)
+        if align == "left":
+            tx = x + _CELL_PAD_X
+        elif align == "center":
+            tx = x + _CELL_PAD_X + w / 2 - font.getlength(t) / 2
+        else:  # right
+            tx = x + _CELL_PAD_X + w - font.getlength(t)
+        draw.text((tx, y + h / 2), t, font=font, fill=fill, anchor="lm")
+
+    # 表头
+    y = margin + title_h
+    draw.rectangle([x0, y, xs[-1], y + head_h], fill=_HEADER_BG)
+    for c in range(ncols):
+        draw_cell(xs[c], y, col_w[c], head_h, cells[0][c], font_head, _HEADER_FG, aligns[c])
+    y += head_h
+
+    # 数据行
+    for i, r in enumerate(shown):
+        if i % 2 == 1:
+            draw.rectangle([x0, y, xs[-1], y + row_h], fill=_ROW_STRIPE)
+        for c in range(ncols):
+            fill = _MEDAL.get(r[0], "#1a1a1a") if c == 0 else "#1a1a1a"
+            draw_cell(xs[c], y, col_w[c], row_h, r[c], font_data, fill, aligns[c])
+        draw.line([(x0, y + row_h), (xs[-1], y + row_h)], fill=_ROW_LINE, width=1)
+        y += row_h
+
+    # 省略行
+    if note_text:
+        draw.line([(x0, y), (xs[-1], y)], fill=_ROW_LINE, width=1)
+        draw.text((x0 + _CELL_PAD_X, y + note_h / 2), note_text,
+                  font=font_note, fill="#888888", anchor="lm")
+        y += note_h
+
+    # 外边框
+    draw.rectangle([x0, margin + title_h, xs[-1], y], outline=_BORDER, width=2)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

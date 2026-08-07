@@ -6,6 +6,7 @@ from battle_report_parser import (
     _parse_month_filter,
     month_range,
     parse_battle_report,
+    parse_export_payload,
     split_reports,
 )
 
@@ -215,3 +216,66 @@ def test_split_reports():
     # 单份
     assert len(split_reports("战队: A VS B\n时间: 2026.01.01\n红莲 2:0 蓝大")) == 1
     assert split_reports("") == []
+
+
+def test_parse_export_empty():
+    a = parse_export_payload("")
+    assert a == {"player": None, "outcome": "全部", "month": None, "days": None, "fmt": None}
+
+
+def test_parse_export_full():
+    a = parse_export_payload("老千 胜场 7月")
+    assert a == {"player": "老千", "outcome": "胜场", "month": 7, "days": None, "fmt": None}
+
+
+def test_parse_export_player_loss_recent_days_csv():
+    a = parse_export_payload("老千 负场 最近7天 csv")
+    assert a["player"] == "老千" and a["outcome"] == "负场"
+    assert a["days"] == 7 and a["month"] is None and a["fmt"] == "csv"
+
+
+def test_parse_export_recent_days_forms():
+    # 最近7天 / 7天 / 最近 7 天 均可
+    for s in ("最近7天", "7天"):
+        a = parse_export_payload(f"红莲 {s}")
+        assert a["player"] == "红莲" and a["days"] == 7, s
+
+
+def test_parse_export_fmt_case_insensitive():
+    assert parse_export_payload("红莲 JSON")["fmt"] == "json"
+    assert parse_export_payload("红莲 CSV")["fmt"] == "csv"
+
+
+def test_parse_export_order_independent():
+    a = parse_export_payload("csv 红莲 胜场")
+    assert a["player"] == "红莲" and a["outcome"] == "胜场" and a["fmt"] == "csv"
+
+
+def test_parse_export_month_wins_over_days():
+    # 月份 + 最近N天 同时给出：先剥末尾 最近N天 再剥末尾 X月，两种顺序都兼容
+    for s in ("红莲 胜场 7月 最近7天", "红莲 胜场 最近7天 7月"):
+        a = parse_export_payload(s)
+        assert a == {"player": "红莲", "outcome": "胜场", "month": 7, "days": 7, "fmt": None}, s
+
+
+def test_parse_export_old_style_month():
+    a = parse_export_payload("红莲 胜场 时间=7月")
+    assert a["month"] == 7 and a["player"] == "红莲"
+
+
+def test_parse_export_time_token_mid_string():
+    # 时间参数夹在中间（csv/json 在末尾）也能提取，不污染玩家名
+    a = parse_export_payload("老千 胜场 7月 csv")
+    assert a == {"player": "老千", "outcome": "胜场", "month": 7, "days": None, "fmt": "csv"}
+    b = parse_export_payload("红莲 时间=7月 最近7天 json")
+    assert b["month"] == 7 and b["days"] == 7 and b["player"] == "红莲" and b["fmt"] == "json"
+
+
+def test_parse_export_all_default():
+    a = parse_export_payload("全部")
+    assert a["player"] is None and a["outcome"] == "全部"
+
+
+def test_parse_export_multi_word_player():
+    a = parse_export_payload("一吻便杀狗 胜场 7月")
+    assert a["player"] == "一吻便杀狗" and a["outcome"] == "胜场"

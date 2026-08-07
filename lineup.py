@@ -573,24 +573,74 @@ def report_to_text(r: dict) -> str:
     )
 
 
-def filter_report_outcome(reports: list[dict], outcome: str) -> list[dict]:
+def _player_side(r: dict, players: set[str], member_team: str | None = None) -> str | None:
+    """玩家（参赛ID集合）在该场对局中出现的侧（team_a/team_b）。
+
+    未参与返回 None；两侧都出现（异常数据）无法判定也返回 None。
+    member_team 非空时要求该玩家在 member_team 一侧出场（跨队同名——如两队都有同名
+    玩家——不归入本战队成员，返回 None）。
+    """
+    side = None
+    for d in r["duels"]:
+        if d["player_a"] in players:
+            if side is not None and side != r["team_a"]:
+                return None
+            side = r["team_a"]
+        if d["player_b"] in players:
+            if side is not None and side != r["team_b"]:
+                return None
+            side = r["team_b"]
+    if side is None:
+        return None
+    if member_team and side != member_team:
+        return None  # 跨队同名：非本战队一侧出场，不计入本战队成员
+    return side
+
+
+def filter_report_outcome(
+    reports: list[dict],
+    outcome: str,
+    players: list[str] | None = None,
+    member_team: str | None = None,
+) -> list[dict]:
     """按导出范围过滤战报聚合 dict 列表。
 
+    players 为空时以主体战队 home_team 为参照（现有语义）：
     - 全部：不过滤
     - 胜场：matches.winner == matches.home_team（主体战队获胜）
     - 负场：主体战队在对阵内且胜负已定且 winner != home_team（主体战队战败）
     主体不在对阵内或胜负未定的，胜/负过滤中排除。
+
+    players 非空时（指定某玩家）仅保留该玩家参与的对阵，胜/负以该玩家所在侧为参照
+    （比赛级口径：该玩家所在战队整场获胜/战败）：
+    - 全部：仅按玩家参与过滤
+    - 胜场：winner == 该玩家所在侧
+    - 负场：胜负已定且 winner != 该玩家所在侧
+    玩家未参与或两侧都出现的对阵在过滤中排除。
+
+    member_team 非空时（该玩家是 member_team 的已绑定成员）额外要求玩家在
+    member_team 一侧出场：跨队同名玩家（如对方战队也有同名参赛ID）不归入本队。
     """
-    if outcome != "胜场" and outcome != "负场":
-        return list(reports)
+    pset = set(players) if players else None
     result = []
     for r in reports:
-        home = r["home_team"] or ""
+        if pset:
+            side = _player_side(r, pset, member_team)
+            if side is None:
+                continue  # 玩家未参与，或两侧都出现/跨队同名无法判定
+            home = side
+            in_match = True  # side 由 team_a/team_b 派生，必在对阵内
+        else:
+            home = r["home_team"] or ""
+            in_match = home in (r["team_a"], r["team_b"])
         winner = r["winner"] or ""
+        if outcome != "胜场" and outcome != "负场":
+            result.append(r)  # 全部：仅按参与过滤（pset 非空时）
+            continue
         if outcome == "胜场":
             if home and winner == home:
                 result.append(r)
         else:  # 负场
-            if home and home in (r["team_a"], r["team_b"]) and winner and winner != home:
+            if home and in_match and winner and winner != home:
                 result.append(r)
     return result

@@ -796,8 +796,8 @@ class Database:
                {limit_clause}""",
             tuple(params),
         )
-        # 合并每人的比赛级统计（友谊次数/无双次数）
-        match_stats = await self.get_player_match_stats(home_team, date_from, date_to)
+        # 合并每人的比赛级统计（友谊次数/无双次数）；team 过滤与 total 列口径一致
+        match_stats = await self.get_player_match_stats(home_team, date_from, date_to, team=team)
         for r in rows:
             st = match_stats.get(r["player"], {"friendship": 0, "wushuang": 0})
             r["friendship"] = st["friendship"]
@@ -809,6 +809,7 @@ class Database:
         home_team: str,
         date_from: str | None = None,
         date_to: str | None = None,
+        team: str | None = None,
     ) -> dict[str, dict]:
         """统计区间内每人参与的比赛场次（友谊次数）与无双次数。
 
@@ -816,6 +817,9 @@ class Database:
         无双次数 = 场次级判定（见 stats.compute_match_stats），每场至多一人。
         返回 {已解析玩家名: {"friendship": int, "wushuang": int}}。
         名字解析与 get_player_ranking 的 sides CTE 一致（COALESCE(u.name, 参赛ID)）。
+
+        team 非空时只统计该玩家在 team 一侧出场的比赛（跨队同名碰撞排除，
+        与 get_player_ranking 的 team_clause / total 列口径一致）。
         """
         d1, d2 = self._date_bounds(date_from, date_to)
         rows = await self._query(
@@ -844,10 +848,22 @@ class Database:
         def flush() -> None:
             if not cur:
                 return
-            for name, st in stats.compute_match_stats(cur, cur_winner).items():
+            st = stats.compute_match_stats(cur, cur_winner)
+            if team:
+                # 只统计在该战队一侧出场的玩家：跨队同名（如两队都有 知更）不计入本队
+                on_team = set()
+                for d in cur:
+                    if d["player_a_team"] == team:
+                        on_team.add(d["resolved_a"])
+                    if d["player_b_team"] == team:
+                        on_team.add(d["resolved_b"])
+                for name in list(st):
+                    if name not in on_team:
+                        del st[name]
+            for name, v in st.items():
                 t = totals.setdefault(name, {"friendship": 0, "wushuang": 0})
-                t["friendship"] += st["friendship"]
-                t["wushuang"] += st["wushuang"]
+                t["friendship"] += v["friendship"]
+                t["wushuang"] += v["wushuang"]
 
         for r in rows:
             if r["match_id"] != cur_id:

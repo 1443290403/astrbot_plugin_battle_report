@@ -31,6 +31,7 @@ from .battle_report_parser import (
     determine_match_winner,
     month_range,
     parse_battle_report,
+    parse_export_payload,
     split_reports,
 )
 from .database import Database
@@ -81,7 +82,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.8")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.12")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1237,18 +1238,41 @@ class BattleReportPlugin(Star):
                 yield event.plain_result(stats.format_home_team_vs(home_team, rows))
             else:
                 min_games = int(self.config.get("min_games", 1) or 1)
+                month_label = f"{month}月" if month else "本月"
                 if scope in ("全部", "所有"):
                     rows = await self.db.get_player_ranking(
                         home_team, date_from, date_to, min_games, limit, team=None
                     )
-                    yield event.plain_result(stats.format_player_ranking(rows, limit, min_games))
+                    fallback = stats.format_player_ranking(rows, limit, min_games)
+                    title = f"个人积分榜（全战队 · 前 {limit}）"
+                    caption = f"🏆 全战队个人榜（前 {limit} · {month_label}）"
+                    # 全战队 top-N 按配置截断（默认 30 行）
+                    max_rows = int(self.config.get("ranking_image_max_rows", 30) or 30)
                 else:
-                    # 默认只统计战队选手，显示全部队员（不设上限）
+                    # 默认只统计战队选手，显示全部队员（不设上限，图片不截断）
                     rows = await self.db.get_player_ranking(
                         home_team, date_from, date_to, min_games, None, team=home_team
                     )
                     note = f"\n（战队 {home_team}，共 {len(rows)} 人）" if home_team else ""
-                    yield event.plain_result(stats.format_player_ranking(rows, None, min_games) + note)
+                    fallback = stats.format_player_ranking(rows, None, min_games) + note
+                    title = f"个人积分榜（{home_team} · 共 {len(rows)} 人 · {month_label}）"
+                    caption = f"🏆 {home_team} 个人榜（{month_label}）"
+                    max_rows = None  # 全部队员，不截断
+                if rows and self.config.get("ranking_image", True):
+                    # 图片表格展示，生成失败回退文字表格
+                    try:
+                        cells = stats.build_ranking_cells(rows)
+                        aligns = ["right", "left"] + ["right"] * 7
+                        out = self.data_dir / "rankings" / f"rank_{int(time.time())}.png"
+                        path = chart.make_ranking_image(cells, aligns, title, out, max_rows)
+                        yield event.chain_result([
+                            Plain(f"{caption}："),
+                            Image.fromFileSystem(str(path)),
+                        ])
+                        return
+                    except Exception:
+                        logger.exception("排行图片生成失败，回退文字表格")
+                yield event.plain_result(fallback)
         except Exception:
             logger.exception("排行查询失败")
             yield event.plain_result("❌ 查询出错，请稍后重试。")
@@ -1369,7 +1393,7 @@ class BattleReportPlugin(Star):
 
     @filter.command("导出", alias={"/导出", "/战报导出"})
     async def export(self, event: AstrMessageEvent):
-        """导出战报：全部/胜场/负场 以合并转发逐条还原；csv/json 导出文件（默认本月，末尾可加 X月）"""
+        """导出战报：可指定玩家/胜场负场/时间（X月|最近N天），合并转发或 csv/json 文件"""
         err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -1378,29 +1402,68 @@ class BattleReportPlugin(Star):
         if not group_id:
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
-        payload, month = _parse_month_filter(
+        args = parse_export_payload(
             _strip_command(event.get_message_str(), _EXPORT_CMDS)
         )
-        arg = payload.strip().lower()
-        date_from, date_to = month_range(month)
+        fmt = args["fmt"]
+        outcome = args["outcome"]
+
+        # 时间三态：月份 优先 → 最近N天 → 默认本月
+        if args["month"]:
+            date_from, date_to = month_range(args["month"])
+            period_label = f"{args['month']}月"
+        elif args["days"]:
+            date_from, date_to = self._date_from(args["days"]), None
+            period_label = f"最近 {args['days']} 天"
+        else:
+            date_from, date_to = month_range(None)
+            period_label = "本月"
+
         home_team = await self._get_effective_home(group_id)
         if not home_team:
             yield event.plain_result(_NEED_HOME)
             return
 
-        # ---------- 文件导出（csv/json，原逻辑保留） ----------
-        if arg in ("csv", "json"):
+        # 指定玩家 → 参赛ID集合（绑定角色聚合/直接按参赛ID）
+        players = None
+        player_label = ""
+        member_team = None  # 已绑定本战队成员时，限制其在本战队一侧出场（跨队同名排除）
+        if args["player"]:
+            role = await self.db.resolve_role(home_team, args["player"])
+            if role:
+                players = role["players"]
+                player_label = role["user_name"]
+                member_team = home_team
+            else:
+                players = [args["player"]]
+                player_label = args["player"]
+        filter_label = " · ".join(x for x in (outcome, player_label, period_label) if x)
+
+        # ---------- 文件导出（csv/json） ----------
+        if fmt:
             try:
                 rows = await self.db.get_export_rows(home_team, date_from, date_to)
             except Exception:
                 logger.exception("导出查询失败")
                 yield event.plain_result("❌ 导出失败，请稍后重试。")
                 return
+            if players is not None or outcome != "全部":
+                # 以比赛级聚合过滤出命中 match_id，再裁剪对局行
+                try:
+                    reports = await self.db.get_reports_for_export(home_team, date_from, date_to)
+                except Exception:
+                    logger.exception("导出查询失败")
+                    yield event.plain_result("❌ 导出失败，请稍后重试。")
+                    return
+                reports = lineup.filter_report_outcome(reports, outcome, players, member_team)
+                keep = {r["match_id"] for r in reports}
+                rows = [r for r in rows if r["match_id"] in keep]
             if not rows:
-                yield event.plain_result("当前战队暂无战报数据。")
+                msg = f"{player_label} 没有符合条件的战报。" if player_label else "当前战队暂无战报数据。"
+                yield event.plain_result(msg)
                 return
 
-            if arg == "csv":
+            if fmt == "csv":
                 buffer = io.StringIO()
                 writer = csv.writer(buffer)
                 writer.writerow([
@@ -1421,7 +1484,7 @@ class BattleReportPlugin(Star):
                 content = json.dumps(rows, ensure_ascii=False, indent=2, default=str)
                 encoding = "utf-8"
 
-            out = self.data_dir / "exports" / f"battle_report_{group_id}.{arg}"
+            out = self.data_dir / "exports" / f"battle_report_{group_id}.{fmt}"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(content, encoding=encoding)
             yield event.chain_result([
@@ -1431,20 +1494,16 @@ class BattleReportPlugin(Star):
             return
 
         # ---------- 合并转发导出（全部/胜场/负场） ----------
-        if arg == "":
-            arg = "全部"
-        if arg not in ("全部", "胜场", "负场"):
-            yield event.plain_result("用法：导出 [全部|胜场|负场|csv|json]")
-            return
         try:
             reports = await self.db.get_reports_for_export(home_team, date_from, date_to)
         except Exception:
             logger.exception("导出查询失败")
             yield event.plain_result("❌ 导出失败，请稍后重试。")
             return
-        reports = lineup.filter_report_outcome(reports, arg)
+        reports = lineup.filter_report_outcome(reports, outcome, players, member_team)
         if not reports:
-            yield event.plain_result("没有符合该条件的战报。")
+            msg = f"{player_label} 没有符合条件的战报。" if player_label else "没有符合该条件的战报。"
+            yield event.plain_result(msg)
             return
 
         # 每份战报一个转发节点；头部逐字保留、对局段双空格重建
@@ -1460,7 +1519,7 @@ class BattleReportPlugin(Star):
         batch = (len(nodes) + max_nodes - 1) // max_nodes
         for i in range(0, len(nodes), max_nodes):
             yield event.chain_result([Nodes(nodes[i:i + max_nodes])])
-        yield event.plain_result(f"📤 已导出 {len(nodes)} 份战报（{arg}），共 {batch} 条转发。")
+        yield event.plain_result(f"📤 已导出 {len(nodes)} 份战报（{filter_label}），共 {batch} 条转发。")
 
     # ---------- 管理 ----------
 

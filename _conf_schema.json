@@ -16,6 +16,16 @@
     "type": "int",
     "default": 10
   },
+  "ranking_image": {
+    "description": "排行是否以图片展示（关闭则退回文字表格）",
+    "type": "bool",
+    "default": true
+  },
+  "ranking_image_max_rows": {
+    "description": "排行图片最多展示行数（仅 /排行 全部 生效；/排行 默认显示全部队员不截断）",
+    "type": "int",
+    "default": 30
+  },
   "min_games": {
     "description": "进入个人排行所需最少对局数",
     "type": "int",

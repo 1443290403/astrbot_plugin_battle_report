@@ -196,6 +196,46 @@ def test_player_match_stats_aggregation():
     _with_db(ops)
 
 
+def test_player_match_stats_team_filter_cross_team_same_name():
+    """跨队同名碰撞：本队与对方战队各有同名玩家，team 过滤只统计本队一侧出场。"""
+
+    async def ops(db):
+        rep1 = parse_battle_report(
+            "战队: KC VS FH\n时间: 2026.08.01\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n知更 2:1 甲"
+        ).report
+        rep1.group_id = GROUP_ID
+        rep1.submitted_by = "10001"
+        rep1.submitted_name = "提交者"
+        rep1.created_at = 1700000000
+        await _ins(db, rep1, winner="KC")  # 知更 在 KC 侧出场
+
+        rep2 = parse_battle_report(
+            "战队: KC VS FH\n时间: 2026.08.02\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n别天 2:1 知更"
+        ).report
+        rep2.group_id = GROUP_ID
+        rep2.submitted_by = "10001"
+        rep2.submitted_name = "提交者"
+        rep2.created_at = 1700000000
+        await _ins(db, rep2, winner="KC")  # FH 侧也有同名 知更
+
+        # 不指定 team：跨队同名合并，友谊 2 场
+        st_all = await db.get_player_match_stats(TEAM)
+        assert st_all["知更"]["friendship"] == 2
+        # 指定 team=KC：只统计本队一侧出场，友谊 1 场
+        st_kc = await db.get_player_match_stats(TEAM, team="KC")
+        assert st_kc["知更"]["friendship"] == 1
+        assert st_kc["别天"]["friendship"] == 1
+
+        # 排行 total 列与友谊次数口径一致（都只计 KC 一侧）
+        pl = await db.get_player_ranking(TEAM, team="KC", limit=None)
+        zg = next(r for r in pl if r["player"] == "知更")
+        assert zg["total"] == 1 and zg["wins"] == 1 and zg["friendship"] == 1
+
+    _with_db(ops)
+
+
 def test_resolve_role():
     async def ops(db):
         await _ins(db)

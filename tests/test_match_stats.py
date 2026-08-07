@@ -1,6 +1,6 @@
 """比赛级统计（无双/友谊次数）与排行表格格式化单元测试。"""
 
-from stats import _disp_width, compute_match_stats, format_player_ranking
+from stats import _disp_width, build_ranking_cells, compute_match_stats, format_player_ranking
 
 
 def _d(seq, a, sa, sb, b, team_a="KC", team_b="DYG"):
@@ -153,3 +153,38 @@ def test_format_ranking_missing_fields_default_zero():
 
 def test_format_ranking_empty():
     assert format_player_ranking([]) == "暂无战报数据。"
+
+
+# ---------- 图片表格共用的单元格构建器 ----------
+
+def test_build_ranking_cells_values():
+    rows = [
+        {"player": "老千", "points": 3.0, "wins": 3, "losses": 0, "draws": 0, "total": 3,
+         "friendship": 1, "wushuang": 1},
+        {"player": "红莲", "points": 1.0, "wins": 1, "losses": 1, "draws": 0, "total": 2,
+         "friendship": 1, "wushuang": 0},
+    ]
+    cells = build_ranking_cells(rows)
+    assert cells[0] == ["排名", "队员", "积分", "胜场", "负场", "总场数", "友谊次数", "胜率", "无双次数"]
+    assert cells[1] == [1, "老千", "3", 3, 0, 3, 1, "100.0", 1]
+    assert cells[2] == [2, "红莲", "1", 1, 1, 2, 1, "50.0", 0]
+
+
+def test_build_ranking_cells_tie_rank():
+    rows = [
+        {"player": "A", "points": 2.0, "wins": 2, "losses": 0, "draws": 0, "total": 2,
+         "friendship": 1, "wushuang": 0},
+        {"player": "B", "points": 2.0, "wins": 2, "losses": 0, "draws": 0, "total": 2,
+         "friendship": 1, "wushuang": 0},
+        {"player": "C", "points": 1.0, "wins": 1, "losses": 1, "draws": 0, "total": 2,
+         "friendship": 1, "wushuang": 0},
+    ]
+    cells = build_ranking_cells(rows)
+    assert cells[1][0] == 1 and cells[2][0] == 1 and cells[3][0] == 3
+
+
+def test_build_ranking_cells_missing_fields_default_zero():
+    cells = build_ranking_cells([
+        {"player": "X", "points": 0.0, "wins": 0, "losses": 0, "draws": 0, "total": 1},
+    ])
+    assert cells[1] == [1, "X", "0", 0, 0, 0, 0, "0.0", 0]

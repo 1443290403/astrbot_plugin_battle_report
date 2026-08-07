@@ -84,6 +84,14 @@ _RULED_RE = re.compile(r"[\s　]*[\(（][\s　]*规则[\s　]*[\)）]$")
 _MONTH_RE = re.compile(r"[\s　]*时间\s*[:：=＝]\s*([一二三四五六七八九十百\d]+)\s*月?[\s　]*$")
 # 命令末尾直接写月份（新写法，去掉 时间= 前缀）：七月 / 7月 / 十二月 等
 _MONTH_TOKEN_RE = re.compile(r"[\s　]*([一二三四五六七八九十百\d]+)\s*月[\s　]*$")
+# 命令末尾的 最近N天 参数：最近7天 / 7天 / 最近 7 天 等
+_DAYS_RE = re.compile(r"[\s　]*(?:最近[\s　]*)?(\d+)[\s　]*天[\s　]*$")
+# 单个 token 形态的 最近N天（中间位置也能识别）：最近7天 / 7天 / 最近 7 天
+_TOKEN_DAYS_RE = re.compile(r"^最近[\s　]*(\d+)[\s　]*天$|^(\d+)[\s　]*天$")
+# 单个 token 形态的月份：时间=7月 / 时间=7 / 7月 / 七月（中间位置也能识别）
+_TOKEN_MONTH_RE = re.compile(
+    r"^时间\s*[:：=＝]\s*([一二三四五六七八九十百\d]+)\s*月?$|^([一二三四五六七八九十百\d]+)\s*月$"
+)
 
 
 def _strip_sub(name: str) -> tuple[str, bool]:
@@ -138,6 +146,51 @@ def _parse_month_filter(payload: str) -> tuple[str, int | None]:
         return payload, None
     month = _cn_to_int(m.group(1))
     return payload[: m.start()].rstrip(), month
+
+
+def parse_export_payload(payload: str) -> dict:
+    """解析 /导出 参数：玩家名 / 胜负范围 / 时间 / 文件格式。
+
+    语法（顺序无关）：导出 [玩家名] [胜场|负场|全部] [X月|最近N天] [csv|json]
+
+    - 时间：`X月`/`时间=X月`（走 _parse_month_filter）或 `最近N天`/`N天`；
+      先剥末尾再逐 token 归类，可出现在任意位置；同时给出时月份优先（调用方处理）。
+    - 玩家：剩余非关键字 token 用空格 join（多词名兼容）。
+
+    Returns:
+        {"player": str|None, "outcome": "全部|胜场|负场",
+         "month": int|None, "days": int|None, "fmt": "csv"|"json"|None}
+    """
+    days = None
+    m = _DAYS_RE.search(payload)
+    if m:
+        days = int(m.group(1))
+        payload = payload[: m.start()].rstrip()
+    payload, month = _parse_month_filter(payload)
+    tokens = payload.split()
+    fmt = None
+    outcome = "全部"
+    rest: list[str] = []
+    for t in tokens:
+        tl = t.lower()
+        if tl in ("csv", "json"):
+            fmt = tl
+        elif t in ("胜场", "负场"):
+            outcome = t
+        elif t == "全部":
+            outcome = "全部"
+        else:
+            m = _TOKEN_DAYS_RE.match(t)
+            if m:
+                days = int(m.group(1) or m.group(2))
+                continue
+            m = _TOKEN_MONTH_RE.match(t)
+            if m:
+                month = _cn_to_int(m.group(1) or m.group(2))
+                continue
+            rest.append(t)
+    player = " ".join(rest) if rest else None
+    return {"player": player, "outcome": outcome, "month": month, "days": days, "fmt": fmt}
 
 
 def month_range(month: int | None = None) -> tuple[str, str]:

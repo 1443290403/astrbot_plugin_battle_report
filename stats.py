@@ -131,14 +131,17 @@ def _rank_lines(rows: list[dict], name_key: str, title: str) -> list[str]:
     return lines
 
 
-def format_player_ranking(rows: list[dict], limit: int | None = 10, min_games: int = 1) -> str:
-    """个人积分排行：Excel 风格表格（表头一行，数据行按列对齐）。"""
-    if not rows:
-        return "暂无战报数据。"
-    title = "🏆 个人积分榜（全部）" if limit is None else f"🏆 个人积分榜（前 {limit}）"
-    headers = ["排名", "队员", "积分", "胜场", "负场", "总场数", "友谊次数", "胜率", "无双次数"]
-    aligns = ["right", "left", "right", "right", "right", "right", "right", "right", "right"]
-    table = [headers]
+_RANK_HEADERS = ["排名", "队员", "积分", "胜场", "负场", "总场数", "友谊次数", "胜率", "无双次数"]
+
+
+def build_ranking_cells(rows: list[dict]) -> list[list[object]]:
+    """排行行 → 展示单元格（首行=表头）。
+
+    并列名次规则与 _rank_lines 一致：points/wins/total 相同则同名次。
+    文字表格（format_player_ranking）与图片表格（chart.make_ranking_image）
+    共用本函数，保证两处名次与单元格值一致。
+    """
+    cells = [list(_RANK_HEADERS)]
     prev = None
     rank = 0
     for i, r in enumerate(rows, 1):
@@ -152,11 +155,20 @@ def format_player_ranking(rows: list[dict], limit: int | None = 10, min_games: i
         draws = int(r.get("draws", 0))
         played_total = wins + losses + draws  # 总场数不含 0:0 占位
         wr = round(wins * 100.0 / (wins + losses), 1) if (wins + losses) else 0.0
-        table.append([
+        cells.append([
             rank, r["player"], f"{pts:g}", wins, losses, played_total,
             int(r.get("friendship", 0)), f"{wr:.1f}", int(r.get("wushuang", 0)),
         ])
-    return title + "\n" + _format_table(table, aligns)
+    return cells
+
+
+def format_player_ranking(rows: list[dict], limit: int | None = 10, min_games: int = 1) -> str:
+    """个人积分排行：Excel 风格表格（表头一行，数据行按列对齐）。"""
+    if not rows:
+        return "暂无战报数据。"
+    title = "🏆 个人积分榜（全部）" if limit is None else f"🏆 个人积分榜（前 {limit}）"
+    aligns = ["right", "left", "right", "right", "right", "right", "right", "right", "right"]
+    return title + "\n" + _format_table(build_ranking_cells(rows), aligns)
 
 
 def format_team_ranking(rows: list[dict], limit: int = 10) -> str:
@@ -253,7 +265,7 @@ HELP_SECTIONS = {
         "/排行 [个人|队伍] [X月]  排行榜\n"
         "/战绩 [玩家名] [X月]    战绩（无玩家名=本战队）\n"
         "/趋势 <玩家名|队伍> [最近N天|X月]  胜率走势图\n"
-        "/导出 [全部|胜场|负场|csv|json] [X月]  导出（本月）\n"
+        "/导出 [玩家名] [胜场|负场|全部] [X月|最近N天] [csv|json]  导出（默认本月）\n"
         "/我的战绩 [X月]   我的总战绩\n"
     ),
     "用户与参赛ID": (
