@@ -1,6 +1,12 @@
 """比赛级统计（无双/友谊次数）与排行表格格式化单元测试。"""
 
-from stats import _disp_width, build_ranking_cells, compute_match_stats, format_player_ranking
+from stats import (
+    _disp_width,
+    build_ranking_cells,
+    compute_match_stats,
+    format_player_ranking,
+    format_player_record,
+)
 
 
 def _d(seq, a, sa, sb, b, team_a="KC", team_b="DYG"):
@@ -23,6 +29,15 @@ SAMPLE = [
     _d(3, "凯撒亮", 1, 2, "老千"),
     _d(4, "红莲", 1, 2, "老千"),
 ]
+
+
+def test_format_player_record_with_friendship():
+    """个人战绩文本包含友谊次数，缺省按 0。"""
+    out = format_player_record("红莲", {"wins": 3, "losses": 1, "draws": 0, "total": 4, "friendship": 3})
+    assert out == "📊 红莲 战绩：胜3 负1 平0  总4  友谊3  积分2.25  胜率75.0%"
+    # 缺 friendship 字段 → 按 0
+    out2 = format_player_record("红莲", {"wins": 1, "losses": 0, "draws": 0, "total": 1})
+    assert "友谊0" in out2
 
 
 def test_ace_hit():

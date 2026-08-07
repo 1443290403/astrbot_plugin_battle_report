@@ -211,15 +211,16 @@ def format_home_team_vs(home_team: str, rows: list[dict]) -> str:
 
 
 def format_player_record(player: str, agg: dict) -> str:
-    """单个玩家战绩文本。agg 含 wins/losses/draws/total。"""
+    """单个玩家战绩文本。agg 含 wins/losses/draws/total/friendship。"""
     wins = int(agg.get("wins", 0))
     losses = int(agg.get("losses", 0))
     draws = int(agg.get("draws", 0))
     total = int(agg.get("total", wins + losses + draws))
+    friendship = int(agg.get("friendship", 0))
     wr = round(wins * 100.0 / (wins + losses), 1) if (wins + losses) else 0.0
     return (
         f"📊 {player} 战绩：胜{wins} 负{losses} 平{draws}  "
-        f"总{total}  积分{_points(wins, losses)}  胜率{wr}%"
+        f"总{total}  友谊{friendship}  积分{_points(wins, losses)}  胜率{wr}%"
     )
 
 

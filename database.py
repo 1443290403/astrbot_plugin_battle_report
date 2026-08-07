@@ -731,6 +731,23 @@ class Database:
             total["losses"] += int(rec.get("losses", 0))
             total["draws"] += int(rec.get("draws", 0))
             total["total"] += int(rec.get("total", 0))
+        # 友谊次数 = 集合内任一玩家在本战队一侧出场的去重比赛场次数
+        # （合并多ID时按比赛去重，避免同一场出现该用户多个ID被重复计）
+        total["friendship"] = 0
+        if players:
+            d1, d2 = self._date_bounds(date_from, date_to)
+            ph = ",".join(["%s"] * len(players))
+            params = [home_team, d1, d2] + players + [home_team] + players + [home_team]
+            frows = await self._query(
+                f"""SELECT COUNT(DISTINCT m.id) AS friendship
+                    FROM duels d JOIN matches m ON d.match_id = m.id
+                    WHERE m.home_team = %s AND m.match_time >= %s AND m.match_time <= %s
+                      AND NOT (d.score_a = 0 AND d.score_b = 0)
+                      AND ((d.player_a IN ({ph}) AND d.player_a_team = %s)
+                           OR (d.player_b IN ({ph}) AND d.player_b_team = %s))""",
+                tuple(params),
+            )
+            total["friendship"] = int(frows[0]["friendship"] or 0)
         return total
 
     # ---------- 聚合统计 ----------
@@ -893,6 +910,7 @@ class Database:
         """单个玩家的战绩汇总，按战队跨群统计。
 
         同时限定该选手属于该战队（避免同名不同队选手混入）。
+        友谊次数 = 该玩家在本战队一侧出场的去重比赛场次数（有 ≥1 场非 0:0 对局）。
         """
         d1, d2 = self._date_bounds(date_from, date_to)
         params: list = [player, d1, d2, home_team, home_team]
@@ -924,7 +942,19 @@ class Database:
                GROUP BY player_name""",
             tuple(params),
         )
-        return rows[0] if rows else {"player": player, "wins": 0, "losses": 0, "draws": 0, "total": 0}
+        result = rows[0] if rows else {"player": player, "wins": 0, "losses": 0, "draws": 0, "total": 0}
+        # 友谊次数：该玩家在本战队一侧出场的去重比赛场次数（有 ≥1 场非 0:0 对局）
+        frows = await self._query(
+            """SELECT COUNT(DISTINCT m.id) AS friendship
+               FROM duels d JOIN matches m ON d.match_id = m.id
+               WHERE m.home_team = %s AND m.match_time >= %s AND m.match_time <= %s
+                 AND NOT (d.score_a = 0 AND d.score_b = 0)
+                 AND ((d.player_a = %s AND d.player_a_team = %s)
+                      OR (d.player_b = %s AND d.player_b_team = %s))""",
+            (home_team, d1, d2, player, home_team, player, home_team),
+        )
+        result["friendship"] = int(frows[0]["friendship"] or 0)
+        return result
 
     async def get_team_ranking(
         self,

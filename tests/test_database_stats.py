@@ -370,13 +370,85 @@ def test_date_filtered_trend_and_export():
 def test_player_record_and_trend():
     async def ops(db):
         await _ins(db)
-        # 红莲是 KC 选手：1胜1负
+        # 红莲是 KC 选手：1胜1负，同一场（友谊 1）
         rec = await db.get_player_record(TEAM, "红莲")
         assert rec["wins"] == 1 and rec["losses"] == 1
+        assert rec["friendship"] == 1
 
         trend = await db.get_player_trend(TEAM, "红莲")
         assert trend and trend[0][1] == 1  # (date, wins, losses)
         assert trend[0][2] == 1
+
+    _with_db(ops)
+
+
+def test_player_record_friendship():
+    async def ops(db):
+        await _ins(db, winner="DYG")                    # 8月1日：红莲 2场对局（同一场）
+        rep2 = _make_report()
+        rep2.match_time = "2026-08-05"
+        await _ins(db, rep2, winner="DYG")              # 8月5日：红莲 2场对局（另一场）
+        rec = await db.get_player_record(TEAM, "红莲")
+        assert rec["wins"] == 2 and rec["losses"] == 2
+        assert rec["friendship"] == 2                   # 两场都参与
+
+        # 0:0 未完结对局不计友谊：红莲仅 0:0 的场次不计入友谊
+        rep3 = parse_battle_report(
+            "战队: KC VS FH\n时间: 2026.08.09\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n红莲 0:0 甲\n凯撒亮 2:1 乙"
+        ).report
+        rep3.group_id = GROUP_ID
+        rep3.submitted_by = "10001"
+        rep3.submitted_name = "提交者"
+        rep3.created_at = 1700000000
+        await _ins(db, rep3, winner="KC")
+        rec2 = await db.get_player_record(TEAM, "红莲")
+        assert rec2["friendship"] == 2                  # 0:0 场不计，仍 2 场
+        assert rec2["total"] == 5                       # total 是对局数（含 0:0）
+
+    _with_db(ops)
+
+
+def test_players_aggregate_friendship_dedup():
+    async def ops(db):
+        # 同一用户两个参赛ID（红莲、凯撒亮）在同一场都出场 → 友谊按比赛去重
+        rep1 = parse_battle_report(
+            "战队: KC VS DYG\n时间: 2026.08.01\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n红莲 2:1 老千\n凯撒亮 2:1 牌大"
+        ).report
+        rep1.group_id = GROUP_ID
+        rep1.submitted_by = "10001"
+        rep1.submitted_name = "提交者"
+        rep1.created_at = 1700000000
+        await _ins(db, rep1, winner="KC")
+        # 另一场只有红莲出场
+        rep2 = parse_battle_report(
+            "战队: KC VS DYG\n时间: 2026.08.05\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n红莲 2:1 牌大"
+        ).report
+        rep2.group_id = GROUP_ID
+        rep2.submitted_by = "10001"
+        rep2.submitted_name = "提交者"
+        rep2.created_at = 1700000000
+        await _ins(db, rep2, winner="KC")
+        agg = await db.get_players_aggregate(TEAM, ["红莲", "凯撒亮"])
+        assert agg["friendship"] == 2                   # 去重：两场，非 3
+        assert agg["total"] == 3                        # 对局数 2+1
+        agg1 = await db.get_players_aggregate(TEAM, ["红莲"])
+        assert agg1["friendship"] == 2
+        # 跨队同名：只计本队一侧出场
+        rep3 = parse_battle_report(
+            "战队: KC VS FH\n时间: 2026.08.09\n规则: 2/3【KOF】\n地点: 1\n"
+            "------第一轮------\n别天 2:1 红莲"
+        ).report
+        rep3.group_id = GROUP_ID
+        rep3.submitted_by = "10001"
+        rep3.submitted_name = "提交者"
+        rep3.created_at = 1700000000
+        await _ins(db, rep3, winner="KC")               # 红莲 在 FH 侧出场
+        agg2 = await db.get_players_aggregate(TEAM, ["红莲"])
+        assert agg2["friendship"] == 2                  # FH 侧同名不计入（对局/友谊均只计本队一侧）
+        assert agg2["total"] == 2
 
     _with_db(ops)
 

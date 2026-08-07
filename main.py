@@ -82,7 +82,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.12")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.13")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -898,11 +898,13 @@ class BattleReportPlugin(Star):
         if len(players) == 1:
             # 只有一个ID：汇总即该ID明细，无需再列
             lines.append(
-                f"📊 战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  胜率{wr}%"
+                f"📊 战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  "
+                f"友谊{agg.get('friendship', 0)}  胜率{wr}%"
             )
         else:
             lines.append(
-                f"📊 汇总战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  胜率{wr}%"
+                f"📊 汇总战绩：胜{wins} 负{losses} 平{agg['draws']}  总{total}  "
+                f"友谊{agg.get('friendship', 0)}  胜率{wr}%"
             )
             for p in players:
                 rec = await self.db.get_player_record(home, p, date_from, date_to)
@@ -911,7 +913,9 @@ class BattleReportPlugin(Star):
                 d = int(rec.get("draws", 0))
                 t = int(rec.get("total", 0))
                 wr2 = round(w * 100.0 / (w + l), 1) if (w + l) else 0.0
-                lines.append(f"  · {p}：胜{w} 负{l} 平{d} 总{t} 胜率{wr2}%")
+                lines.append(
+                    f"  · {p}：胜{w} 负{l} 平{d} 总{t} 友谊{rec.get('friendship', 0)} 胜率{wr2}%"
+                )
         yield event.plain_result("\n".join(lines))
 
     @filter.command("改名", alias={"/改名"})
