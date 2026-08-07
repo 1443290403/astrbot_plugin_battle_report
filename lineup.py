@@ -597,6 +597,26 @@ def _player_side(r: dict, players: set[str], member_team: str | None = None) -> 
     return side
 
 
+def _player_has_duel_result(r: dict, players: set[str], want_win: bool) -> bool:
+    """玩家本人是否存在胜利(want_win=True)/失败(want_win=False)对局。
+
+    按对局比分判定（0:0 未完结对局不计入任何一方）。调用方已通过 _player_side
+    保证玩家侧一致且（member_team 指定时）在本队一侧出场。
+    """
+    for d in r["duels"]:
+        if d["player_a"] in players:
+            if want_win and d["score_a"] > d["score_b"]:
+                return True
+            if not want_win and d["score_b"] > d["score_a"]:
+                return True
+        if d["player_b"] in players:
+            if want_win and d["score_b"] > d["score_a"]:
+                return True
+            if not want_win and d["score_a"] > d["score_b"]:
+                return True
+    return False
+
+
 def filter_report_outcome(
     reports: list[dict],
     outcome: str,
@@ -611,12 +631,13 @@ def filter_report_outcome(
     - 负场：主体战队在对阵内且胜负已定且 winner != home_team（主体战队战败）
     主体不在对阵内或胜负未定的，胜/负过滤中排除。
 
-    players 非空时（指定某玩家）仅保留该玩家参与的对阵，胜/负以该玩家所在侧为参照
-    （比赛级口径：该玩家所在战队整场获胜/战败）：
+    players 非空时（指定某玩家）仅保留该玩家参与的对阵，胜/负以该玩家本人
+    对局结果判定（选手级口径，不再看整场胜负）：
     - 全部：仅按玩家参与过滤
-    - 胜场：winner == 该玩家所在侧
-    - 负场：胜负已定且 winner != 该玩家所在侧
-    玩家未参与或两侧都出现的对阵在过滤中排除。
+    - 胜场：该玩家本人存在胜利对局（个人有赢的比赛）
+    - 负场：该玩家本人存在失败对局（个人有输的比赛）
+    同一场可能同时命中胜场与负场（个人有赢也有输）。玩家未参与或两侧都出现的
+    对阵在过滤中排除。
 
     member_team 非空时（该玩家是 member_team 的已绑定成员）额外要求玩家在
     member_team 一侧出场：跨队同名玩家（如对方战队也有同名参赛ID）不归入本队。
@@ -625,22 +646,26 @@ def filter_report_outcome(
     result = []
     for r in reports:
         if pset:
-            side = _player_side(r, pset, member_team)
-            if side is None:
+            if _player_side(r, pset, member_team) is None:
                 continue  # 玩家未参与，或两侧都出现/跨队同名无法判定
-            home = side
-            in_match = True  # side 由 team_a/team_b 派生，必在对阵内
+            if outcome != "胜场" and outcome != "负场":
+                result.append(r)  # 全部：仅按玩家参与过滤
+            elif outcome == "胜场":
+                if _player_has_duel_result(r, pset, want_win=True):
+                    result.append(r)
+            else:  # 负场
+                if _player_has_duel_result(r, pset, want_win=False):
+                    result.append(r)
         else:
             home = r["home_team"] or ""
             in_match = home in (r["team_a"], r["team_b"])
-        winner = r["winner"] or ""
-        if outcome != "胜场" and outcome != "负场":
-            result.append(r)  # 全部：仅按参与过滤（pset 非空时）
-            continue
-        if outcome == "胜场":
-            if home and winner == home:
-                result.append(r)
-        else:  # 负场
-            if home and in_match and winner and winner != home:
-                result.append(r)
+            winner = r["winner"] or ""
+            if outcome != "胜场" and outcome != "负场":
+                result.append(r)  # 全部：不过滤
+            elif outcome == "胜场":
+                if home and winner == home:
+                    result.append(r)
+            else:  # 负场
+                if home and in_match and winner and winner != home:
+                    result.append(r)
     return result

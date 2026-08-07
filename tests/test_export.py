@@ -177,22 +177,48 @@ def test_filter_player_participation():
 
 
 def test_filter_player_win_loss():
-    """比赛级口径：胜/负以该玩家所在侧整场胜负判定。"""
-    rep_win = _report_duels(1, "KC", "DYG", "DYG", "KC", [_duel("红莲", "老千")])  # 老千 侧 DYG 胜
-    rep_loss = _report_duels(2, "KC", "DYG", "KC", "KC", [_duel("红莲", "老千")])  # 老千 侧 DYG 负
-    rep_none = _report_duels(3, "KC", "DYG", "", "KC", [_duel("红莲", "老千")])   # 胜负未定
-    reports = [rep_win, rep_loss, rep_none]
-    assert [r["match_id"] for r in filter_report_outcome(reports, "胜场", ["老千"])] == [1]
-    assert [r["match_id"] for r in filter_report_outcome(reports, "负场", ["老千"])] == [2]
+    """选手级口径：胜/负以该玩家本人对局结果判定（不看整场胜负）。"""
+    rep_lose = _report_duels(1, "KC", "DYG", "DYG", "KC", [_duel("红莲", "老千")])    # 老千 本人负
+    rep_lose2 = _report_duels(2, "KC", "DYG", "KC", "KC", [_duel("红莲", "老千")])    # 老千 本人负（整场KC胜不影响）
+    rep_win = _report_duels(
+        3, "KC", "DYG", "", "KC",
+        [{"seq": 0, "round_no": 1, "player_a": "红莲", "score_a": 1, "player_b": "老千", "score_b": 2}],
+    )  # 老千 本人胜
+    reports = [rep_lose, rep_lose2, rep_win]
+    assert [r["match_id"] for r in filter_report_outcome(reports, "胜场", ["老千"])] == [3]
+    assert [r["match_id"] for r in filter_report_outcome(reports, "负场", ["老千"])] == [1, 2]
     assert [r["match_id"] for r in filter_report_outcome(reports, "全部", ["老千"])] == [1, 2, 3]
 
 
 def test_filter_player_team_a_side():
-    """玩家在 team_a 侧时同样判定。"""
-    win = _report_duels(1, "KC", "DYG", "KC", "KC", [_duel("红莲", "老千")])
-    loss = _report_duels(2, "KC", "DYG", "DYG", "KC", [_duel("红莲", "老千")])
-    assert [r["match_id"] for r in filter_report_outcome([win, loss], "胜场", ["红莲"])] == [1]
-    assert [r["match_id"] for r in filter_report_outcome([win, loss], "负场", ["红莲"])] == [2]
+    """玩家在 team_a 侧时同样以本人对局结果判定。"""
+    win = _report_duels(1, "KC", "DYG", "KC", "KC", [_duel("红莲", "老千")])    # 红莲 本人胜
+    loss = _report_duels(2, "KC", "DYG", "DYG", "KC", [_duel("红莲", "老千")])   # 红莲 本人胜（整场DYG胜不影响）
+    lose_own = _report_duels(
+        3, "KC", "DYG", "DYG", "KC",
+        [{"seq": 0, "round_no": 1, "player_a": "红莲", "score_a": 1, "player_b": "老千", "score_b": 2}],
+    )  # 红莲 本人负
+    assert [r["match_id"] for r in filter_report_outcome([win, loss, lose_own], "胜场", ["红莲"])] == [1, 2]
+    assert [r["match_id"] for r in filter_report_outcome([win, loss, lose_own], "负场", ["红莲"])] == [3]
+
+
+def test_filter_player_team_won_but_player_lost():
+    """整场己方获胜但该玩家本人全负 → 不命中胜场（选手级口径）。"""
+    r = _report_duels(1, "KC", "DYG", "KC", "KC", [_duel("牌大", "红莲")])  # KC 胜、红莲(team_b侧)本人负
+    assert filter_report_outcome([r], "胜场", ["红莲"]) == []
+    assert [x["match_id"] for x in filter_report_outcome([r], "负场", ["红莲"])] == [1]
+    assert [x["match_id"] for x in filter_report_outcome([r], "全部", ["红莲"])] == [1]
+
+
+def test_filter_player_both_win_and_loss_same_match():
+    """同一场中玩家本人有赢也有输 → 同时命中胜场与负场。"""
+    r = _report_duels(1, "KC", "DYG", "KC", "KC", [
+        _duel("红莲", "老千"),  # 红莲 赢
+        {"seq": 1, "round_no": 2, "player_a": "红莲", "score_a": 1, "player_b": "老千", "score_b": 2},  # 红莲 输
+    ])
+    assert [x["match_id"] for x in filter_report_outcome([r], "胜场", ["红莲"])] == [1]
+    assert [x["match_id"] for x in filter_report_outcome([r], "负场", ["红莲"])] == [1]
+    assert [x["match_id"] for x in filter_report_outcome([r], "全部", ["红莲"])] == [1]
 
 
 def test_filter_player_not_in_match():
@@ -241,8 +267,16 @@ def test_filter_player_cross_team_same_name_excluded():
 
 
 def test_filter_player_member_team_win_loss():
-    """member_team 下胜/负以本战队一侧整场胜负判定。"""
-    win = _report_duels(1, "KC", "FH", "KC", "KC", [_duel("知更", "甲")])
-    loss = _report_duels(2, "KC", "FH", "FH", "KC", [_duel("知更", "甲")])
-    assert [r["match_id"] for r in filter_report_outcome([win, loss], "胜场", ["知更"], member_team="KC")] == [1]
-    assert [r["match_id"] for r in filter_report_outcome([win, loss], "负场", ["知更"], member_team="KC")] == [2]
+    """member_team 下选手级口径：以本战队一侧出场玩家的本人对局结果判定。"""
+    win = _report_duels(1, "KC", "FH", "KC", "KC", [_duel("知更", "甲")])    # 知更 本人胜
+    loss = _report_duels(2, "KC", "FH", "FH", "KC", [_duel("知更", "甲")])    # 知更 本人胜（整场FH胜不影响）
+    assert [r["match_id"] for r in filter_report_outcome([win, loss], "全部", ["知更"], member_team="KC")] == [1, 2]
+    assert [r["match_id"] for r in filter_report_outcome([win, loss], "胜场", ["知更"], member_team="KC")] == [1, 2]
+    assert filter_report_outcome([win, loss], "负场", ["知更"], member_team="KC") == []
+    # 知更 本人输了对局（在 KC 侧出场）→ 负场命中
+    lose_own = _report_duels(
+        3, "KC", "FH", "FH", "KC",
+        [{"seq": 0, "round_no": 1, "player_a": "知更", "score_a": 0, "player_b": "甲", "score_b": 2}],
+    )
+    assert [r["match_id"] for r in filter_report_outcome([lose_own], "负场", ["知更"], member_team="KC")] == [3]
+    assert filter_report_outcome([lose_own], "胜场", ["知更"], member_team="KC") == []
