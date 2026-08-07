@@ -82,7 +82,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.14")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.15")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1144,6 +1144,16 @@ class BattleReportPlugin(Star):
             report.submitted_by = event.get_sender_id()
             report.submitted_name = event.get_sender_name()
             report.created_at = int(time.time())
+
+            # 战报对阵必须包含本群绑定的战队，否则阻止发送（防止误归队/脏队标入库）
+            if home_team not in (report.team_a, report.team_b):
+                failure_responses.append(
+                    f"❌ 第 {i} 份战报的队伍（{report.team_a}、{report.team_b}）"
+                    f"不包含本群绑定战队（{home_team}），已阻止发送：\n"
+                    f"{report.team_a} VS {report.team_b} | {report.match_time}\n"
+                    f"📄 收到的战报原文：\n{chunk.strip()}"
+                )
+                continue
 
             # 未完成对局：对阵不足 3 场
             if len(report.duels) < 3:
