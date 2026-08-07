@@ -164,6 +164,38 @@ def test_player_ranking_role_aggregation():
     _with_db(ops)
 
 
+def test_player_ranking_wushuang():
+    async def ops(db):
+        # SAMPLE：老千是 DYG 唯一幸存者，击败 KC 全部 3 人
+        await _ins(db, winner="DYG")
+        pl = await db.get_player_ranking(TEAM, team=None, limit=None)
+        laoqian = next(r for r in pl if r["player"] == "老千")
+        assert laoqian["wushuang"] == 1
+        assert laoqian["friendship"] == 1
+        # 其余人无双=0；每人参与 1 场比赛
+        for r in pl:
+            if r["player"] != "老千":
+                assert r["wushuang"] == 0, r["player"]
+            assert r["friendship"] == 1, r["player"]
+
+    _with_db(ops)
+
+
+def test_player_match_stats_aggregation():
+    async def ops(db):
+        await _ins(db, winner="DYG")                 # 8月1日
+        rep2 = _make_report()
+        rep2.match_time = "2026-08-05"
+        await _ins(db, rep2, winner="DYG")           # 8月5日 同阵容
+        st = await db.get_player_match_stats(TEAM)
+        assert st["老千"]["friendship"] == 2
+        assert st["老千"]["wushuang"] == 2
+        assert st["红莲"]["friendship"] == 2
+        assert st["红莲"]["wushuang"] == 0
+
+    _with_db(ops)
+
+
 def test_resolve_role():
     async def ops(db):
         await _ins(db)

@@ -80,8 +80,10 @@ VS_RE = re.compile(r"\s+VS\s+", re.IGNORECASE)
 _SUB_RE = re.compile(r"[\s　]*[\(（][\s　]*替(?:补)?[\s　]*[\)）]$")
 # 判罚落败标记（玩家名末尾）：红莲(规则) / 红莲（规则）等
 _RULED_RE = re.compile(r"[\s　]*[\(（][\s　]*规则[\s　]*[\)）]$")
-# 命令末尾的 时间=X月 参数：时间=7月 / 时间：七月 / 时间 = 7 等
-_MONTH_RE = re.compile(r"[\s　]*时间\s*[:：=]\s*([一二三四五六七八九十百\d]+)\s*月?[\s　]*$")
+# 命令末尾的 时间=X月 参数（旧写法）：时间=7月 / 时间：七月 / 时间 = 7 / 时间＝12月 等
+_MONTH_RE = re.compile(r"[\s　]*时间\s*[:：=＝]\s*([一二三四五六七八九十百\d]+)\s*月?[\s　]*$")
+# 命令末尾直接写月份（新写法，去掉 时间= 前缀）：七月 / 7月 / 十二月 等
+_MONTH_TOKEN_RE = re.compile(r"[\s　]*([一二三四五六七八九十百\d]+)\s*月[\s　]*$")
 
 
 def _strip_sub(name: str) -> tuple[str, bool]:
@@ -118,12 +120,20 @@ def _clean_player_name(name: str) -> tuple[str, bool, bool]:
 
 
 def _parse_month_filter(payload: str) -> tuple[str, int | None]:
-    """从命令 payload 提取末尾的 `时间=X月` 参数。
+    """从命令 payload 提取末尾的月份参数。
+
+    支持两种写法（均在末尾）：
+    - 新写法：直接写 `X月`，如 `七月` / `7月` / `十二月`（默认推荐）
+    - 旧写法：`时间=X月`，如 `时间=7月` / `时间：七月` / `时间=7`（全角等号 ＝ 亦可）
+    纯数字（不带 月）不识别为月份，避免与趋势的『最近N天』（如 `7`=最近7天）冲突。
 
     Returns:
         (清理后的 payload, 月份 int | None)。未指定时月份为 None（调用方默认本月）。
     """
+    # 先试旧写法（时间=…），再试新写法（末尾裸 X月）
     m = _MONTH_RE.search(payload)
+    if not m:
+        m = _MONTH_TOKEN_RE.search(payload)
     if not m:
         return payload, None
     month = _cn_to_int(m.group(1))

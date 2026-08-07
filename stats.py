@@ -3,6 +3,8 @@
 胜率定义：胜场 / (胜场 + 负场)，平局不计入分母只计入总场次。
 """
 
+import unicodedata
+
 
 def compute_cumulative(points: list[tuple[str, int, int]]) -> list[dict]:
     """把按日期的 [(date, wins, losses)] 累计为逐日累计胜率/场次。
@@ -21,6 +23,92 @@ def compute_cumulative(points: list[tuple[str, int, int]]) -> list[dict]:
             {"date": date, "win_rate": wr, "total": total, "wins": cum_w, "losses": cum_l}
         )
     return result
+
+
+def compute_match_stats(match_duels: list[dict], winner: str = "") -> dict[str, dict]:
+    """单场比赛的友谊次数与无双统计（纯逻辑，不依赖数据库）。
+
+    match_duels: 本场全部对局 dict，每项须含
+        seq, score_a, score_b, player_a_team, player_b_team,
+        resolved_a, resolved_b（已解析玩家名）。
+    winner: 比赛胜方战队；非空时仅给胜方成员记无双（保证每场至多一人）；
+        空串则关闭守卫（严格字面规则，兼容旧数据/未决比赛）。
+
+    无双：队友（≥1）最后一场有效对局均负/平（按 seq 最大），P 本人未阵亡
+    （最后一场为胜），且 P 对对面每个选手都有胜局。0:0 占位对局完全忽略。
+    返回 {已解析名: {"friendship": 0|1, "wushuang": 0|1}}。
+    """
+    if not match_duels:
+        return {}
+
+    appeared: set[str] = set()                # 有有效对局的玩家
+    last: dict[str, tuple[int, bool]] = {}    # 玩家 → (seq, 是否胜) 最后一场
+    beaten: dict[str, set[str]] = {}          # 胜者 → 击败的对手集合
+    side: dict[str, str] = {}                 # 玩家 → 所属队伍
+
+    for d in match_duels:
+        a, b = d["resolved_a"], d["resolved_b"]
+        sa, sb = int(d["score_a"]), int(d["score_b"])
+        if sa == 0 and sb == 0:
+            continue  # 占位未打，忽略
+        seq = int(d["seq"])
+        appeared.update((a, b))
+        side[a] = d["player_a_team"]
+        side[b] = d["player_b_team"]
+        # 只保留 seq 最大的有效对局（seq 单调递增）
+        if last.get(a, (-1, False))[0] < seq:
+            last[a] = (seq, sa > sb)
+        if last.get(b, (-1, False))[0] < seq:
+            last[b] = (seq, sb > sa)
+        if sa > sb:
+            beaten.setdefault(a, set()).add(b)
+        elif sb > sa:
+            beaten.setdefault(b, set()).add(a)
+
+    result = {name: {"friendship": 1, "wushuang": 0} for name in appeared}
+
+    for p in appeared:
+        teammates = {q for q in appeared if q != p and side[q] == side[p]}
+        opponents = {q for q in appeared if side[q] != side[p]}
+        is_ace = (
+            len(teammates) >= 1                # 1v1 无队友不算
+            and bool(opponents)
+            and last[p][1]                     # P 未阵亡
+            and all(not last[t][1] for t in teammates)  # 队友均阵亡（负或非零平）
+            and beaten.get(p, set()) >= opponents      # 击败对面每个选手
+            and (not winner or side[p] == winner)
+        )
+        if is_ace:
+            result[p]["wushuang"] = 1
+
+    return result
+
+
+def _disp_width(s: object) -> int:
+    """按显示宽度计长：CJK 全角（W/F）算 2，其余算 1。"""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in str(s))
+
+
+def _pad(s: object, width: int, align: str = "right") -> str:
+    """按显示宽度补齐空格（right/left/center）。"""
+    s = str(s)
+    pad = width - _disp_width(s)
+    if pad <= 0:
+        return s
+    if align == "left":
+        return s + " " * pad
+    if align == "center":
+        return " " * (pad // 2) + s + " " * (pad - pad // 2)
+    return " " * pad + s
+
+
+def _format_table(cells: list[list[object]], aligns: list[str]) -> str:
+    """把 [[表头...], [数据...], ...] 渲染为各列对齐的表格。"""
+    widths = [max(_disp_width(r[col]) for r in cells) for col in range(len(cells[0]))]
+    return "\n".join(
+        " | ".join(_pad(r[col], widths[col], aligns[col]) for col in range(len(r)))
+        for r in cells
+    )
 
 
 def _rank_lines(rows: list[dict], name_key: str, title: str) -> list[str]:
@@ -44,11 +132,31 @@ def _rank_lines(rows: list[dict], name_key: str, title: str) -> list[str]:
 
 
 def format_player_ranking(rows: list[dict], limit: int | None = 10, min_games: int = 1) -> str:
-    """个人积分排行文本。limit 为 None 时显示全部。"""
+    """个人积分排行：Excel 风格表格（表头一行，数据行按列对齐）。"""
     if not rows:
         return "暂无战报数据。"
     title = "🏆 个人积分榜（全部）" if limit is None else f"🏆 个人积分榜（前 {limit}）"
-    return "\n".join(_rank_lines(rows, "player", f"{title}\n（仅统计 ≥{min_games} 局的玩家）"))
+    headers = ["排名", "队员", "积分", "胜场", "负场", "总场数", "友谊次数", "胜率", "无双次数"]
+    aligns = ["right", "left", "right", "right", "right", "right", "right", "right", "right"]
+    table = [headers]
+    prev = None
+    rank = 0
+    for i, r in enumerate(rows, 1):
+        pts = r.get("points", 0) or 0
+        key = (pts, r["wins"], r["total"])
+        if key != prev:
+            rank = i
+            prev = key
+        wins = int(r["wins"])
+        losses = int(r["losses"])
+        draws = int(r.get("draws", 0))
+        played_total = wins + losses + draws  # 总场数不含 0:0 占位
+        wr = round(wins * 100.0 / (wins + losses), 1) if (wins + losses) else 0.0
+        table.append([
+            rank, r["player"], f"{pts:g}", wins, losses, played_total,
+            int(r.get("friendship", 0)), f"{wr:.1f}", int(r.get("wushuang", 0)),
+        ])
+    return title + "\n" + _format_table(table, aligns)
 
 
 def format_team_ranking(rows: list[dict], limit: int = 10) -> str:
@@ -73,7 +181,7 @@ def format_team_record(home_team: str, record: dict, suffix: str = "") -> str:
     return (
         f"🏆 {home_team} 总战绩{suffix}：\n"
         f"胜{w} 负{l} 平{d}  总{t}  积分{_points(w, l)}  胜率{wr}%\n"
-        f"（用法：/战报战绩 <玩家名> 查个人战绩）"
+        f"（用法：/战绩 <玩家名> 查个人战绩）"
     )
 
 
@@ -141,12 +249,12 @@ HELP_SECTIONS = {
         "/战报撤销              撤销自己最近一条"
     ),
     "查询": (
-        "▎查询（默认本月，末尾可加 时间=X月 查其他月份）\n"
-        "/战报排行 [个人|队伍] [时间=X月]  排行榜\n"
-        "/战报战绩 [玩家名] [时间=X月]    战绩（无玩家名=本战队）\n"
-        "/战报趋势 <玩家名|队伍> [最近N天|时间=X月]  胜率走势图\n"
-        "/战报导出 [全部|胜场|负场|csv|json] [时间=X月]  导出（本月）\n"
-        "/我的战绩 [时间=X月]   我的总战绩"
+        "▎查询（默认本月，末尾可加 X月 查其他月份，如 七月/7月）\n"
+        "/排行 [个人|队伍] [X月]  排行榜\n"
+        "/战绩 [玩家名] [X月]    战绩（无玩家名=本战队）\n"
+        "/趋势 <玩家名|队伍> [最近N天|X月]  胜率走势图\n"
+        "/导出 [全部|胜场|负场|csv|json] [X月]  导出（本月）\n"
+        "/我的战绩 [X月]   我的总战绩\n"
     ),
     "用户与参赛ID": (
         "▎用户与参赛ID\n"

@@ -159,14 +159,25 @@ def test_parse_month_filter():
     import datetime
 
     assert _parse_month_filter("队伍") == ("队伍", None)
+    # 新写法：末尾直接写 X月
+    assert _parse_month_filter("队伍 七月") == ("队伍", 7)
+    assert _parse_month_filter("红莲 7月") == ("红莲", 7)
+    assert _parse_month_filter("红莲 十二月") == ("红莲", 12)
+    assert _parse_month_filter("红莲 12月") == ("红莲", 12)
+    # 纯数字（不带 月）不识别为月份（避免与趋势 最近N天 冲突）
+    assert _parse_month_filter("红莲 7") == ("红莲 7", None)
+    assert _parse_month_filter("红莲 最近7天") == ("红莲 最近7天", None)
+    # 旧写法：时间=X月（含全角等号 ＝）仍兼容
     assert _parse_month_filter("队伍 时间=7月") == ("队伍", 7)
     assert _parse_month_filter("队伍 时间：七月") == ("队伍", 7)
     assert _parse_month_filter("队伍 时间=7") == ("队伍", 7)
     assert _parse_month_filter("红莲 时间 = 7月") == ("红莲", 7)
+    assert _parse_month_filter("红莲 时间＝十二月") == ("红莲", 12)
     assert _parse_month_filter("红莲 30 时间=12月") == ("红莲 30", 12)
     assert _parse_month_filter("") == ("", None)
     # 时间参数出现在中间而非末尾时不提取
     assert _parse_month_filter("时间=7月 队伍") == ("时间=7月 队伍", None)
+    assert _parse_month_filter("七月 队伍") == ("七月 队伍", None)
 
 
 def test_month_range():

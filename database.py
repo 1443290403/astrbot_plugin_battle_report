@@ -10,6 +10,11 @@ from typing import Any
 
 import aiomysql
 
+try:
+    from . import stats
+except ImportError:  # 单元测试以顶层模块方式导入 database
+    import stats
+
 SCHEMA_VERSION = 13
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -759,7 +764,7 @@ class Database:
         if limit is not None:
             limit_clause = "LIMIT %s"
             params.append(limit)
-        return await self._query(
+        rows = await self._query(
             f"""WITH sides AS (
                    SELECT COALESCE(u.name, d.player_a) AS player, d.player_a_team AS team,
                           CASE d.result WHEN 'A' THEN 1 ELSE 0 END AS win,
@@ -791,6 +796,76 @@ class Database:
                {limit_clause}""",
             tuple(params),
         )
+        # 合并每人的比赛级统计（友谊次数/无双次数）
+        match_stats = await self.get_player_match_stats(home_team, date_from, date_to)
+        for r in rows:
+            st = match_stats.get(r["player"], {"friendship": 0, "wushuang": 0})
+            r["friendship"] = st["friendship"]
+            r["wushuang"] = st["wushuang"]
+        return rows
+
+    async def get_player_match_stats(
+        self,
+        home_team: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, dict]:
+        """统计区间内每人参与的比赛场次（友谊次数）与无双次数。
+
+        友谊次数 = 参与的去重比赛场次数（有 ≥1 场非 0:0 对局）。
+        无双次数 = 场次级判定（见 stats.compute_match_stats），每场至多一人。
+        返回 {已解析玩家名: {"friendship": int, "wushuang": int}}。
+        名字解析与 get_player_ranking 的 sides CTE 一致（COALESCE(u.name, 参赛ID)）。
+        """
+        d1, d2 = self._date_bounds(date_from, date_to)
+        rows = await self._query(
+            """SELECT m.id AS match_id, m.winner,
+                      d.seq, d.score_a, d.score_b,
+                      d.player_a_team, d.player_b_team,
+                      COALESCE(ua.name, d.player_a) AS resolved_a,
+                      COALESCE(ub.name, d.player_b) AS resolved_b
+               FROM matches m
+               LEFT JOIN duels d ON d.match_id = m.id
+               LEFT JOIN player_ids pia
+                      ON pia.home_team = d.player_a_team AND pia.player_name = d.player_a
+               LEFT JOIN users ua ON ua.home_team = pia.home_team AND ua.id = pia.user_id
+               LEFT JOIN player_ids pib
+                      ON pib.home_team = d.player_b_team AND pib.player_name = d.player_b
+               LEFT JOIN users ub ON ub.home_team = pib.home_team AND ub.id = pib.user_id
+               WHERE m.home_team = %s AND m.match_time >= %s AND m.match_time <= %s
+               ORDER BY m.id, d.seq, d.id""",
+            (home_team, d1, d2),
+        )
+        totals: dict[str, dict] = {}
+        cur: list[dict] = []
+        cur_id: int | None = None
+        cur_winner = ""
+
+        def flush() -> None:
+            if not cur:
+                return
+            for name, st in stats.compute_match_stats(cur, cur_winner).items():
+                t = totals.setdefault(name, {"friendship": 0, "wushuang": 0})
+                t["friendship"] += st["friendship"]
+                t["wushuang"] += st["wushuang"]
+
+        for r in rows:
+            if r["match_id"] != cur_id:
+                flush()
+                cur, cur_id, cur_winner = [], r["match_id"], r["winner"] or ""
+            if r["resolved_a"] is None:  # LEFT JOIN：该比赛无对局
+                continue
+            cur.append({
+                "seq": int(r["seq"] or 0),
+                "score_a": r["score_a"],
+                "score_b": r["score_b"],
+                "player_a_team": r["player_a_team"],
+                "player_b_team": r["player_b_team"],
+                "resolved_a": r["resolved_a"],
+                "resolved_b": r["resolved_b"],
+            })
+        flush()
+        return totals
 
     async def get_player_record(
         self,

@@ -38,6 +38,12 @@ from .database import Database
 _SUBMIT_CMDS = ("发送", "/发送", "战报", "/战报")
 _LINEUP_CMDS = ("排表", "/排表")
 
+# 查询类命令：新名称为主（去掉 战报 前缀），旧名称 战报Xxx 仍兼容
+_RANK_CMDS = ("排行", "/排行", "战报排行", "/战报排行")
+_RECORD_CMDS = ("战绩", "/战绩", "战报战绩", "/战报战绩")
+_TREND_CMDS = ("趋势", "/趋势", "战报趋势", "/战报趋势")
+_EXPORT_CMDS = ("导出", "/导出", "战报导出", "/战报导出")
+
 # /第N轮 命令（N 为数字或中文，第 1 轮由排表生成）
 _ROUND_CMD_RE = re.compile(r"^\s*第\s*([一二三四五六七八九十百零\d]+)\s*轮")
 
@@ -75,7 +81,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.8")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1199,9 +1205,9 @@ class BattleReportPlugin(Star):
 
     # ---------- 查询 ----------
 
-    @filter.command("战报排行", alias={"/战报排行"})
+    @filter.command("排行", alias={"/排行", "/战报排行"})
     async def ranking(self, event: AstrMessageEvent):
-        """排行榜（个人/队伍），默认本月，末尾可加 时间=X月"""
+        """排行榜（个人/队伍），默认本月，末尾可加 X月"""
         err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -1212,7 +1218,7 @@ class BattleReportPlugin(Star):
             return
 
         payload, month = _parse_month_filter(
-            _strip_command(event.get_message_str(), ("战报排行", "/战报排行"))
+            _strip_command(event.get_message_str(), _RANK_CMDS)
         )
         tokens = payload.split()
         scope = tokens[0] if tokens else "个人"
@@ -1247,9 +1253,9 @@ class BattleReportPlugin(Star):
             logger.exception("排行查询失败")
             yield event.plain_result("❌ 查询出错，请稍后重试。")
 
-    @filter.command("战报战绩", alias={"/战报战绩"})
+    @filter.command("战绩", alias={"/战绩", "/战报战绩"})
     async def record(self, event: AstrMessageEvent):
-        """个人战绩，默认本月，末尾可加 时间=X月"""
+        """个人战绩，默认本月，末尾可加 X月"""
         err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -1259,7 +1265,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
         payload, month = _parse_month_filter(
-            _strip_command(event.get_message_str(), ("战报战绩", "/战报战绩"))
+            _strip_command(event.get_message_str(), _RECORD_CMDS)
         )
         name = payload.strip()
         date_from, date_to = month_range(month)
@@ -1288,9 +1294,9 @@ class BattleReportPlugin(Star):
             logger.exception("战绩查询失败")
             yield event.plain_result("❌ 查询出错，请稍后重试。")
 
-    @filter.command("战报趋势", alias={"/战报趋势"})
+    @filter.command("趋势", alias={"/趋势", "/战报趋势"})
     async def trend(self, event: AstrMessageEvent):
-        """胜率走势图，默认本月，末尾可加 时间=X月 或 [最近N天]"""
+        """胜率走势图，默认本月，末尾可加 X月 或 [最近N天]"""
         err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -1300,7 +1306,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
         payload, month = _parse_month_filter(
-            _strip_command(event.get_message_str(), ("战报趋势", "/战报趋势"))
+            _strip_command(event.get_message_str(), _TREND_CMDS)
         )
         tokens = payload.split()
         name = tokens[0] if tokens else ""
@@ -1313,10 +1319,10 @@ class BattleReportPlugin(Star):
             # 未指定时默认展示战队
             name = home_team
         if not name:
-            yield event.plain_result("用法：战报趋势 <玩家名或队伍名> [最近N天|时间=X月]")
+            yield event.plain_result("用法：趋势 <玩家名或队伍名> [最近N天|X月]")
             return
 
-        # 日期范围：时间=X月 优先 → 数字天数 → 默认本月
+        # 日期范围：月份 优先 → 数字天数 → 默认本月
         if month is not None:
             date_from, date_to = month_range(month)
             title_suffix = f"{month}月"
@@ -1361,9 +1367,9 @@ class BattleReportPlugin(Star):
             logger.exception("趋势图生成失败")
             yield event.plain_result("❌ 趋势生成出错，请稍后重试。")
 
-    @filter.command("战报导出", alias={"/战报导出"})
+    @filter.command("导出", alias={"/导出", "/战报导出"})
     async def export(self, event: AstrMessageEvent):
-        """导出战报：全部/胜场/负场 以合并转发逐条还原；csv/json 导出文件（默认本月，末尾可加 时间=X月）"""
+        """导出战报：全部/胜场/负场 以合并转发逐条还原；csv/json 导出文件（默认本月，末尾可加 X月）"""
         err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -1373,7 +1379,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result("⚠️ 请在群聊中使用。")
             return
         payload, month = _parse_month_filter(
-            _strip_command(event.get_message_str(), ("战报导出", "/战报导出"))
+            _strip_command(event.get_message_str(), _EXPORT_CMDS)
         )
         arg = payload.strip().lower()
         date_from, date_to = month_range(month)
@@ -1428,7 +1434,7 @@ class BattleReportPlugin(Star):
         if arg == "":
             arg = "全部"
         if arg not in ("全部", "胜场", "负场"):
-            yield event.plain_result("用法：战报导出 [全部|胜场|负场|csv|json]")
+            yield event.plain_result("用法：导出 [全部|胜场|负场|csv|json]")
             return
         try:
             reports = await self.db.get_reports_for_export(home_team, date_from, date_to)
