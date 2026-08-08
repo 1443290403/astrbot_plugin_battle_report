@@ -82,7 +82,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.16")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.17")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1560,7 +1560,10 @@ class BattleReportPlugin(Star):
             logger.warning(f"获取群成员列表失败 {gid}: {e}")
             yield event.plain_result(f"❌ 获取群成员列表失败：{e}")
             return
-        members = (ret or {}).get("data", []) if isinstance(ret, dict) else []
+        # AstrBot call_action 返回解包后的 data：成员列表是 list，个别适配器可能包一层 dict
+        members = ret.get("data") if isinstance(ret, dict) else ret
+        if not isinstance(members, list):
+            members = []
         if not members:
             yield event.plain_result("⚠️ 该群暂无成员列表（可能机器人不在群或适配器不支持）。")
             return
