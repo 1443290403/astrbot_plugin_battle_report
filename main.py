@@ -82,7 +82,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.15")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.16")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1534,6 +1534,62 @@ class BattleReportPlugin(Star):
         for i in range(0, len(nodes), max_nodes):
             yield event.chain_result([Nodes(nodes[i:i + max_nodes])])
         yield event.plain_result(f"📤 已导出 {len(nodes)} 份战报（{filter_label}），共 {batch} 条转发。")
+
+    @filter.command("导出群成员", alias={"/导出群成员"})
+    async def export_group_members(self, event: AstrMessageEvent, group_id: str = ""):
+        """导出群成员列表到 CSV 文件（仅超级管理员）"""
+        if not self._is_super_admin(event):
+            yield event.plain_result("❌ 仅超级管理员可执行此操作。")
+            return
+
+        gid = group_id.strip() or event.get_group_id()
+        if not gid:
+            yield event.plain_result("⚠️ 用法：/导出群成员 <群号>")
+            return
+        if not str(gid).isdigit():
+            yield event.plain_result("❌ 群号应为数字。")
+            return
+
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            yield event.plain_result("❌ 无法获取 Bot 实例。")
+            return
+        try:
+            ret = await bot.call_action("get_group_member_list", group_id=int(gid))
+        except Exception as e:
+            logger.warning(f"获取群成员列表失败 {gid}: {e}")
+            yield event.plain_result(f"❌ 获取群成员列表失败：{e}")
+            return
+        members = (ret or {}).get("data", []) if isinstance(ret, dict) else []
+        if not members:
+            yield event.plain_result("⚠️ 该群暂无成员列表（可能机器人不在群或适配器不支持）。")
+            return
+
+        # 排序：群主 → 管理员 → 成员，同角色按入群时间升序
+        role_rank = {"owner": 0, "admin": 1, "member": 2}
+        members.sort(key=lambda m: (role_rank.get(m.get("role"), 9), m.get("join_time") or 0))
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["序号", "QQ号", "昵称", "群名片", "角色", "入群时间"])
+        for i, m in enumerate(members, 1):
+            role = {"owner": "群主", "admin": "管理员", "member": "成员"}.get(
+                m.get("role"), str(m.get("role", "")))
+            join_ts = m.get("join_time") or 0
+            join_time = datetime.fromtimestamp(join_ts).strftime("%Y-%m-%d %H:%M") if join_ts else ""
+            writer.writerow([
+                i, m.get("user_id", ""), m.get("nickname", ""),
+                m.get("card", ""), role, join_time,
+            ])
+
+        out = self.data_dir / "exports" / f"members_{gid}.csv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(buffer.getvalue(), encoding="utf-8-sig")
+
+        yield event.chain_result([
+            Plain(f"📋 群 {gid} 成员列表（共 {len(members)} 人）："),
+            File(name=out.name, file=str(out)),
+        ])
 
     # ---------- 管理 ----------
 
