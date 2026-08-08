@@ -82,7 +82,7 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.17")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、趋势、导出", "1.12.18")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1574,7 +1574,7 @@ class BattleReportPlugin(Star):
 
         buffer = io.StringIO()
         writer = csv.writer(buffer)
-        writer.writerow(["序号", "QQ号", "昵称", "群名片", "角色", "入群时间"])
+        writer.writerow(["序号", "QQ号", "昵称", "群名片", "角色", "所在地", "入群时间"])
         for i, m in enumerate(members, 1):
             role = {"owner": "群主", "admin": "管理员", "member": "成员"}.get(
                 m.get("role"), str(m.get("role", "")))
@@ -1582,7 +1582,7 @@ class BattleReportPlugin(Star):
             join_time = datetime.fromtimestamp(join_ts).strftime("%Y-%m-%d %H:%M") if join_ts else ""
             writer.writerow([
                 i, m.get("user_id", ""), m.get("nickname", ""),
-                m.get("card", ""), role, join_time,
+                m.get("card", ""), role, m.get("area", ""), join_time,
             ])
 
         out = self.data_dir / "exports" / f"members_{gid}.csv"
