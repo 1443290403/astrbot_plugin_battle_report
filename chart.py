@@ -183,6 +183,8 @@ _ROW_STRIPE = "#f2f6ff"    # 隔行浅条纹
 _ROW_LINE = "#dce4f0"      # 行间分隔线
 _BORDER = "#c9d4e8"        # 外边框
 _MEDAL = {1: "#b8860b", 2: "#808080", 3: "#a0522d"}  # 金银铜
+_PANEL_GAP = 24          # 左侧「战队战绩」面板与排行表格之间的间距
+_PANEL_LABEL_FILL = "#666666"   # 面板标签用灰字，值用正文黑，形成一档层次
 _CELL_PAD_X = 16
 _TITLE_SIZE = 22
 _HEADER_FONT_SIZE = 15
@@ -196,6 +198,7 @@ def make_ranking_image(
     title: str,
     out_path: Path,
     max_rows: int = 30,
+    panel: list[tuple[str, str]] | None = None,
 ) -> Path:
     """把排行单元格网格渲染成 PNG 表格图片（浅色简洁风格）。
 
@@ -205,6 +208,9 @@ def make_ranking_image(
         title: 图片顶部标题。
         out_path: PNG 保存路径（目录自动创建）。
         max_rows: 最多渲染的数据行数，超出部分以省略行提示；传 None 则显示全部。
+        panel: 可选，左侧「战队战绩」面板的 `(左标签, 右值)` 列表，由
+            `stats.build_team_panel` 生成。**无表头行** —— 第一行与表格表头行
+            同 y 同高。字符串应当是短的定长标签/数值，本函数不做截断。
 
     Returns:
         保存后的绝对路径。
@@ -240,18 +246,45 @@ def make_ranking_image(
     head_h = 44
     row_h = 42
     note_h = 38 if note_text else 0
-    img_w = int(sum(col_w) + 2 * _CELL_PAD_X * ncols) + 2 * margin
-    img_h = int(margin + title_h + head_h + row_h * len(shown) + note_h + margin)
+
+    # 左侧「战队战绩」面板（可选）。None 与 [] 都当「没有面板」—— 用真值判断，
+    # 因为 max(... for ... in []) 会抛 ValueError。所有下面用到面板的地方
+    # 都必须判真值，不能判 `is not None`。
+    panel = list(panel) if panel else []
+    if panel:
+        # 量宽用的字号必须与真正绘制时一致，否则文本会溢出格子
+        p_col_w = [
+            int(max(font_data.getlength(lb) for lb, _ in panel)),   # 标签：常规
+            int(max(font_head.getlength(v) for _, v in panel)),     # 值：粗体
+        ]
+        p_xs = [margin]
+        for w in p_col_w:
+            p_xs.append(p_xs[-1] + w + 2 * _CELL_PAD_X)
+        panel_w = p_xs[-1] - margin
+        # 首行占表头高、其余占行高 —— 这样面板的分隔线与表格逐行对齐
+        panel_h = head_h + row_h * (len(panel) - 1)
+    else:
+        p_col_w, p_xs, panel_w, panel_h = [], [], 0, 0
+
+    table_h = head_h + row_h * len(shown) + note_h
+    # ⚠️ max() 不能省：面板 8 行比「只有 1~2 名队员」的表格高得多（338 vs 86）。
+    # Pillow 画到画布外**不报错**，只会把面板后几行静默裁掉 —— 没有异常、
+    # 没有测试失败。note_h 只归 table_h，省略行仍只画在表格宽度内。
+    body_h = max(table_h, panel_h)
+    img_w = int(sum(col_w) + 2 * _CELL_PAD_X * ncols) + 2 * margin + panel_w
+    img_w += _PANEL_GAP if panel else 0
+    img_h = int(margin + title_h + body_h + margin)
 
     img = Image.new("RGB", (img_w, img_h), "white")
     draw = ImageDraw.Draw(img)
 
-    # 标题
+    # 标题。按整张图居中（img_w 已含面板），不是相对表格居中 ——
+    # 相对表格居中的话，加了面板标题就会明显偏右。
     draw.text((img_w / 2, margin + title_h / 2), title, font=font_title,
               fill="#1a1a1a", anchor="mm")
 
-    # 表格列边界
-    x0 = margin
+    # 表格列边界（有面板时整张表向右让位）
+    x0 = margin + (panel_w + _PANEL_GAP if panel else 0)
     xs = [x0]
     for w in col_w:
         xs.append(xs[-1] + w + 2 * _CELL_PAD_X)
@@ -292,6 +325,28 @@ def make_ranking_image(
 
     # 外边框
     draw.rectangle([x0, margin + title_h, xs[-1], y], outline=_BORDER, width=2)
+
+    # 左侧「战队战绩」面板。**无表头行**：第一行与表格表头行同 y 同高，
+    # 之后逐行与表格数据行对齐（面板第 i 行 ↔ 表格第 i-1 个数据行）。
+    # 用独立的 py 游标，不碰上面表格的 y 流。
+    if panel:
+        py = margin + title_h
+        for i, (label, value) in enumerate(panel):
+            rh = head_h if i == 0 else row_h
+            # 条纹相位：表格条纹的是**奇数数据行**，而面板第 i 行对应表格第
+            # i-1 个数据行，所以面板要条纹**偶数行**。写成 i % 2 == 1 会让
+            # 两块相隔 24px 的条带完全错开。
+            if i and i % 2 == 0:
+                draw.rectangle([p_xs[0], py, p_xs[-1], py + rh], fill=_ROW_STRIPE)
+            draw_cell(p_xs[0], py, p_col_w[0], rh, label, font_data,
+                      _PANEL_LABEL_FILL, "left")
+            draw_cell(p_xs[1], py, p_col_w[1], rh, value, font_head,
+                      "#1a1a1a", "right")
+            draw.line([(p_xs[0], py + rh), (p_xs[-1], py + rh)],
+                      fill=_ROW_LINE, width=1)
+            py += rh
+        draw.rectangle([p_xs[0], margin + title_h, p_xs[-1], py],
+                       outline=_BORDER, width=2)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

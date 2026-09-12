@@ -156,6 +156,55 @@ def test_no_marker_not_sub():
     assert d.player_b == "蓝大" and d.b_sub is False
 
 
+def test_sub_inferred_for_round2_newcomer():
+    # 复刻 match 642 结构：第二轮才出场的 老千 无 (替) 标记，也应被推断为替补；
+    # 第一轮已出场的选手（杂依/桐人）在第二轮再次出场不标记。
+    text = (
+        "战队: DYG VS KC\n"
+        "时间: 2026.08.24\n"
+        "规则: 2/3【KOF】\n"
+        "地点: 435823386\n"
+        "------第一轮------\n"
+        "杂依 2:1 忘癫\n"
+        "初相见 1:2 桐人\n"
+        "红大 2:0 悠悠球\n"
+        "------第二轮------\n"
+        "杂依 0:2 桐人\n"
+        "老千 1:2 桐人"
+    )
+    r = parse_battle_report(text)
+    assert not r.errors, r.errors
+    duels = r.report.duels
+    assert [d.round_no for d in duels] == [1, 1, 1, 2, 2]
+    # 第二轮：老千 无标记但第一轮未出场 → 替补
+    assert duels[4].player_a == "老千"
+    assert duels[4].a_sub is True
+    # 第二轮：杂依/桐人 第一轮已出场 → 非替补
+    assert duels[3].a_sub is False and duels[3].b_sub is False
+    assert duels[4].b_sub is False  # 桐人 第一轮已出场
+    # 第一轮各对局不受影响
+    for d in duels[:3]:
+        assert d.a_sub is False and d.b_sub is False
+
+
+def test_sub_inference_preserves_explicit_marker():
+    # 显式 (替) 标记保留；第二轮新人即使无标记也被推断
+    text = (
+        "战队: A VS B\n"
+        "时间: 2026.01.01\n"
+        "------第一轮------\n"
+        "红莲(替) 2:1 蓝大\n"
+        "------第二轮------\n"
+        "耗子 2:0 蓝大"
+    )
+    r = parse_battle_report(text)
+    assert not r.errors, r.errors
+    d1, d2 = r.report.duels
+    assert d1.a_sub is True and d1.b_sub is False   # 显式标记保留
+    assert d2.player_a == "耗子" and d2.a_sub is True  # 推断
+    assert d2.player_b == "蓝大" and d2.b_sub is False  # 第一轮已出场
+
+
 def test_parse_month_filter():
     import datetime
 

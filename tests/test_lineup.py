@@ -1,6 +1,6 @@
 """排表模块单元测试。"""
 
-from lineup import format_roster_display, generate_template, parse_lineup
+from lineup import generate_template, parse_lineup
 
 
 def test_parse_lineup_ok():
@@ -92,7 +92,3 @@ def test_generate_template_random_varies():
         for _ in range(5)
     ]
     assert len(set(templates)) >= 2  # 5 次运行至少出现 2 种不同配对
-
-
-def test_format_roster_display_empty():
-    assert "尚未设置" in format_roster_display([])

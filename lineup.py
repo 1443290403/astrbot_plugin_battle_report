@@ -27,9 +27,20 @@ from dataclasses import dataclass, field
 
 try:
     # AstrBot 以包方式导入插件（data.plugins.<插件名>.main）
-    from .battle_report_parser import ROUND_RE, SCORE_RE, _cn_to_int, parse_battle_report
+    from .battle_report_parser import (
+        RAID_RE, ROUND_RE, RULE_RE, SCORE_RE, _BARE_DATE_RE, _cn_to_int,
+        determine_match_winner, parse_battle_report,
+    )
 except ImportError:  # 单测以顶层模块导入
-    from battle_report_parser import ROUND_RE, SCORE_RE, _cn_to_int, parse_battle_report
+    from battle_report_parser import (
+        RAID_RE, ROUND_RE, RULE_RE, SCORE_RE, _BARE_DATE_RE, _cn_to_int,
+        determine_match_winner, parse_battle_report,
+    )
+
+try:
+    from .stats import compute_raid_match
+except ImportError:
+    from stats import compute_raid_match
 
 # 队伍行："KC:红莲 悠悠球" / "KC：红莲 悠悠球"
 TEAM_LINE_RE = re.compile(r"^([^:：]+)\s*[:：]\s*(.+)$")
@@ -73,7 +84,7 @@ def parse_lineup(text: str, default_rule: str) -> RosterResult:
         if line:
             lines.append(line)
     if not lines:
-        errors.append("名单内容为空，请以『队伍名: 成员1 成员2』格式提供战队名单。")
+        errors.append("喵…名单是空的喵，要写成『队伍名: 成员1 成员2』哦。")
         return RosterResult(errors=errors)
 
     rule_found = False
@@ -85,20 +96,23 @@ def parse_lineup(text: str, default_rule: str) -> RosterResult:
                 result.rule = line.strip()
                 rule_found = True
                 continue
-            errors.append(f"第 {lineno} 行：无法识别为队伍名单，格式应为『队伍名: 成员1 成员2』：{line}")
+            errors.append(
+                f"第 {lineno} 行喵：认不出这是队伍名单，"
+                f"要写成『队伍名: 成员1 成员2』喵：{line}"
+            )
             continue
         team_name = m.group(1).strip().upper()  # 队标含字母时统一转大写
         players = [p.strip() for p in re.split(r"[\s,，、]+", m.group(2).strip()) if p.strip()]
         if not team_name:
-            errors.append(f"第 {lineno} 行：队伍名为空：{line}")
+            errors.append(f"第 {lineno} 行喵：队伍名是空的喵：{line}")
             continue
         if not players:
-            errors.append(f"第 {lineno} 行：队伍『{team_name}』没有成员：{line}")
+            errors.append(f"第 {lineno} 行喵：队伍『{team_name}』一个成员都没有喵：{line}")
             continue
         result.teams.append((team_name, players))
 
     if not result.teams:
-        errors.append("未解析到任何战队名单。")
+        errors.append("喵…一份战队名单都没解析出来喵。")
 
     if not rule_found:
         result.rule = default_rule
@@ -159,16 +173,6 @@ def generate_template(
     ]
 
     return GeneratedTemplate(template="\n".join(lines), warnings=[])
-
-
-def format_roster_display(teams: list[tuple[str, list[str]]]) -> str:
-    """把名单格式化为便于查看的文本（看排表命令用）。"""
-    if not teams:
-        return "（当前群尚未设置战队名单）"
-    lines = []
-    for name, players in teams:
-        lines.append(f"{name}: {'、'.join(players)}")
-    return "\n".join(lines)
 
 
 # ---------- 追加轮次 ----------
@@ -246,7 +250,7 @@ def build_next_round(
     if parsed.errors:
         return RoundBuildResult(
             False, draft_text, [],
-            ["当前战报无法解析：\n" + "\n".join(parsed.errors)],
+            ["喵…当前战报解析不了喵：\n" + "\n".join(parsed.errors)],
         )
     report = parsed.report
 
@@ -254,7 +258,7 @@ def build_next_round(
     if prev_round is None:
         return RoundBuildResult(
             False, draft_text, [],
-            [f"未找到第 {round_no} 轮之前的轮次，请先完成上一轮。"],
+            [f"喵…没找到第 {round_no} 轮之前的轮次喵，先把上一轮打完嘛。"],
         )
 
     if not info_lines:
@@ -271,7 +275,7 @@ def build_next_round(
         if not winners_a and not winners_b:
             return RoundBuildResult(
                 False, draft_text, [],
-                [f"第 {prev_round} 轮没有可确认的胜者（请先在战报中填写上一轮比分）。"],
+                [f"喵…第 {prev_round} 轮还没分出胜者喵（要先把上一轮的比分填进战报）。"],
             )
         a, b = list(winners_a), list(winners_b)
         if seed:
@@ -284,7 +288,7 @@ def build_next_round(
         if not added:
             return RoundBuildResult(
                 False, draft_text, [],
-                ["上一轮没有可配对的胜者（一侧无人可战）。"],
+                ["喵…上一轮没有可配对的胜者呢（有一边没人可打）。"],
             )
     else:
         # 玩家→队伍映射（左=team_a，右=team_b），用于按队伍对齐对局顺序
@@ -305,7 +309,7 @@ def build_next_round(
                 pa = line[: m.start()].strip()
                 pb = line[m.end():].strip()
                 if not pa or not pb:
-                    errors.append(f"无法解析对局行：{line}")
+                    errors.append(f"喵…这行对局解析不了喵：{line}")
                     continue
             else:
                 parts = line.split()
@@ -318,7 +322,8 @@ def build_next_round(
                     sa, sb = int(parts[1][0]), int(parts[1][1])
                 else:
                     errors.append(
-                        f"无法解析对局行：{line}（应为『玩家A 玩家B』或『玩家A 比分 玩家B』）"
+                        f"喵…这行对局解析不了喵：{line}"
+                        f"（应为『玩家A 玩家B』或『玩家A 比分 玩家B』）"
                     )
                     continue
             if team_a:
@@ -327,7 +332,7 @@ def build_next_round(
         if errors and not added:
             return RoundBuildResult(False, draft_text, [], errors)
         if not added:
-            return RoundBuildResult(False, draft_text, [], ["没有可添加的对局。"])
+            return RoundBuildResult(False, draft_text, [], ["喵…没有能加进去的对局喵。"])
 
     new_text = _append_round(draft_text, round_no, added)
     return RoundBuildResult(True, new_text, added, errors)
@@ -439,7 +444,10 @@ def record_result(
         return RecordResult(True, new_text, [new_line], [])
 
     if opponent is None:
-        return RecordResult(False, draft_text, [], [f"未找到玩家「{player}」待记录比分的对阵。"])
+        return RecordResult(
+            False, draft_text, [],
+            [f"喵…没找到「{player}」待记录比分的对阵呢。"],
+        )
 
     # 无未记录对阵 → 在最新轮次插入新对阵（按队伍对齐：team_a 选手在左）
     latest_round = 0
@@ -448,7 +456,7 @@ def record_result(
         if m:
             latest_round = max(latest_round, _cn_to_int(m.group(1)) or latest_round + 1)
     if latest_round == 0:
-        return RecordResult(False, draft_text, [], ["草稿中没有可用的轮次。"])
+        return RecordResult(False, draft_text, [], ["喵…这份草稿里没有能用的轮次喵。"])
 
     team_a, _, team_map = _parse_teams_and_mapping(draft_text)
     p1, s1, p2, s2 = player, my_score, opponent, opp_score
@@ -466,17 +474,21 @@ def record_from_info(draft_text: str, info: str) -> RecordResult:
         player, score_token = tokens
         score = parse_score_token(score_token)
         if score is None:
-            return RecordResult(False, draft_text, [], [f"无法解析比分：{score_token}"])
+            return RecordResult(
+                False, draft_text, [], [f"喵…这个比分看不懂喵：{score_token}"]
+            )
         return record_result(draft_text, player, score[0], score[1], None)
     if len(tokens) == 3:
         player, score_token, opponent = tokens
         score = parse_score_token(score_token)
         if score is None:
-            return RecordResult(False, draft_text, [], [f"无法解析比分：{score_token}"])
+            return RecordResult(
+                False, draft_text, [], [f"喵…这个比分看不懂喵：{score_token}"]
+            )
         return record_result(draft_text, player, score[0], score[1], opponent)
     return RecordResult(
         False, draft_text, [],
-        [f"记录格式应为『玩家名 比分 [对手]』，得到：{info}"],
+        [f"喵…记录要写成『玩家名 比分 [对手]』喵，收到的却是：{info}"],
     )
 
 
@@ -505,14 +517,91 @@ def format_duel_results(report, home_team: str) -> str:
     return "\n".join(lines)
 
 
+def format_raid_results(report, home_team: str) -> str:
+    """踢馆战报的对局结果回执（提交后核对用）。
+
+    每行的对错标记**按提交方战队的视角**给（`home_team` 是本群绑定的战队）：
+
+    - 本群是踢馆方（`team_a`）→ `e4399 2:1 雨落 ✅ 进攻成功` / `❌ 进攻失败`
+    - 本群是守馆方（`team_b`）→ `e4399 2:1 雨落 ❌ 防守失败` / `✅ 防守成功`
+
+    比分恒为 `踢馆方:守馆方`（左侧永远是踢馆者），只有措辞跟着视角走。
+    末尾附一行结论，**结论行同样按提交方视角**（踢馆方看到「踢馆成功 / 踢馆失败」，
+    守馆方看到「守馆成功 / 守馆失败」），并附防守者人数与是否含馆主、踢破时的加点。
+
+    计数（防守者人数/是否含馆主/首轮）与点数一律走 `stats.compute_raid_match`，
+    这里不重复实现一份判定。
+    """
+    info = compute_raid_match(
+        [
+            {
+                "seq": i,
+                "score_a": d.score_a,
+                "score_b": d.score_b,
+                "player_b": d.player_b,
+                "owner": d.owner,
+                "resolved_a": d.player_a,
+                "resolved_b": d.player_b,
+            }
+            for i, d in enumerate(report.duels)
+        ],
+        determine_match_winner(report) or "",
+        report.team_a,
+        report.team_b,
+    )
+
+    # 视角 = 提交方战队：本群是守馆方就看右侧，否则看左侧（main.py 已保证
+    # home_team 必为 team_a / team_b 之一，所以「不是守馆方」即踢馆方）。
+    i_defend = home_team == report.team_b
+    ok_mark, bad_mark = ("✅ 防守成功", "❌ 防守失败") if i_defend else ("✅ 进攻成功", "❌ 进攻失败")
+
+    lines = []
+    for d in report.duels:
+        mine, theirs = (d.score_b, d.score_a) if i_defend else (d.score_a, d.score_b)
+        if mine > theirs:
+            mark = ok_mark
+        elif theirs > mine:
+            mark = bad_mark
+        else:
+            mark = "➖ 未打"
+        pb = d.player_b + ("(馆主)" if d.owner else "")
+        lines.append(f"{d.player_a} {d.score_a}:{d.score_b} {pb} {mark}")
+
+    # 结论行**也按提交方视角**，与上面那批 ✅/❌ 同一套方向。
+    # ⚠️ 这行曾经恒用守馆方措辞（`🛡️ 守馆成功（team_b）`），于是踢馆失败的战队
+    # 会在自己群里看到**对手**的守馆成功 —— 和上面跟随视角的对局标记自相矛盾。
+    # 反过来，守馆方被踢穿时也会看到「⚔️ 踢馆成功（防守者5人）」，像是自己赢了。
+    defenders = f"防守者{info['defender_count']}人"
+    if info["has_owner"]:
+        defenders += "，含馆主"
+    if info["raider_success"]:
+        if i_defend:
+            verdict = f"💀 守馆失败（{report.team_b}），{defenders}"
+        else:
+            verdict = f"⚔️ 踢馆成功（{defenders}），踢馆积分+{info['attack_points']}"
+    elif info["hold"]:
+        if i_defend:
+            verdict = f"🛡️ 守馆成功（{report.team_b}），{defenders}"
+        else:
+            verdict = f"💀 踢馆失败（{report.team_a}），{defenders}"
+    else:
+        verdict = "⚠️ 胜负未定（最后一场为平局），未计算积分"
+    lines.append(verdict)
+    return "\n".join(lines)
+
+
 def format_duels_block(duels: list[dict]) -> str:
-    """对局段（含轮次分隔），对阵行双空格：`玩家A  比分  玩家B`，替补补 (替)、判罚补 (规则)。"""
+    """对局段（含轮次分隔），对阵行双空格：`玩家A  比分  玩家B`，替补补 (替)、判罚补 (规则)、馆主补 (馆主)。
+
+    踢馆报的对局 `round_no` 恒为 0（没有轮次概念），此时**不输出轮次头**。
+    """
     rounds: dict[int, list[dict]] = {}
     for d in duels:
         rounds.setdefault(d["round_no"], []).append(d)
     lines = []
     for round_no in sorted(rounds):
-        lines.append(f"------第{_int_to_cn(round_no)}轮------")
+        if round_no != 0:  # 踢馆报无轮次（round_no=0）
+            lines.append(f"------第{_int_to_cn(round_no)}轮------")
         for d in rounds[round_no]:
             pa = d["player_a"]
             if d.get("a_sub"):
@@ -520,6 +609,8 @@ def format_duels_block(duels: list[dict]) -> str:
             pb = d["player_b"]
             if d.get("b_sub"):
                 pb += "(替)"
+            if d.get("owner"):
+                pb += "(馆主)"  # 踢馆赛：馆主标记只认防守方（右侧）
             if d.get("ruled"):
                 # 判罚方比分更低，为败方 → 给败方 ID 补 (规则)
                 if d["score_a"] < d["score_b"]:
@@ -549,9 +640,31 @@ def format_report(
     return "\n".join(lines) + (("\n" + body) if body else "")
 
 
+def is_raid_duel_line(line: str) -> bool:
+    """该行是否是一条踢馆对局行（`雨落 2:1 云猫(馆主)`）。
+
+    必须排除规则行与裸时间行：`规则：OCG.2026.7.1.MATCH` 与 `2026.8.30 21:00`
+    都含冒号数字，会被 `SCORE_RE` 误命中。
+    """
+    s = line.strip()
+    if not s or RULE_RE.match(s) or _BARE_DATE_RE.match(s):
+        return False
+    return bool(SCORE_RE.search(s))
+
+
 def _header_block(raw: str) -> str:
-    """取原始文本中第一个轮次分隔符之前的头部行（战队/时间/规则/地点）。"""
+    """取原始文本中第一个轮次分隔符之前的头部行（战队/时间/规则/地点）。
+
+    踢馆战报没有轮次分隔符，改用**第一条对局行**作分界（头部 = 首行到
+    `踢馆开始！`，含）。不这么切的话导出会把对局行输出两遍：头部原样保留
+    一份，`format_duels_block` 又重建一份。
+    """
     lines = raw.split("\n")
+    if lines and RAID_RE.match(lines[0].strip()):
+        for i, ln in enumerate(lines):
+            if is_raid_duel_line(ln):
+                return "\n".join(lines[:i])
+        return raw.strip()
     for i, ln in enumerate(lines):
         if ROUND_RE.match(ln):
             return "\n".join(lines[:i])

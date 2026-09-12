@@ -5,7 +5,7 @@
 1. 剥离 duels 玩家名中的标记，并按语义置 ruled=1
 2. 清理 player_ids 参赛ID池中带标记的脏名字（有干净名则删脏行，无则改名）
 
-规则语义（用户确认）：`(规则)` 标记不管挂在哪个 ID 上，被规则的一方都是比分低
+规则语义：`(规则)` 标记不管挂在哪个 ID 上，被规则的一方都是比分低
 的一侧（判罚方必为败方）。代码层已按此实现，本脚本只修数据。
 
 用法：
@@ -86,8 +86,8 @@ def _plan_changes(duels: list[dict], player_ids: list[dict], all_player_ids: lis
     """计算变更计划（dry-run 输出用）。返回 {duels: [...], player_renames: [...], player_deletes: [...]}。"""
     duel_changes = []
     for d in duels:
-        pa, _, pa_ruled = _clean_player_name(d["player_a"])
-        pb, _, pb_ruled = _clean_player_name(d["player_b"])
+        pa, _, pa_ruled, _ = _clean_player_name(d["player_a"])
+        pb, _, pb_ruled, _ = _clean_player_name(d["player_b"])
         ruled = 1 if (pa_ruled or pb_ruled) else 0
         duel_changes.append({
             "id": d["id"],
@@ -114,7 +114,7 @@ def _plan_changes(duels: list[dict], player_ids: list[dict], all_player_ids: lis
     player_renames = []   # (id, home_team, 脏名, 干净名)
     player_deletes = []   # (id, home_team, 脏名, 原因)
     for row in player_ids:
-        clean, _, _ = _clean_player_name(row["player_name"])
+        clean, _, _, _ = _clean_player_name(row["player_name"])
         if clean == row["player_name"]:
             continue  # 理论上不会出现（查询已过滤带标记）
         dup = existing.get((row["home_team"], clean))

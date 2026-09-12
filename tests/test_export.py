@@ -72,6 +72,34 @@ def test_format_duels_block_ruled_marker():
     assert "红莲  1:2  老千" in format_duels_block(duels)
 
 
+def test_format_duels_block_owner_marker():
+    """对局段重建时：owner 字段为真则给防守方（右侧）补 (馆主)。"""
+    from lineup import format_duels_block
+
+    duels = [
+        {"seq": 0, "round_no": 0, "player_a": "雨落", "score_a": 2, "player_b": "念心", "score_b": 1,
+         "owner": False},
+        {"seq": 1, "round_no": 0, "player_a": "雨落", "score_a": 2, "player_b": "云猫", "score_b": 1,
+         "owner": True},
+    ]
+    text = format_duels_block(duels)
+    assert "雨落  2:1  念心" in text
+    assert "雨落  2:1  云猫(馆主)" in text
+
+
+def test_format_duels_block_no_round_header_when_round_zero():
+    """踢馆没有轮次（round_no == 0）→ 不输出轮次分隔行。"""
+    from lineup import format_duels_block
+
+    duels = [
+        {"seq": 0, "round_no": 0, "player_a": "雨落", "score_a": 2, "player_b": "念心", "score_b": 1},
+        {"seq": 1, "round_no": 0, "player_a": "雨落", "score_a": 2, "player_b": "云猫", "score_b": 0},
+    ]
+    text = format_duels_block(duels)
+    assert "轮" not in text
+    assert text.splitlines() == ["雨落  2:1  念心", "雨落  2:0  云猫"]
+
+
 def test_format_report_round_order():
     """乱序对局按轮次分组后输出顺序正确。"""
     duels = [
