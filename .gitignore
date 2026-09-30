@@ -211,3 +211,6 @@ __marimo__/
 
 # 一次性修复脚本的数据备份（含敏感行快照，不入库）
 scripts/backups/
+
+# 战报爬取脚本的产物（导出数据、原始 HTML 缓存、差异报告，不入库）
+scripts/output/

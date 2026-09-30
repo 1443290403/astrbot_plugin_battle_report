@@ -360,6 +360,33 @@ KC踢馆BAR
 - v1.1.0 及之后 群战队绑定、用户与参赛ID绑定、批量提交与回复引用、替补标记
 - v1.0.0 初版：排表、战报提交与解析入库、排行与导出
 
+## 数据核对脚本
+
+用于排查「插件统计结果与实际对战结果不一致」：把线上战报系统（rep.ygobbs2.com）
+的区间数据抓下来，与插件库比对。两个脚本均为一次性工具，不参与插件运行。
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/crawl_battle_reports.py` | 爬取指定区间的战报 → 导出 JSON/CSV，并按**正文内容**标注「完全一样的战报」重复组 |
+| `scripts/diff_battle_report_db.py` | 读导出的 JSON + 连库（**只读 SELECT**）→ 输出差异报告 |
+
+```bash
+# 1. 爬取（默认 KC / 2026-09-01~2026-09-30）
+python scripts/crawl_battle_reports.py
+python scripts/crawl_battle_reports.py --group KC --start 2026-09-01 --end 2026-09-30 --refresh
+
+# 2. 比对（连库参数默认取 ASTRBOT_MYSQL_HOST/PORT/USER/PASSWORD/DB 环境变量）
+python scripts/diff_battle_report_db.py
+python scripts/diff_battle_report_db.py --dry-run      # 只打印摘要，不写报告
+```
+
+产物写入 `scripts/output/`（已 gitignore）：导出的 `.json`/`.csv`、原始 HTML 缓存
+`raw/`、差异报告 `diff_*.md`/`.json`。
+
+> 注意：线上查询的 `starttime/endtime` 过滤的是**发布时间**，不是战报正文里的
+> **比赛时间**，两者可能不同月，脚本会标注越界的记录。站点响应不稳定，爬取对每页
+> 做校验与重试，任一项最终失败即整体放弃导出（不会产出缺页的数据）。
+
 ## 📞 支持与反馈
 
 如有问题或建议，欢迎提交 Issue 或联系作者。
