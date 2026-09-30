@@ -22,6 +22,15 @@ BODY = """战队: FA VS KC
 地  1:2  绯洛
 黑花花  1:2  绯洛"""
 
+# 同一时间/战队/地点，但阵容完全不同（模拟同一天同一房间的另一场比赛）
+BODY_OTHER = """战队: FA VS KC
+时间: 2026.09.30
+规则: 2/3【KOF】
+地点: 801965989
+------第一轮------
+甲  2:0  丙
+乙  2:0  丁"""
+
 
 def _site_record(body: str = BODY, rid: str = "157101") -> dict:
     raw = {
@@ -42,14 +51,13 @@ def _db_match(mid: int, rec: dict, winner: str | None = None) -> dict:
     }
 
 
-def _db_duels(rec: dict, *, pa_team: str | None = None, pb_team: str | None = None) -> list[dict]:
+def _db_duels(rec: dict) -> list[dict]:
     return [
         {
             "match_id": 0, "round_no": d["round_no"],
             "player_a": d["player_a"], "score_a": d["score_a"],
             "player_b": d["player_b"], "score_b": d["score_b"],
-            "player_a_team": pa_team or rec["team_a"],
-            "player_b_team": pb_team or rec["team_b"], "result": "A",
+            "player_a_team": rec["team_a"], "player_b_team": rec["team_b"], "result": "A",
         }
         for d in rec["duels"]
     ]
@@ -67,7 +75,7 @@ def test_all_matched_no_diffs():
     res = differ.compare([rec], [_db_match(1, rec)], {1: _db_duels(rec)})
     assert res["matched"] == 1
     assert not res["missing_in_db"] and not res["only_in_db"]
-    assert not res["winner_mismatch"] and not res["duel_mismatch"]
+    assert not res["winner_mismatch"] and not res["db_duplicate_keys"]
 
 
 def test_missing_in_db():
@@ -83,6 +91,69 @@ def test_only_in_db():
     assert [m["id"] for m in res["only_in_db"]] == [9]
 
 
+def test_db_duplicate_same_content():
+    rec = _site_record()
+    res = differ.compare([rec], [_db_match(7, rec), _db_match(8, rec)],
+                         {7: _db_duels(rec), 8: _db_duels(rec)})
+    assert len(res["db_duplicate_keys"]) == 1
+    assert [m["id"] for m in list(res["db_duplicate_keys"].values())[0]] == [7, 8]
+    # 库中两条都对应上网站这一条，不产生"只在库里有"
+    assert res["matched"] == 1
+    assert res["only_in_db"] == []
+
+
+def test_site_duplicate_same_content():
+    a, b = _site_record(rid="157101"), _site_record(rid="157102")
+    res = differ.compare([a, b], [_db_match(1, a)], {1: _db_duels(a)})
+    assert len(res["site_duplicate_keys"]) == 1
+    assert res["missing_in_db"] == []  # 库里有这一份，不算缺失
+
+
+def test_different_duels_same_session_do_not_match():
+    """回归：地点是固定房间号，同一天同一房间有多场不同比赛，不能当成同场重复。"""
+    site = _site_record()
+    other = _site_record(BODY_OTHER, rid="157999")
+    res = differ.compare([site], [_db_match(1, other)], {1: _db_duels(other)})
+    assert res["matched"] == 0
+    assert [r["id"] for r in res["missing_in_db"]] == ["157101"]
+    assert [m["id"] for m in res["only_in_db"]] == [1]
+    assert res["db_duplicate_keys"] == {}
+
+
+def test_same_session_more_rows_than_site_is_flagged():
+    """网站那天那个房间只打了一场，库里却有两版 → 多出来的是重复计数。"""
+    a = _site_record(rid="157101")                 # 网站判 KC 胜
+    b = _site_record(BODY_OTHER, rid="157999")     # 同日期/战队/地点，内容不同
+    res = differ.compare(
+        [a],  # 网站只有一份
+        [_db_match(11, a, winner="KC"), _db_match(12, b, winner="FA")],
+        {11: _db_duels(a), 12: _db_duels(b)},
+    )
+    assert len(res["db_session_groups"]) == 1
+    g = res["db_session_groups"][0]
+    assert g["site_count"] == 1
+    assert g["db_exceeds_site"] is True
+    assert g["winner_conflict"] is True
+    assert [m["db_id"] for m in g["matches"]] == [11, 12]
+    assert res["db_duplicate_keys"] == {}  # 内容不同，不算"同内容重复"
+
+
+def test_same_session_count_matches_site_not_flagged():
+    """网站同场次也有两份（双方各报一版都被收录）→ 不是重复，不该动。"""
+    a = _site_record(rid="157101")
+    b = _site_record(BODY_OTHER, rid="157999")
+    res = differ.compare(
+        [a, b],
+        [_db_match(11, a, winner="KC"), _db_match(12, b, winner="FA")],
+        {11: _db_duels(a), 12: _db_duels(b)},
+    )
+    assert len(res["db_session_groups"]) == 1
+    g = res["db_session_groups"][0]
+    assert g["site_count"] == 2
+    assert g["db_exceeds_site"] is False
+    assert res["missing_in_db"] == []
+
+
 def test_winner_mismatch():
     rec = _site_record()
     res = differ.compare([rec], [_db_match(2, rec, winner="FA")], {2: _db_duels(rec)})
@@ -91,18 +162,10 @@ def test_winner_mismatch():
     assert m["id"] == 2 and w == "FA"
 
 
-def test_winner_mismatch_uses_recompute_when_db_winner_blank():
+def test_winner_recomputed_when_db_winner_blank():
     rec = _site_record()
     res = differ.compare([rec], [_db_match(3, rec, winner="")], {3: _db_duels(rec)})
     assert not res["winner_mismatch"]  # 复算出 KC，与网站一致
-
-
-def test_duel_mismatch():
-    rec = _site_record()
-    duels = _db_duels(rec)
-    duels[0]["score_a"], duels[0]["score_b"] = 0, 2
-    res = differ.compare([rec], [_db_match(4, rec)], {4: duels})
-    assert len(res["duel_mismatch"]) == 1
 
 
 def test_zero_zero_placeholder_ignored():
@@ -111,7 +174,6 @@ def test_zero_zero_placeholder_ignored():
     assert any(d["score_a"] == 0 and d["score_b"] == 0 for d in rec["duels"])
     res = differ.compare([rec], [_db_match(5, rec)], {5: _db_duels(rec)})
     assert res["matched"] == 1
-    assert not res["duel_mismatch"]
 
 
 def test_team_order_flipped_in_db_still_matches():
@@ -124,17 +186,7 @@ def test_team_order_flipped_in_db_still_matches():
         d["player_a_team"], d["player_b_team"] = d["player_b_team"], d["player_a_team"]
     res = differ.compare([rec], [flipped], {6: duels})
     assert res["matched"] == 1
-    assert not res["winner_mismatch"] and not res["duel_mismatch"]
-
-
-def test_multi_match_in_db_flags_double_counting():
-    rec = _site_record()
-    res = differ.compare([rec], [_db_match(7, rec), _db_match(8, rec)],
-                         {7: _db_duels(rec), 8: _db_duels(rec)})
-    assert res["matched"] == 1
-    assert len(res["multi_match_in_db"]) == 1
-    assert res["multi_match_in_db"][0][1] == [7, 8]
-    assert [m["id"] for m in res["only_in_db"]] == [8]
+    assert not res["winner_mismatch"]
 
 
 def test_out_of_range_excluded_from_comparison():
