@@ -154,6 +154,28 @@ def test_same_session_count_matches_site_not_flagged():
     assert res["missing_in_db"] == []
 
 
+def test_raid_rows_excluded_by_default():
+    """网站只收录友谊赛，踢馆报必须排除，否则全落进「只在库里有」。"""
+    rows = [
+        {"id": 1, "kind": differ.KIND_FRIENDLY},
+        {"id": 2, "kind": "raid"},
+        {"id": 3, "kind": "raid"},
+        {"id": 4, "kind": None},        # 历史行：建表默认 friendly
+        {"id": 5},                      # 老 schema：无 kind 列
+    ]
+    kept, excluded = differ.split_by_kind(rows)
+    assert [m["id"] for m in kept] == [1, 4, 5]
+    assert excluded == {"raid": 2}
+    assert kept[0]["kind"] == differ.KIND_FRIENDLY  # 空的补成 friendly
+
+
+def test_raid_rows_included_on_demand():
+    rows = [{"id": 1, "kind": differ.KIND_FRIENDLY}, {"id": 2, "kind": "raid"}]
+    kept, excluded = differ.split_by_kind(rows, include_raid=True)
+    assert [m["id"] for m in kept] == [1, 2]
+    assert excluded == {}
+
+
 def test_winner_mismatch():
     rec = _site_record()
     res = differ.compare([rec], [_db_match(2, rec, winner="FA")], {2: _db_duels(rec)})

@@ -3,15 +3,21 @@
 配合 scripts/crawl_battle_reports.py 使用：先爬取导出 JSON，再用本脚本连库比对。
 **全程只读 SELECT，不写库。**
 
-匹配键（网站 ↔ 库）：
-    主键 (比赛时间, 战队集合(无序), 地点)
-    回退 (比赛时间, 战队集合(无序))      —— 兼容库内 location 为空的历史数据
+匹配键（网站 ↔ 库）：**内容指纹** = 比赛时间 + 战队集合(无序) + 地点 + 规范化对局序列。
+不能用 (比赛时间, 战队集合, 地点) —— 地点是固定房间号，同一天同一房间会打好几场，
+该键根本不唯一。
 
-输出四类差异：
-    1. 库里缺失      网站有、库中没有（多为对手方发布、本群未提交的场次）
-    2. 只在库里有    库中有、区间内网站没有（疑似误报/重复入库）
-    3. 胜负不一致    两边都匹配上，但库记录的胜方与网站『胜方』列不符
-    4. 明细不一致    时间/战队/地点都匹配，但对局序列不同（同场次存在两份不同版本）
+只比对**友谊战报**（`matches.kind = 'friendly'`）：网站只收录友谊赛，踢馆报进来
+只会全落进「只在库里有」。`--include-raid` 可关掉这个过滤。
+
+输出差异：
+    1. 库里缺失        网站有、库中没有（多为对手方发布、本群未提交的场次）
+    2. 只在库里有      库中有、区间内网站没有
+    3. 库内重复        同内容多条 —— 会让统计直接翻倍
+    4. 网站侧重复      网站同一份战报有多条 ID
+    5. 胜负不一致      内容一致，但库判胜方与网站『胜方』列不符
+    6. 同场次多版      同日期+战队+地点但对局内容不同（双方各报一版，指纹拦不住）
+       └ 疑似重复计数  其中的子集：**库内条数多于网站同场次条数**，多出来的是重复
 
 用法：
     python scripts/diff_battle_report_db.py
@@ -39,7 +45,9 @@ except ImportError:
 # 让脚本可以从插件根目录以包方式导入解析器
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from battle_report_parser import BattleReport, Duel, determine_match_winner
+    from battle_report_parser import (
+        KIND_FRIENDLY, BattleReport, Duel, determine_match_winner,
+    )
 except ImportError:
     print("无法导入 battle_report_parser，请检查脚本路径")
     sys.exit(1)
@@ -132,8 +140,33 @@ def _db_duels(duels: list[dict], match: dict) -> list[tuple]:
 
 # ---------- 取数与比对 ----------
 
-async def fetch_db(pool, start: str, end: str, home_team: str | None) -> tuple[list[dict], dict]:
-    """只读拉取区间内的 matches 与其 duels。"""
+def split_by_kind(rows: list[dict], *, include_raid: bool = False) -> tuple[list[dict], dict]:
+    """按 `matches.kind` 过滤，返回 `(kept, excluded_counts)`。
+
+    默认只留友谊战报：网站只收录友谊赛，踢馆报拿来比对只会全落进「只在库里有」。
+    `kind` 为空的历史行按友谊赛处理（与建表默认值 `'friendly'` 一致）。
+    """
+    kept, excluded = [], defaultdict(int)
+    for m in rows:
+        kind = (m.get("kind") or KIND_FRIENDLY)
+        if kind == KIND_FRIENDLY or include_raid:
+            m["kind"] = kind
+            kept.append(m)
+        else:
+            excluded[kind] += 1
+    return kept, dict(excluded)
+
+
+async def fetch_db(pool, start: str, end: str, home_team: str | None,
+                   *, include_raid: bool = False) -> tuple[list[dict], dict, dict]:
+    """只读拉取区间内的 matches 与其 duels。
+
+    默认**只取友谊战报**（`matches.kind = 'friendly'`）—— 线上战报站
+    rep.ygobbs2.com 只收录友谊赛，踢馆报拿来比对只会全部落进「只在库里有」，
+    把结果污染成"库里多算"。插件自己的统计查询（database.py）也是这么过滤的。
+
+    返回 `(matches, duels, excluded)`，`excluded` 是被排除的 kind 计数。
+    """
     where = "match_time BETWEEN %s AND %s"
     params: list = [start, end]
     if home_team:
@@ -144,11 +177,13 @@ async def fetch_db(pool, start: str, end: str, home_team: str | None) -> tuple[l
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
                 "SELECT id, group_id, home_team, team_a, team_b, match_time, rule, "
-                "location, winner, submitted_by, submitted_name, created_at "
+                "location, winner, submitted_by, submitted_name, created_at, kind "
                 f"FROM matches WHERE {where} ORDER BY id",
                 params,
             )
-            matches = list(await cur.fetchall())
+            rows = list(await cur.fetchall())
+
+            matches, excluded = split_by_kind(rows, include_raid=include_raid)
 
             duels: dict[int, list[dict]] = defaultdict(list)
             ids = [m["id"] for m in matches]
@@ -169,7 +204,7 @@ async def fetch_db(pool, start: str, end: str, home_team: str | None) -> tuple[l
     for m in matches:
         if hasattr(m["match_time"], "isoformat"):
             m["match_time"] = m["match_time"].isoformat()
-    return matches, duels
+    return matches, duels, dict(excluded)
 
 
 def _site_key(record: dict) -> tuple:
@@ -319,6 +354,10 @@ def build_report(res: dict, meta: dict, limit: int) -> str:
     add(f"- 网站抓取：**{res['site_total']}** 条（区间内可解析 {res['site_in_range']} 条）")
     add(f"- 数据库 matches：**{res['db_total']}** 条（home_team={meta['group']}）")
     add(f"- 成功匹配：**{res['matched']}** 条")
+    excluded = meta.get("excluded") or {}
+    if excluded:
+        detail = "、".join(f"{k} {v} 条" for k, v in sorted(excluded.items()))
+        add(f"- 已排除：{detail}（网站只收录友谊赛，**不参与比对**）")
     add("")
     add("## 差异汇总")
     add("")
@@ -443,6 +482,8 @@ async def main() -> int:
                     help="只比对该 home_team 的库记录（默认取 --group；传空串比对全部）")
     ap.add_argument("--out-dir", default=None, help="报告输出目录（默认 scripts/output）")
     ap.add_argument("--limit", type=int, default=30, help="每类在 Markdown 中最多列出的条数")
+    ap.add_argument("--include-raid", action="store_true",
+                    help="连踢馆战报一起比对（默认排除：网站只收录友谊赛）")
     ap.add_argument("--dry-run", action="store_true", help="只打印摘要，不写报告文件")
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -481,7 +522,9 @@ async def main() -> int:
 
     try:
         try:
-            db_matches, db_duels = await fetch_db(pool, args.start, args.end, home_team)
+            db_matches, db_duels, excluded = await fetch_db(
+                pool, args.start, args.end, home_team, include_raid=args.include_raid,
+            )
         except (aiomysql.Error, OSError) as e:
             print(f"✗ 查询数据库失败：{e}")
             return 1
@@ -491,6 +534,9 @@ async def main() -> int:
 
     print(f"已载入库 matches {len(db_matches)} 条"
           + (f"（home_team={home_team}）" if home_team else "（全部战队）"))
+    if excluded:
+        detail = "、".join(f"{k} {v} 条" for k, v in sorted(excluded.items()))
+        print(f"  已排除 {detail}（网站只收录友谊赛，不参与比对）")
     res = compare(site_records, db_matches, db_duels)
     print_summary(res)
 
@@ -498,7 +544,8 @@ async def main() -> int:
         print("dry-run：未写报告文件。")
         return 0
 
-    meta = {"group": args.group, "start": args.start, "end": args.end}
+    meta = {"group": args.group, "start": args.start, "end": args.end,
+            "excluded": excluded, "include_raid": args.include_raid}
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"diff_{args.group}_{args.start}_{args.end}"
     md_path = out_dir / f"{stem}.md"
