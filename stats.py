@@ -893,6 +893,6 @@ def render_help(section_keys: list[str]) -> str:
     for k in section_keys:
         parts.append(HELP_SECTIONS[k])
     parts.append("群属性：/群聊属性 <友谊群|战报群|主群>（超管或本队管理员）")
-    parts.append("/帮助 查看本群流程 | /帮助 全部 查看三类流程 | /帮助 超管 查看超管指令")
+    parts.append("/帮助 查看本群流程 | /帮助 全部 查看三类流程")
     parts.append("🐾 有不懂的地方随时喊我喵～")
     return "\n\n".join(parts)

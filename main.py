@@ -158,7 +158,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -514,9 +514,10 @@ class BattleReportPlugin(Star):
             f"✅ 本群战队已经绑定成 {team} 啦喵～ (=^･ω･^=)（已有战报已回填）"
         )
         role = await self.db.get_group_chat_type_setting(group_id)
-        yield event.plain_result(help_guide.render_group_help(
-            role, team, configured=role is not None, qq_id=event.get_sender_id(),
-        ))
+        guide = help_guide.render_group_help(role, team)
+        if role is None:
+            guide = help_guide.render_setup_guide(team, role) + "\n\n" + guide
+        yield event.plain_result(guide)
 
     @filter.command("查看战队", alias={"/查看战队"})
     async def view_home(self, event: AstrMessageEvent):
@@ -706,7 +707,7 @@ class BattleReportPlugin(Star):
             if not home:
                 role = await self.db.get_group_chat_type_setting(group_id)
                 yield event.plain_result(help_guide.render_setup_guide(
-                    home, role, qq_id=event.get_sender_id(),
+                    home, role,
                 ))
                 return
             if not await self.db.is_team_admin(home, event.get_sender_id()):
@@ -718,9 +719,10 @@ class BattleReportPlugin(Star):
             return
         await self.db.set_group_chat_type(group_id, chat_type)
         yield event.plain_result(f"✅ 本群属性设成「{chat_type}」啦喵～ (=^･ω･^=)")
-        yield event.plain_result(help_guide.render_group_help(
-            chat_type, home, qq_id=event.get_sender_id(),
-        ))
+        guide = help_guide.render_group_help(chat_type, home)
+        if not home:
+            guide = help_guide.render_setup_guide(home, chat_type) + "\n\n" + guide
+        yield event.plain_result(guide)
 
     @filter.command("通告", alias={"/通告"})
     async def broadcast(self, event: AstrMessageEvent):
@@ -846,7 +848,7 @@ class BattleReportPlugin(Star):
             return _NEED_GROUP, None
         home, role = await self._get_group_settings(group_id)
         if not home or role is None:
-            return help_guide.render_setup_guide(home, role, qq_id=event.get_sender_id()), None
+            return help_guide.render_setup_guide(home, role), None
         return None, home
 
     async def _get_group_settings(self, group_id: str) -> tuple[str | None, str | None]:
@@ -1252,7 +1254,7 @@ class BattleReportPlugin(Star):
         home_team, role = await self._get_group_settings(group_id)
         if not home_team or role is None:
             yield event.plain_result(help_guide.render_setup_guide(
-                home_team, role, qq_id=event.get_sender_id(), required_type="战报群",
+                home_team, role, required_type="战报群",
             ))
             return
         if role != "战报群":
@@ -2103,22 +2105,20 @@ class BattleReportPlugin(Star):
                 logger.exception("读取帮助群设置失败")
                 settings_readable = False
         if arg == "全部":
-            if group_id and settings_readable and (not home or role is None):
-                yield event.plain_result(help_guide.render_setup_guide(home, role, qq_id=event.get_sender_id()))
             for group_type in help_guide.GROUP_TYPES:
                 yield event.plain_result(help_guide.render_group_help(group_type, home, preview=True))
             return
         if arg == "设置":
             if group_id and not settings_readable:
                 yield event.plain_result("⚠️ 暂时读不到本群设置喵，请维护者检查数据库连接；以下是开通步骤示例。")
-            yield event.plain_result(help_guide.render_setup_guide(home, role, qq_id=event.get_sender_id()))
+            yield event.plain_result(help_guide.render_setup_guide(home, role))
             return
         requested = help_guide.normalize_chat_type(arg)
         if requested:
             yield event.plain_result(help_guide.render_group_help(requested, home, preview=True))
             return
         if arg:
-            yield event.plain_result("用法喵：/帮助 [友谊群|战报群|主群|设置|全部|命令|超管]")
+            yield event.plain_result("用法喵：/帮助 [友谊群|战报群|主群|设置|全部|命令]")
             return
         if not group_id:
             yield event.plain_result("请到要使用插件的群里发 /帮助，我会按本群用途显示流程喵；私聊不能提交战报。")
@@ -2129,5 +2129,5 @@ class BattleReportPlugin(Star):
             yield event.plain_result(help_guide.render_group_help(preview=True))
             return
         yield event.plain_result(help_guide.render_group_help(
-            role, home, configured=role is not None, qq_id=event.get_sender_id(),
+            role, home,
         ))

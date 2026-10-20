@@ -499,17 +499,19 @@ def test_help_shows_group_workflow_instead_of_command_catalog(plugin_module, tmp
     assert len(response) == 1
     assert role+'操作流程' in response[0]
     assert '①' in response[0] and '②' in response[0]
-    assert '本群开通流程' not in response[0]
+    assert '本群设置' not in response[0]
 
 
-def test_unconfigured_help_defaults_to_competition_and_shows_setup(plugin_module, tmp_path):
+@pytest.mark.parametrize('home', [None, 'KC'])
+def test_unconfigured_help_only_shows_match_workflow(plugin_module, tmp_path, home):
     obj = plugin(plugin_module, tmp_path)
-    obj.db.get_group_home.return_value = None
+    obj.db.get_group_home.return_value = home
     obj.db.get_group_chat_type_setting.return_value = None
     response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
     assert '友谊群操作流程' in response[0]
-    assert '本群开通流程' in response[0]
-    assert '/绑定战队 KC' in response[0] and '/群聊属性' in response[0]
+    assert len(response) == 1
+    for unwanted in ['本群设置', '/绑定战队', '/群聊属性', '/设置战队管理员', '尚未明确设置', '默认友谊群', '战队：未绑定']:
+        assert unwanted not in response[0]
 
 
 @pytest.mark.parametrize('home,role', [(None,None), ('KC',None), (None,'主群')])
@@ -519,8 +521,9 @@ def test_require_home_returns_actionable_setup_for_incomplete_group(plugin_modul
     obj.db.get_group_chat_type_setting.return_value = role
     obj.db.get_player_ranking = AsyncMock()
     response = asyncio.run(collect(obj.ranking(event('/排行'))))
-    assert '开通流程' in response[0]
-    assert '/设置战队管理员' in response[0]
+    assert '本群设置' in response[0]
+    assert '请联系超管或本队战队管理员' in response[0]
+    assert '/设置战队管理员' not in response[0]
     obj.db.get_player_ranking.assert_not_awaited()
 
 
@@ -529,7 +532,7 @@ def test_export_also_requires_explicit_group_configuration(plugin_module,tmp_pat
     obj.db.get_group_chat_type_setting.return_value = None
     obj.db.get_export_rows = AsyncMock()
     response = asyncio.run(collect(obj.export(event('/导出 json'))))
-    assert '开通流程' in response[0]
+    assert '本群设置' in response[0]
     assert '/群聊属性 主群' in response[0]
     obj.db.get_export_rows.assert_not_awaited()
 
@@ -538,7 +541,7 @@ def test_missing_submission_setup_explains_report_group_steps(plugin_module,tmp_
     obj = plugin(plugin_module,tmp_path)
     obj.db.get_group_chat_type_setting.return_value = None
     response = asyncio.run(collect(obj.submit_report(event('/发送\n'+report()))))
-    assert '开通流程' in response[0]
+    assert '本群设置' in response[0]
     assert '/群聊属性 战报群' in response[0]
     obj.db.insert_report.assert_not_awaited()
 
@@ -551,7 +554,7 @@ def test_setting_type_immediately_displays_selected_workflow(plugin_module,tmp_p
         response = asyncio.run(collect(obj.set_chat_type(event('/群聊属性 '+role),role)))
         assert '✅' in response[0]
         assert role+'操作流程' in response[1]
-        assert '开通流程' not in response[1]
+        assert '本群设置' not in response[1]
     response = asyncio.run(collect(obj.set_chat_type(event('/群聊属性 友谊群'),'友谊群')))
     assert '友谊群操作流程' in response[1]
     assert obj.db.set_group_chat_type.await_args.args[1] == '友谊群'
@@ -573,7 +576,8 @@ def test_bind_team_displays_remaining_setup_and_default_match_workflow(plugin_mo
 
 def test_help_preview_and_all_do_not_change_group_type(plugin_module,tmp_path):
     obj = plugin(plugin_module,tmp_path)
-    obj.db.get_group_chat_type_setting.return_value = '友谊群'
+    obj.db.get_group_chat_type_setting.return_value = None
+    obj.db.get_group_home.return_value = None
     obj.db.set_group_chat_type = AsyncMock()
     preview = asyncio.run(collect(obj.help_cmd(event('/帮助 主群'),'主群')))
     assert '主群操作流程（预览）' in preview[0]

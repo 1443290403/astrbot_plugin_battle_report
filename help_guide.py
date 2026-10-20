@@ -1,6 +1,4 @@
 """面向群成员的操作流程与开通引导；不依赖平台和数据库。"""
-import json
-
 FRIENDLY_GROUP = "友谊群"
 REPORT_GROUP = "战报群"
 MAIN_GROUP = "主群"
@@ -13,51 +11,31 @@ def normalize_chat_type(chat_type: str | None) -> str | None:
     return value if value in GROUP_TYPES else None
 
 
-def _team_arg(home_team: str | None) -> str:
-    name = home_team or "KC"
-    return json.dumps(name, ensure_ascii=False) if any(c.isspace() or c in '\"\'' for c in name) else name
-
-
 def render_setup_guide(home_team: str | None = None, chat_type: str | None = None,
-                       *, qq_id: str | None = None, required_type: str | None = None) -> str:
-    """展示已完成与缺失的步骤；不替用户执行授权或改群属性。"""
+                       *, required_type: str | None = None) -> str:
+    """只提示需要补充的群设置，不展示超管的配置或授权操作。"""
     role = normalize_chat_type(chat_type)
     target = normalize_chat_type(required_type)
-    team = _team_arg(home_team)
-    qq = str(qq_id or "")
-    admin_qq = qq if qq.isascii() and qq.isdigit() else "<管理员QQ>"
-    status = f"战队：{home_team or '未绑定'}；群属性：{role or '友谊群（默认，尚未明确设置）'}"
-    parts = ["🧭 本群开通流程喵～", status]
-    if not home_team or not role:
-        parts.append("战队查询、ID 绑定和提交等功能需要先完成下面的设置；默认友谊群可先排表、记录比分。")
-    parts.append(
-        "① 先确认谁来设置（已有授权可跳过）\n"
-        "仅超管可以指定负责本队设置的管理员，普通群员不需要成为管理员。下列 QQ 请换成实际负责人的 QQ：\n"
-        f"/设置战队管理员 {team} {admin_qq}\n"
-        "超管由机器人维护者在插件配置 super_admin 中指定；普通成员请联系超管或本队管理员，QQ 群主/群管身份本身不能代替战队授权。"
-    )
-    parts.append(
-        (f"② 战队已绑定为 {home_team}，这一步已完成喵。" if home_team else
-         "② 由超管或该战队管理员在本群绑定战队\n"
-         f"/绑定战队 {team}\n"
-         "这里以 KC 为例，请替换成自己的真实战队名。")
-    )
-    if target:
-        parts.append(
-            "③ 由超管或本队管理员设置提交用途\n"
-            f"/群聊属性 {target}\n"
-            "若本群另有用途，请到本战队已设置好的战报群提交，不必改动本群。"
+    steps = []
+    if not home_team:
+        steps.append("绑定本群战队\n/绑定战队 <战队名>")
+    if target and role != target:
+        steps.append(f"设置为{target}\n/群聊属性 {target}\n"
+                     "若本群另有用途，请到本战队已设置好的战报群提交。")
+    elif not role:
+        steps.append(
+            "按本群用途选择一条\n"
+            "/群聊属性 友谊群  → 排表、记录比分\n"
+            "/群聊属性 战报群  → 提交、修改和删除战报\n"
+            "/群聊属性 主群  → 绑定 ID、查询战绩"
         )
-    elif role:
-        parts.append(f"③ 群属性已设为 {role}，这一步已完成喵。需要换用途时仍由超管或本队管理员设置。")
-    else:
-        parts.append(
-            "③ 按本群用途选择一条，由超管或本队管理员执行\n"
-            "/群聊属性 友谊群  → 排表、打比赛、记录比分\n"
-            "/群聊属性 战报群  → 提交、改错、删除战报\n"
-            "/群聊属性 主群  → 绑定 ID、查战绩、看排行和导出"
-        )
-    parts.append("设置完成会立即发送对应群的操作流程；之后随时发 /帮助 查看。超管可设置任意群喵～")
+    if not steps:
+        return f"本群已绑定战队 {home_team}，群属性为{role}。需要调整请联系超管或本队战队管理员喵。"
+    parts = ["🧭 本群设置喵～", "请联系超管或本队战队管理员完成以下设置："]
+    if home_team:
+        parts.append(f"本群战队：{home_team}")
+    parts.extend(f"{number}. {step}" for number, step in enumerate(steps, 1))
+    parts.append("设置好后，发 /帮助 查看本群流程。")
     return "\n\n".join(parts)
 
 
@@ -99,7 +77,7 @@ WORKFLOWS = {
         "目前没有原地修改命令；直接再提交改过比分的战报会成为另一条记录，可能重复统计。\n\n"
         "⑤ 只想删除：删除后不用重发\n"
         "自己的最近一份用 /战报撤销；指定 ID 由管理人员 /战报删除 <战报ID>。必须回到原提交群操作。\n"
-        "管理人员包括超管、本队战队管理员及具备插件管理权限的群管理/群主等；普通成员不能删别人的记录。\n"
+        "指定删除请联系本队战队管理员或群管理/群主；普通成员不能删别人的记录。\n"
         "删除会影响实时战绩；已结算奖金是快照，需管理人员另行重跑对应月份的结算喵。"
     ),
     MAIN_GROUP: (
@@ -133,16 +111,13 @@ WORKFLOWS = {
 
 
 def render_group_help(chat_type: str | None = None, home_team: str | None = None,
-                      *, configured: bool = True, qq_id: str | None = None,
-                      preview: bool = False) -> str:
+                      *, preview: bool = False) -> str:
+    """普通帮助只展示操作流程；缺少设置时由相关命令单独提示。"""
     role = normalize_chat_type(chat_type) or FRIENDLY_GROUP
     title = f"📋 {role}操作流程{'（预览）' if preview else ''}喵～"
     parts = [title]
-    if not preview:
-        state = role if configured else f"{role}（默认，尚未明确设置）"
-        parts.append(f"本群：{state}；战队：{home_team or '未绑定'}")
-        if not home_team or not configured:
-            parts.append(render_setup_guide(home_team, role if configured else None, qq_id=qq_id))
+    if home_team and not preview:
+        parts.append(f"本群战队：{home_team}")
     parts.append(WORKFLOWS[role])
-    parts.append("/帮助 设置 查看开通步骤｜/帮助 全部 查看三类流程｜/帮助 命令 查看命令索引 🐾")
+    parts.append("/帮助 全部 查看三类流程｜/帮助 命令 查看命令索引 🐾")
     return "\n\n".join(parts)

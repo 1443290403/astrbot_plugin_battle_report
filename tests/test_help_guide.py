@@ -17,8 +17,10 @@ def test_chat_type_normalization(raw, expected):
 
 
 def test_default_help_guides_match_before_handoff():
-    text = render_group_help(None, 'KC', configured=False)
-    assert '友谊群操作流程' in text and '默认，尚未明确设置' in text
+    text = render_group_help(None, 'KC')
+    assert '友谊群操作流程' in text
+    assert '尚未明确设置' not in text and '开通' not in text
+    assert '/绑定战队' not in text and '/群聊属性' not in text
     assert text.index('① 比赛开始前') < text.index('② 第一轮') < text.index('③ 需要下一轮') < text.index('④ 分出胜负')
     for command in ['/排表', '/记录 红莲 20', '/第二轮', '/第三轮', '/帮助 战报群']:
         assert command in text
@@ -45,21 +47,18 @@ def test_main_workflow_guides_identity_before_query_and_export():
     assert '普通成员用 /结算' in text and '管理人员执行同一个命令会重新结算' in text
 
 
-def test_setup_lists_correct_actors_and_tracks_missing_steps():
-    text = render_setup_guide(None, None, qq_id='10001')
-    assert '战队：未绑定' in text and '尚未明确设置' in text
-    assert text.index('① 先确认') < text.index('② 由超管') < text.index('③ 按本群用途')
-    assert '仅超管可以指定负责本队设置的管理员' in text
-    assert '/设置战队管理员 KC 10001' in text and '/绑定战队 KC' in text
+def test_setup_lists_only_needed_group_settings():
+    text = render_setup_guide(None, None)
+    assert '请联系超管或本队战队管理员' in text
+    assert text.index('/绑定战队 <战队名>') < text.index('/群聊属性')
     for role in GROUP_TYPES:
         assert '/群聊属性 '+role in text
-    assert '设置完成会立即发送' in text
+    for internal in ['/设置战队管理员', 'super_admin', '机器人维护者', '超管可设置任意群', '尚未明确设置']:
+        assert internal not in text
     partial = render_setup_guide('KC', None)
-    assert '战队已绑定为 KC' in partial
-    assert '/绑定战队 KC' not in partial
+    assert '本群战队：KC' in partial and '/绑定战队' not in partial
     partial = render_setup_guide(None, '主群')
-    assert '群属性已设为 主群' in partial
-    assert '/绑定战队 KC' in partial
+    assert '/绑定战队 <战队名>' in partial and '/群聊属性' not in partial
 
 
 def test_setup_for_submission_targets_report_group_without_repurposing_others():
@@ -76,9 +75,9 @@ def test_preview_never_claims_to_change_group_settings():
     assert '本群开通流程' not in text
 
 
-def test_setup_quotes_team_name_with_spaces():
-    text = render_setup_guide('ICE TEAM', None, qq_id='10001')
-    assert '/设置战队管理员 "ICE TEAM" 10001' in text
+def test_setup_preserves_bound_team_name_with_spaces():
+    text = render_setup_guide('ICE TEAM', None)
+    assert '本群战队：ICE TEAM' in text and '/绑定战队' not in text
 
 
 def test_match_example_generates_and_records_a_real_report():
@@ -97,6 +96,6 @@ def test_guides_use_real_registered_commands():
         for d in node.decorator_list if isinstance(d,ast.Call) and isinstance(d.func,ast.Attribute)
         and d.func.attr == 'command' and d.args and isinstance(d.args[0],ast.Constant)}
     for role in GROUP_TYPES:
-        text = render_group_help(role,None,configured=False)
+        text = render_group_help(role)
         for command in re.findall(r'(?m)^/([^\s，。、：:|]+)',text):
             assert command in commands or re.fullmatch(r'第[一二三四五六七八九十\d]+轮', command), command
