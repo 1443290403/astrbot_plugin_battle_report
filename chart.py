@@ -190,7 +190,7 @@ def make_trend_chart(
                   font=font_small, fill="black", anchor="ma")
 
     # 图例放在绘图区外，标明缩放范围，避免遮住放大后的曲线。
-    draw.text((margin_left, height - 14), f"胜率轴：{y_min}%–{y_max}%（自动缩放）",
+    draw.text((margin_left, height - 14), f"胜率轴：{y_min}%–{y_max}%",
               font=font_small, fill="gray", anchor="lm")
     draw.text((width - margin_right - 100, height - 14), "■ 累计胜率",
               font=font_small, fill="#2f6fed", anchor="rm")

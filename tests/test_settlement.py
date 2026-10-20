@@ -282,7 +282,7 @@ def test_format_settlement_text():
 
 
 def test_format_settlement_view_is_read_only_wording():
-    """只读回执（非管理员的 `/结算`）抬头是「查询」，且明说没做修改。
+    """只读回执（非管理员的 `/结算`）抬头是「查询」，与写入结果区分。
 
     和 `format_settlement` 的「结算完成」长得很像 —— 这正是要区分的地方：
     一模一样的抬头会让非管理员以为钱刚发出去。
@@ -297,13 +297,12 @@ def test_format_settlement_view_is_read_only_wording():
         "第1名  雨落  总积分20  奖金60",
         "第2名  云猫  总积分3  奖金9",
         "合计发放 69",
-        "（以上是已经结算好的结果喵，这次一个字都没改～ 🐾）",
     ]
     assert "结算完成" not in out
 
 
 def test_format_settlement_view_rows_match_settlement_receipt():
-    """两个回执的**行体与合计逐字相同**，只有抬头与尾注不同（共用 _settlement_lines）。
+    """两个回执的**行体与合计逐字相同**，只有抬头不同（共用 _settlement_lines）。
 
     名次数那行不同是刻意的：写路径知道管理员要了几个名次（`reward_ranks`），
     读路径只有库里实际存了几行（`len(entries)`）。
@@ -314,7 +313,7 @@ def test_format_settlement_view_rows_match_settlement_receipt():
     ]
     write = format_settlement("KC", 2026, 7, entries, 4).splitlines()
     read = format_settlement_view("KC", 2026, 7, entries).splitlines()
-    assert write[1:] == read[1:-1]  # 去掉各自独有的抬头/尾注后完全一致
+    assert write[1:] == read[1:]  # 去掉抬头后，明细和合计完全一致
 
 
 def test_format_settlement_shows_year():
@@ -424,10 +423,10 @@ def test_announcement_single_winner_has_no_separator():
     assert [k for k, _ in segs] == ["text", "at", "text"]
 
 
-def test_settlement_repeat_says_why_nobody_was_atted():
-    """重跑提示要解释「为什么这次没 @ 人」，否则管理员会以为公告没发出去。"""
+def test_settlement_repeat_briefly_reports_unchanged_ranks():
+    """重跑提示简短说明名次未变，不引入额外 @。"""
     note = format_settlement_repeat()
-    assert "名次" in note and "一样" in note
+    assert "名次" in note and "未变" in note
     assert "喵" in note
     assert "@" not in note          # 它自己不能再带 @
     assert "（" not in note and "）" not in note
@@ -439,7 +438,7 @@ def test_receipt_plus_repeat_still_starts_with_the_receipt():
     out = format_settlement("KC", 2026, 8, entries, 4) + format_settlement_repeat()
     assert out.startswith("⚔️ KC 2026年8月 结算完成（奖励前 4 名）")
     assert "第1名  桐人  总积分47.76  奖金130" in out
-    assert out.rstrip().endswith("就不打扰大家了喵～ 🐾")
+    assert out.rstrip().endswith("获奖名次未变喵～ 🐾")
 
 
 # ---------- 端到端拼装（不碰 DB） ----------

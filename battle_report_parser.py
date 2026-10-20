@@ -120,7 +120,7 @@ _OWNER_RE = re.compile(r"[\s　]*[\(（][\s　]*馆主[\s　]*[\)）]$")
 # 小数点比分（如 2.1）。这是**错误**而非警告：静默丢行会让防守者人数少算一人、
 # 踢馆点数直接算错。见 parse_raid_report / parse_battle_report 的报错分支。
 _DOT_SCORE_RE = re.compile(r"\d+\s*[.。]\s*\d+")
-_DOT_SCORE_HINT = "比分用了小数点（如 2.1），应为冒号（如 2:1）"
+_DOT_SCORE_HINT = "比分不能用小数点，请改为冒号格式，如 2:1"
 # 命令末尾的 时间=X月 参数（旧写法）：时间=7月 / 时间：七月 / 时间 = 7 / 时间＝12月 等
 _MONTH_RE = re.compile(r"[\s　]*时间\s*[:：=＝]\s*([一二三四五六七八九十百\d]+)\s*月?[\s　]*$")
 # 命令末尾直接写月份（新写法，去掉 时间= 前缀）：七月 / 7月 / 十二月 等
@@ -397,8 +397,8 @@ def parse_battle_report(text: str) -> ParseResult:
         if m:
             try:
                 report.match_time = _normalize_date(m.group(1).strip())
-            except ValueError as e:
-                errors.append(f"第 {lineno} 行：时间格式无法识别（应为如 2026.08.01），原因：{e}")
+            except ValueError:
+                errors.append(f"第 {lineno} 行：时间格式或日期无效，请按 2026.08.01 的格式填写。")
             continue
 
         # 规则:
@@ -602,7 +602,7 @@ def parse_raid_report(text: str) -> ParseResult:
     elif report.team_a == report.team_b:
         errors.append("双方战队不能相同。")
     if not report.match_time:
-        errors.append("缺少时间信息，需写一行日期（如 2026.8.30 21:00）。")
+        errors.append("缺少时间信息，请填写日期，如 2026.8.30 21:00。")
     if duel_lines == 0:
         errors.append("未解析到任何对局。")
 

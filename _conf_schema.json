@@ -11,14 +11,16 @@
     "default": 10
   },
   "ranking_image": {
-    "description": "排行是否以图片展示（关闭则退回文字表格）",
+    "description": "排行图片",
     "type": "bool",
-    "default": true
+    "default": true,
+    "hint": "关闭后显示文字表格"
   },
   "ranking_image_max_rows": {
-    "description": "排行图片最多展示行数（仅 /排行 全部 生效；/排行 默认显示全部队员不截断）",
+    "description": "全战队排行图片行数",
     "type": "int",
-    "default": 30
+    "default": 30,
+    "hint": "仅影响 /排行 全部；本队排行显示全部队员"
   },
   "min_games": {
     "description": "进入个人排行所需最少对局数",
@@ -26,10 +28,10 @@
     "default": 1
   },
   "min_duels": {
-    "description": "单份战报最少对局数（低于此数视为未完成的战报，拒绝入库）",
+    "description": "战报最少对局数",
     "type": "int",
     "default": 3,
-    "hint": "2 人赛制的战队可调小；这是提交前置条件，与排行的 min_games 无关"
+    "hint": "对局不足时不能提交；2 人赛制可调小"
   },
   "trend_chart_width": {
     "description": "趋势图宽度（px）",
@@ -48,15 +50,16 @@
     "hint": "排表时未追加规则则使用此值"
   },
   "super_admin": {
-    "description": "超级管理员QQ（可禁用/开启群功能）",
+    "description": "超级管理员 QQ",
     "type": "string",
     "default": "",
-    "hint": "请填写你自己的 QQ；留空时超级管理员命令不可用，不预授予作者账号权限"
+    "hint": "留空则不开启超管命令"
   },
   "pairing_seed": {
-    "description": "排表随机种子（留空则每次随机；填写则固定以便复现）",
+    "description": "排表随机种子",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "留空随机，填写后固定配对"
   },
   "mysql_host": {
     "description": "MySQL 主机地址",
@@ -80,7 +83,7 @@
     "hint": "安装后请在插件配置中填写数据库密码"
   },
   "mysql_db": {
-    "description": "MySQL 数据库名（插件会自动建库建表）",
+    "description": "MySQL 数据库名",
     "type": "string",
     "default": "astrbot_battle_report"
   }

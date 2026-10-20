@@ -42,7 +42,7 @@ def render_setup_guide(home_team: str | None = None, chat_type: str | None = Non
 WORKFLOWS = {
     FRIENDLY_GROUP: (
         "① 比赛开始前：提供双方名单\n"
-        "整段发送（示例队名和选手请替换）：\n"
+        "换成自己的队名和选手，整段发送：\n"
         "/排表\n"
         "a队:云玩家 萌新 遗老\n"
         "b队:复读机 鸽子 柠檬\n"
@@ -115,7 +115,7 @@ def render_group_help(chat_type: str | None = None, home_team: str | None = None
                       *, preview: bool = False) -> str:
     """普通帮助只展示操作流程；缺少设置时由相关命令单独提示。"""
     role = normalize_chat_type(chat_type) or FRIENDLY_GROUP
-    title = f"📋 {role}操作流程{'（预览）' if preview else ''}喵～"
+    title = f"📋 {role}操作流程{'预览' if preview else ''}喵～"
     parts = [title]
     if home_team and not preview:
         parts.append(f"本群战队：{home_team}")

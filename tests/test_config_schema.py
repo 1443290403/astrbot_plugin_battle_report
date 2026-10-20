@@ -55,8 +55,8 @@ def test_min_duels_present_and_sane():
     item = _schema().get("min_duels")
     assert item is not None, "min_duels 配置缺失"
     assert item["type"] == "int" and item["default"] >= 1
-    # 描述里要说清它不是排名门槛，免得和 min_games 混为一谈
-    assert "min_games" in (item.get("hint", "") + item.get("description", ""))
+    # 提示说明提交用途；排行门槛由下面独立的 min_games 测试守护
+    assert "提交" in item.get("hint", "")
 
 
 def test_min_games_still_present():

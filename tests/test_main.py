@@ -601,7 +601,7 @@ def test_help_preview_and_all_do_not_change_group_type(plugin_module,tmp_path):
     obj.db.get_group_home.return_value = None
     obj.db.set_group_chat_type = AsyncMock()
     preview = asyncio.run(collect(obj.help_cmd(event('/帮助 主群'),'主群')))
-    assert '主群操作流程（预览）' in preview[0]
+    assert '主群操作流程预览' in preview[0]
     assert '本群：主群' not in preview[0]
     all_guides = asyncio.run(collect(obj.help_cmd(event('/帮助 全部'),'全部')))
     assert len(all_guides) == 3
@@ -616,7 +616,7 @@ def test_help_still_works_when_database_is_unavailable(plugin_module,tmp_path):
     obj.db_ready = False
     response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
     assert '暂时读不到本群设置' in response[0]
-    assert '友谊群操作流程（预览）' in response[1]
+    assert '友谊群操作流程预览' in response[1]
     obj.db.get_group_home.assert_not_awaited()
     obj.db.get_group_chat_type_setting.assert_not_awaited()
 
@@ -641,4 +641,4 @@ def test_private_help_is_general_and_cannot_submit(plugin_module,tmp_path):
     obj = plugin(plugin_module,tmp_path)
     response = asyncio.run(collect(obj.help_cmd(event('/帮助',group=''))))
     assert '请到' in response[0] and '私聊不能提交' in response[0]
-    assert '友谊群操作流程（预览）' in response[1]
+    assert '友谊群操作流程预览' in response[1]

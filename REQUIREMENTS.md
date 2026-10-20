@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.17.7`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
+> 对应版本：`1.17.8`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -372,7 +372,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | 合并转发 | `_send_responses`（≥2 条时封装 Node） | 提交结果、导出 |
 | 文件 | `File` 组件 + `data_dir/exports/` | `/导出 csv/json`、`/导出群成员` |
 
-**趋势图纵轴（v1.17.6）：** `_win_rate_ticks` 按全部累计胜率的最小/最大值选取窗口，跨度取 `max(10, 数据跨度 × 1.2)` 并限制在 100 内，窗口在 0%～100% 内平移后按整齐刻度向外取整。最终上界取 `min(100, (floor(最高胜率 / 5) + 1) × 5)`，按 5 个百分点一档取整且最多高于最高值 5 个百分点，全部刻度均为整数；步长按范围从 5/10/20 中选择，并保证整除上界，所有刻度均为等间隔整数，不额外插入间距不同的顶部刻度。通常向下补足至少 10 个百分点跨度，接近 0% 时优先上界限制，最小跨度为 5；0%/100%、单点/恒定数据均可显示。每个蓝色点位上方标注实际胜率，使用 `:g` 去掉多余小数（如 60%、59.4%），加白色描边以便与虚线交叉时阅读。网格、左轴标签和蓝线共用同一映射，图底部标注范围和自动缩放，图例不遮曲线；累计场次虚线继续按独立右轴 0～最大场次绘制。只调整绘图，不修改累计胜率公式、查询或存储。
+**趋势图纵轴（v1.17.6）：** `_win_rate_ticks` 按全部累计胜率的最小/最大值选取窗口，跨度取 `max(10, 数据跨度 × 1.2)` 并限制在 100 内，窗口在 0%～100% 内平移后按整齐刻度向外取整。最终上界取 `min(100, (floor(最高胜率 / 5) + 1) × 5)`，按 5 个百分点一档取整且最多高于最高值 5 个百分点，全部刻度均为整数；步长按范围从 5/10/20 中选择，并保证整除上界，所有刻度均为等间隔整数，不额外插入间距不同的顶部刻度。通常向下补足至少 10 个百分点跨度，接近 0% 时优先上界限制，最小跨度为 5；0%/100%、单点/恒定数据均可显示。每个蓝色点位上方标注实际胜率，使用 `:g` 去掉多余小数（如 60%、59.4%），加白色描边以便与虚线交叉时阅读。网格、左轴标签和蓝线共用同一映射，图底部标注实际范围，图例不遮曲线；累计场次虚线继续按独立右轴 0～最大场次绘制。只调整绘图，不修改累计胜率公式、查询或存储。
 
 **★ 文本表格与图片表格必须同源：** 两者共用 `stats.build_ranking_cells()`（表头 + 单元格值 + 并列名次规则全在这）。**新增排行列只能改这一个函数**，改 `format_player_ranking` 或 `make_ranking_image` 单独加列会导致两种输出不一致。
 
@@ -396,6 +396,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 > **头部识别共用 `TEAM_RE` / `is_raid_header`**：解析、最近战报、引用、批量拆分必须同步。更改格式时保留历史消息兼容。
 
+**v1.17.8 提示精简：** 面向群成员的提示只保留结果、必要限制及下一步操作。去掉括号里的重复说明和内部过程；改动按具体文案定位，不统一剥离括号。ID、月份/战队范围、权限、单位、表格数据与战报标记仍保留；完整清单见 `MESSAGE_CHANGES.md`。配置面板只调整 description/hint，不改变配置键、类型或默认值。
+
 **★ 文案口吻（v1.15.0）：改「句子」，不改「数据」。** 所有面向用户的**叙述性**回复统一为猫娘口吻，中等浓度：句尾「喵」/「喵～」，关键回执配**一个**颜文字（取固定小集合 `(=^･ω･^=)` / `(；・∀・)` / `(๑•̀ㅂ•́)و` / `🐾`，与既有结算公告一致；不是每句都配，长回复只在结尾）。绝对**不**自称「人家」、**不**称用户「主人」。
 
 **不在此列**（一字不动，改了一处就会连锁出 bug 或被测试钉死）：
@@ -404,7 +406,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 - 表格表头 `_RANK_HEADERS` / `_BONUS_HEADER`、图片面板标签 `_TEAM_PANEL_LABELS`、CSV 表头
 - `lineup.generate_template` 的战报模板与 `main._FORMAT_EXAMPLE` —— **对局行的双空格是 `battle_report_parser` 的解析契约**
 - `lineup.format_duel_results` / `format_raid_results` 的**逐场数据行**
-- `/查ID` `/管理ID` `/群列表` `/战队列表` 的**列表项行**、数值与小数位
+- `/查ID` `/管理ID` `/群列表` `/战队列表` 中的**ID、角色归属与群号数据**、数值与小数位
 - `stats.render_help` 保留为命令索引，命令语法不可改错；默认流程在 `help_guide.py`，描述必须符合真实权限与命令行为
 
 > **「结算完成」/「结算查询」的措辞是判据，不是文案**（§5-M14、§7.1）—— 这两个词分别承担「写过库」与「只读查询」的区分，且 CLAUDE.md 要求两个回执**刻意不同形**，不许当文案顺手改得一致。
@@ -639,7 +641,7 @@ year = now.year - 1 if month > now.month else now.year
 - 走的是**同一条命令的另一个分支**，判据是入口处的 `_is_manager(event)`（与 F-20 等管理命令同一个判定），**不是**新命令、不是新参数。
 - **只读 `settlements` 表**（`database.get_settlement_entries`），**不重算、不覆盖**：查到的就是当初结算那一刻的快照，之后榜单怎么变都不影响。这是刻意的 —— 重算会绕过 `set_settlement` 的覆盖语义，等于把「发过就算数」变成「随时可被任何人改写」。
 - **未结算的月份只回一句「该月尚未结算」**，**不预览**「如果现在结算会发多少」。预览要把 `get_player_ranking` → `ranks_for` → `rank_bonus` 整条写路径跑一遍，等于把发钱逻辑暴露给所有群员当查询用；用户明确选择不预览。
-- 回执抬头是「📋 … 结算**查询**」并带尾注「（以上为已结算结果，本次未做任何修改）」，与写路径的「⚔️ … 结算**完成**」**刻意不同形** —— 一字不差的话非管理员会以为钱刚发出去。
+- 回执抬头是「📋 … 结算**查询**」；v1.17.8 删除重复解释只读状态的尾注，与写路径的「⚔️ … 结算**完成**」**刻意不同形** —— 一字不差的话非管理员会以为钱刚发出去。
 - 名次数那行两边不同也是刻意的：写路径回显管理员要的 `reward_ranks`，读路径只有库里实际存了几行（`len(entries)`）。**行体与「合计发放」逐字相同**（共用 `stats._settlement_lines`），`test_format_settlement_view_rows_match_settlement_receipt` 钉住。
 - **`settle_month_range` 两条路径共用**（它在分叉之前调用）：读路径必须算出**同一个 `key`**，否则查不到管理员刚写进去的那份。所以 1 月里非管理员跑 `/结算 十二月` 查的是**去年** 12 月 —— 与管理员结算的是同一份，这是对的。
 - **只有「当月未结束」的校验是写路径独有**：读路径查本月不拦，直接回「尚未结算」—— 本月本就不可能结算过，挡它只会让人白跑一趟还看不懂为什么。
@@ -663,7 +665,7 @@ year = now.year - 1 if month > now.month else now.year
 | `stats` | `ranks_for(rows) -> list[int]` | 展示名次，与表格共用 |
 | `stats` | `_settlement_lines(entries) -> list[str]` | 两个回执**共用的行体 + 合计**（唯一实现） |
 | `stats` | `format_settlement(home_team, year, month, entries, reward_ranks) -> str` | **写路径**回执（⚔️「结算完成」） |
-| `stats` | `format_settlement_view(home_team, year, month, entries) -> str` | **读路径**回执（📋「结算查询」+ 只读尾注） |
+| `stats` | `format_settlement_view(home_team, year, month, entries) -> str` | **读路径**回执（📋「结算查询」抬头） |
 | `stats` | `build_ranking_cells(rows)` | `any("bonus" in r for r in rows)` 为真才加第 15 列 |
 | `database` | `set_settlement(home_team, month, entries)` | 覆盖写（先 DELETE 再 INSERT） |
 | `database` | `clear_settlement(home_team, month) -> int` | 只 DELETE、不 INSERT，返回删掉的行数；0 = 本来就没结算过（`/重置结算`） |
@@ -880,7 +882,7 @@ year = now.year - 1 if month > now.month else now.year
 | **新增排行列** | ① `stats._RANK_HEADERS` ② `stats.build_ranking_cells` 的**数据行**（文字与图片同源，手写定长列表）③ `chart.make_ranking_image` 布局宽高自适应（列宽已自动算）④ 测试里别再手写 `aligns` 字面量 | ①③④ 由 `rank_aligns(ncols)` 自动跟随（**没有定长常量了**，v1.15.0）；**② 不会**，漏了就是行列数对不上。`tests/test_chart.py::test_rank_aligns_matches_header_columns` 会拦住 ① 与 ② 不一致 |
 | **改结算/奖金**（封顶表、名次截断、月份回退） | ① `stats.RANK_BONUS_CAPS` / `rank_bonus`（**唯一**公式实现）② `stats.ranks_for`（**唯一**名次实现，与排行表格共用）③ `battle_report_parser.settle_month_range`（月份缺省=上个月也在这里，**`/重置结算` 共用**）④ `main.settle` 的「当月拒结」校验 ⑤ `stats.format_settlement` 的年份回显 ⑥ `stats.attach_bonus`（bonus 键加不加的唯一实现，「未结算不长第 15 列」靠它）⑦ `tests/test_settlement.py` | **③④ 必须成对**：`settle_month_range` 只回退、不校验，少了 ④ 就会静默结算去年同月。改封顶表别顺手改排序 key —— 奖金是派生值，**不影响名次**。改 ③ 的返回形态（如把年份/月也一并返回）要同时看 `main.settle` 与 `main.reset_settle` 两个调用点 |
 | **改 `/重置结算`** | ① `database.clear_settlement`（**只 DELETE、不 INSERT** —— 补上 INSERT 就退化成「重算」，不再是重置）② `main.reset_settle` 的 `_is_manager` 硬拦 ③ 与 `/结算` **共用** `settle_month_range` 取 key（月份缺省=上个月的口径必须一致，否则删不到结算时写的那一行）④ 回执里「重新结算会重新 @」的说法依赖 `settlement_awards_changed([], …) == True` ⑤ `tests/test_database_stats.py` / `tests/test_settlement.py` | 重置把该月打回「从没结算过」，于是重新结算必然被判成**第一次结算**、**重新 @ 一遍全群**。想「只改金额不 @ 人」的话不能走重置 |
-| **改 `/结算` 的读/写分叉** | ① `main.settle` 里 `_is_manager` 之后的那次分叉（**写路径的每一步都必须在分支之内**）② 读路径的 `get_settlement_entries`（只读 `settlements`，**不能改成跑 `get_player_ranking` 重算**）③ 只读回执 `stats.format_settlement_view` 的抬头/尾注（必须与写路径「结算完成」不同形）④ 两边共用的 `stats._settlement_lines`（改行体只改这一处，两个回执同时变）⑤ `tests/test_settlement.py` | **新加写操作时必须放进 `is_admin` 分支内** —— 放到分叉之前会让非管理员的查询也写库。回执文案两个函数刻意不同形，是为了避免非管理员误以为钱已发出 |
+| **改 `/结算` 的读/写分叉** | ① `main.settle` 里 `_is_manager` 之后的那次分叉（**写路径的每一步都必须在分支之内**）② 读路径的 `get_settlement_entries`（只读 `settlements`，**不能改成跑 `get_player_ranking` 重算**）③ 只读回执 `stats.format_settlement_view` 的抬头（必须与写路径「结算完成」不同形）④ 两边共用的 `stats._settlement_lines`（改行体只改这一处，两个回执同时变）⑤ `tests/test_settlement.py` | **新加写操作时必须放进 `is_admin` 分支内** —— 放到分叉之前会让非管理员的查询也写库。回执文案两个函数刻意不同形，是为了避免非管理员误以为钱已发出 |
 | **改结算公告（@ 获奖成员）** | ① `stats.settlement_awards_changed` 的比对键（改口径 = 改「什么时候 @ 全群」）② `main.settle` 里**「读旧记录」必须仍在 `set_settlement` 之前**（挪到后面就永远比不出变化、每次重跑都 @ 全群）③ `stats.settlement_announcement` 的分段（`("at", 名)` 不能改成把名字拼进文本）④ `database.get_qq_ids_by_names`（按 `users.name` 查，**不是** `player_ids.player_name`）⑤ `stats.format_settlement_repeat` ⑥ `tests/test_settlement.py` | ②挪错位置是最隐蔽的一种：功能「看起来正常」（首次结算照样 @），只在重跑时静默退化成每次都 @。③拼成字符串会让 QQ 上只剩字面的「@名字」，不弹提醒也不亮蓝 |
 | **改「战队战绩」面板**（加行/改口径/换取值） | ① `stats._TEAM_PANEL_LABELS`（若加行）② `stats.build_team_panel` 的**返回值列表是手写的**，与 ① 顺序必须逐字一致 ③ `get_home_team_record` 是否已透传所需键（踢馆相关的键**只透传 `attack_points` 一个**，见 §7.3 第 19 条）④ `tests/test_stats.py` 的标签顺序用例 | 面板不走 `build_ranking_cells`，**改排行列的那套清单对它一个都不适用**；反过来把面板塞进 `build_ranking_cells` 会破坏 14/15 列契约 |
 | **改玩家名解析口径** | ① `get_player_ranking` 的 2 处 `COALESCE` ② `get_player_match_stats` 的 2 处 ③ `resolve_role` ④ 跨队同名三处（§5-M03） | 漏一处 → 同一个人出现两个名字 |
@@ -933,7 +935,7 @@ year = now.year - 1 if month > now.month else now.year
 | **17** | **并列名次 key** `(total_points, wins, total)` | ✅ **已收敛**：唯一实现是 `stats.ranks_for(rows)`（v1.15.0）。此前只长在 `build_ranking_cells` 里，`/结算` 发奖金时若另写一遍就会漂移 | 榜上显示第 1 名、奖金却按第 2 档发（**静默错发钱**）。`tests/test_settlement.py::test_ranks_for_matches_table_column` 钉住一致性 |
 | **19** | **「战队战绩」面板是踢馆原始分量的第 4 个展示位** | `stats.build_team_panel` 直取 `_ceil_div3(hold)` / `_ceil_div3(first_round)` / `attack_points`，**刻意绕开带封顶的 `raid_defense_points`**；`get_home_team_record` 只透传 `raid["attack_points"]` 一个键，**不得**改为在 `main.py` 里另调一次 `get_raid_team_stats`（会重跑整段 `_raid_infos`） | 有人「顺手修一下」让面板改用 `raid_defense_points` → 面板数字突然比 `/战绩` 小；或在 `main.py` 里另算一遍 → 面板与表格不同源（每月多一次全表扫） |
 | **18** | **排行对齐方式** | ✅ **已收敛**：唯一实现是 `stats.rank_aligns(ncols)`（v1.15.0），返回 `["center"] * ncols`。此前 `RANK_ALIGNS` 常量在 `stats.py` / `main.py` / 测试里各写一遍（共 8 处） | 加列时 8 处一起错位（§10-11 的历史 bug）。v1.15.0 顺带把定长常量换成按列数生成的函数，奖金列带来的 14/15 浮动也一并解决 |
-| **20** | **结算回执的行体**（`第N名 名 总积分X 奖金Y` + 「合计发放 Z」） | ✅ **已收敛**：唯一实现是 `stats._settlement_lines(entries)`（v1.15.0），由写路径 `format_settlement` 与只读路径 `format_settlement_view` 共用。两者**只有抬头与尾注不同**（「结算完成」/「结算查询」、年份与名次数的取法） | 各写一份 → 同一次结算在管理员与群员眼里金额、小数位、合计对不上。`test_format_settlement_view_rows_match_settlement_receipt` 断言两者去掉抬头/尾注后逐行相同 |
+| **20** | **结算回执的行体**（`第N名 名 总积分X 奖金Y` + 「合计发放 Z」） | ✅ **已收敛**：唯一实现是 `stats._settlement_lines(entries)`（v1.15.0），由写路径 `format_settlement` 与只读路径 `format_settlement_view` 共用。两者**只有抬头不同**（「结算完成」/「结算查询」、年份与名次数的取法） | 各写一份 → 同一次结算在管理员与群员眼里金额、小数位、合计对不上。`test_format_settlement_view_rows_match_settlement_receipt` 断言两者去掉抬头后逐行相同 |
 | **21** | **「展示名 ↔ 角色/QQ」的反查**（与 #1~#3 的**正查**方向相反） | 榜单的 `player` 是 `COALESCE(u.name, d.player_a)`（展示名），所以**反查必须按 `users.name`**：`get_player_binding`（单个参赛ID）、`get_qq_ids_by_names`（批量展示名 → QQ，结算公告用）。而 `resolve_role` / `get_user_players` 走的是 `player_ids.player_name`（参赛ID），是另一个方向 | 拿**参赛ID**去查 QQ → 一个都匹配不上，结算公告静默 @ 不出任何人（**不报错**）；拿**展示名**去查 `player_ids` → 同样的静默失配。两个方向的键长得一模一样，是本库最容易混的一处 |
 | **22** | **同一句用户文案的多个副本** | ✅ **已收敛**（v1.15.0）：`main.py` 里逐字重复 2~4 次的几组抽成模块常量 —— `_NEED_HOME` / `_NEED_GROUP` / `_ERR_QUERY`（4 处）/ `_ERR_EXPORT`（3 处）/ `_NEED_BIND`（3 处）/ `_NO_REPORT`（2 处）/ `_ADMIN_ONLY`（2 处）/ `_USAGE_MANAGE_ID`（2 处）/ `_USAGE_BROADCAST`（2 处）/ `_GROUP_DISABLED`（2 处，含群号故用 `.format(gid)`）。与既有的 `_HELP_HINT` 是同一套做法 | 改口吻或改措辞时要手改 20+ 处，**漏一处就出现两种说法**（一半 handler 说「请稍后重试」、一半说「稍后再试一次嘛」）—— 这类不一致没有任何测试会报错 |
 
@@ -1177,7 +1179,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `test_record.py` | `/记录` 找未记录对阵、右侧选手、插入最新轮次 |
 | `test_lineup.py` | 名单解析、模板生成、TK 占位、种子可复现 |
 | `test_match_stats.py` | 友谊/无双计算（含漏记兜底回归）、**14 列排行**的单元格值/列对齐/并列名次、`format_player_record` 的踢馆三次数行、**`is_kof` 真值表与规则门控**。**v1.15.0 未改动且继续通过** —— 这是「未结算路径仍是 14 列、行为逐字不变」的验收。另含**文案口吻锚点**：抬头行断言含「喵」（如 `lines[0] == "🏆 个人积分榜（全部）喵～"`），而 `format_player_record` 断言**第二行数据行逐字不变** —— 语气只进句子、不进字段（§5-M10、§10.4-31） |
-| `test_settlement.py` | **月度结算**（§5-M14）：封顶表与边界（第 1 名 130、封顶线上下、名次 0/13 → 0）、奖金不写回 `total_points`、`ranks_for` 的并列口径（含 `1,1,3` 与「必须与表格名次列逐行一致」）、`settle_month_range` 的跨年回退、当月、**缺省=上个月**（且与显式写上个月等价、永不落在当前月）、`_parse_settle_args` 的两种参数顺序、**`attach_bonus` 空 map 一个键都不加（未结算月份不长第 15 列）与已结算时每行都补键**、`build_ranking_cells` 有/无 `bonus` 键时 15/14 列、`format_settlement` 文案与年份回显、并列跨边界按行截断、**只读回执 `format_settlement_view` 的抬头/尾注措辞与「与写回执行体逐字相同」**、**结算公告**：`settlement_awards_changed` 的全部分支（首次 / 重跑同名次 / 追加名次 / 缩回前 4 / 两人对调 / **只动奖金与总积分不算变**）、`settlement_announcement` 的 @ 段与单人无分隔、`format_settlement_repeat` 解释「为什么没 @ 人」 |
+| `test_settlement.py` | **月度结算**（§5-M14）：封顶表与边界（第 1 名 130、封顶线上下、名次 0/13 → 0）、奖金不写回 `total_points`、`ranks_for` 的并列口径（含 `1,1,3` 与「必须与表格名次列逐行一致」）、`settle_month_range` 的跨年回退、当月、**缺省=上个月**（且与显式写上个月等价、永不落在当前月）、`_parse_settle_args` 的两种参数顺序、**`attach_bonus` 空 map 一个键都不加（未结算月份不长第 15 列）与已结算时每行都补键**、`build_ranking_cells` 有/无 `bonus` 键时 15/14 列、`format_settlement` 文案与年份回显、并列跨边界按行截断、**只读回执 `format_settlement_view` 的「结算查询」抬头与「明细/合计与写回执逐字相同」**、**结算公告**：`settlement_awards_changed` 的全部分支（首次 / 重跑同名次 / 追加名次 / 缩回前 4 / 两人对调 / **只动奖金与总积分不算变**）、`settlement_announcement` 的 @ 段与单人无分隔、`format_settlement_repeat` 提示获奖名次未变 |
 | `test_raid.py` | **踢馆**（§5-M13）：5 份真实样例的解析与判定、`(馆主)` 只认右侧、`规则` 占位、`2.1` 报错、首轮同时计守馆成功与守馆首轮、SHUT DOWN、馆主叠加（4人+馆主=5）、月度降重取最高、守馆上限 10、无人守馆的战队/个人口径一致、排行合并与按总积分排序、踢馆指纹、**守馆积分向上取整**（`_ceil_div3`：1 次 = 1 分、2 次 = 1 分，即用户报的 0 分 bug 的回归）、**回执逐局措辞的两种视角**（提交方为踢馆方 → 进攻；提交方为守馆方 → 防守） |
 | `test_fingerprint.py` | **内容指纹**（§5-M12）：同内容同指纹、改比分/换战队变指纹、换提交人/群/地点不变、写死的算法锚点（**友谊赛锚点必须继续成立** —— 这是"`kind` 只在非友谊赛进指纹"的验收） |
 | `test_config_schema.py` | `_conf_schema.json` 格式合法性、死配置不许回归、`min_duels` 存在性 |
@@ -1202,7 +1204,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.7")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.8")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

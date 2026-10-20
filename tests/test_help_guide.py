@@ -70,7 +70,7 @@ def test_setup_for_submission_targets_report_group_without_repurposing_others():
 
 def test_preview_never_claims_to_change_group_settings():
     text = render_group_help('主群', preview=True)
-    assert '主群操作流程（预览）' in text
+    assert '主群操作流程预览' in text
     assert '本群：主群' not in text
     assert '本群开通流程' not in text
 

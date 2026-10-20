@@ -158,7 +158,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.7")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.8")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -443,7 +443,7 @@ class BattleReportPlugin(Star):
             # 未传任何参数：分两段发送排表使用指南
             yield event.plain_result(
                 "欢迎使用海马集团 智能排表秘书喵～ (=^･ω･^=)\n"
-                "其他规则 第一行：(/排表+空格+规则名称)\n"
+                "指定规则：/排表 规则名称\n"
                 "更多功能请发送：/帮助\n"
                 "排表格式："
             )
@@ -499,7 +499,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"❌ {e}")
             return
         if not team or len(team) > 64:
-            yield event.plain_result("用法喵：绑定战队 <战队名>（最多 64 字）")
+            yield event.plain_result("用法喵：绑定战队 <战队名>\n战队名最多 64 字。")
             return
         if not is_super and not await self.db.is_team_admin(team, event.get_sender_id()):
             yield event.plain_result(f"❌ 只有 {team} 的战队管理员才能绑定该战队喵，请超管先设置战队管理员。")
@@ -511,7 +511,7 @@ class BattleReportPlugin(Star):
         await self.db.set_group_home(group_id, team)
         await self.db.backfill_group_home(group_id, team)
         yield event.plain_result(
-            f"✅ 本群战队已经绑定成 {team} 啦喵～ (=^･ω･^=)（已有战报已回填）"
+            f"✅ 本群战队已经绑定成 {team} 啦喵～ (=^･ω･^=)"
         )
         role = await self.db.get_group_chat_type_setting(group_id)
         guide = help_guide.render_group_help(role, team)
@@ -567,7 +567,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"❌ {e}")
             return
         await self.db.set_team_admins(home, qqs)
-        yield event.plain_result(f"✅ {home} 的战队管理员已设为 {'、'.join(dict.fromkeys(qqs))} 喵～（覆盖原名单）")
+        yield event.plain_result(f"✅ {home} 的战队管理员已设为 {'、'.join(dict.fromkeys(qqs))} 喵～")
 
     @filter.command("移除战队管理员", alias={"/移除战队管理员"})
     async def remove_team_admin(self, event: AstrMessageEvent):
@@ -892,11 +892,11 @@ class BattleReportPlugin(Star):
         if not status:
             yield event.plain_result(f"喵…战队 {home} 里没有匹配的参赛ID呢。")
             return
-        lines = [f"🔍 战队 {home} 参赛ID喵（/绑定ID <参赛ID> 绑定）："]
+        lines = [f"🔍 战队 {home} 参赛ID喵："]
         for s in status:
             if s["user_name"] and not s["qq_id"]:
                 # 已绑定角色但角色尚未被任何人认领
-                mark = f"（已绑 {s['user_name']} 绑定此ID将同时绑定角色）"
+                mark = f"（已绑 {s['user_name']}，可认领）"
             elif s["user_name"]:
                 mark = f"（已绑 {s['user_name']}）"
             else:
@@ -962,11 +962,10 @@ class BattleReportPlugin(Star):
                 if not changed:
                     lines.append(f"⚠️ 参赛ID「{p}」的绑定已变化喵，请重新查询。")
                     continue
-                tag = "（管理操作）" if is_manager and not (my_user and binding["user_id"] == my_user["id"]) else ""
-                lines.append(f"✅ 参赛ID「{p}」解绑好啦喵～{tag}")
+                lines.append(f"✅ 参赛ID「{p}」解绑好啦喵～")
             else:
                 lines.append(
-                    f"❌ 参赛ID「{p}」绑在别的角色（{binding['user_name']}）身上喵，解不了。"
+                    f"❌ 参赛ID「{p}」属于角色「{binding['user_name']}」，你没有解绑权限喵。"
                 )
         yield event.plain_result("\n".join(lines))
 
@@ -1007,7 +1006,7 @@ class BattleReportPlugin(Star):
         if not payload:
             status = await self.db.get_pool_status(home, None, 50)
             if not status:
-                yield event.plain_result(f"喵…战队 {home} 还没有参赛ID呢（还没有战报记录）。")
+                yield event.plain_result(f"喵…战队 {home} 还没有参赛ID呢。")
                 return
             lines = [f"📋 战队 {home} 参赛ID列表喵～"]
             for s in status:
@@ -1118,7 +1117,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result("用法喵：改名 <新名字>")
             return
         if len(name) > 30:
-            yield event.plain_result("喵…名字太长了啦（最多 30 字）。")
+            yield event.plain_result("喵…名字最多 30 字。")
             return
         status = await self.db.rename_user(home, user["id"], name)
         if status == "conflict":
@@ -1148,7 +1147,7 @@ class BattleReportPlugin(Star):
             return
         round_no = lineup.parse_round_no(m.group(1))
         if round_no is None:
-            yield event.plain_result("❌ 轮次要写 2 以上的数字喵（比如 /第二轮、/第三轮）。")
+            yield event.plain_result("❌ 请从 /第二轮 开始追加轮次喵。")
             return
 
         info_lines = [ln.strip() for ln in text[m.end():].splitlines() if ln.strip()]
@@ -1292,7 +1291,7 @@ class BattleReportPlugin(Star):
 
         # 逐个解析：失败不阻断后续战报，记录报错（含行号）后跳过该份
         reply_hint = (
-            "\n\n（提示喵：引用的内容可能不全，可以重发那份战报，或者直接 /发送 粘贴全文）"
+            "\n\n请用 /发送 粘贴完整战报重试喵。"
             if from_reply else ""
         )
         parsed: list = []
@@ -1303,7 +1302,7 @@ class BattleReportPlugin(Star):
                 fail_msgs.append(
                     f"❌ 第 {i} 份战报看不懂喵：\n"
                     + "\n".join(result.errors)
-                    + "\n\n📄 我收到的战报原文：\n" + chunk.strip()
+                    + "\n\n📄 战报原文：\n" + chunk.strip()
                     + reply_hint
                     + "\n\n" + _FORMAT_EXAMPLE
                 )
@@ -1331,10 +1330,10 @@ class BattleReportPlugin(Star):
             # 战报对阵必须包含本群绑定的战队，否则阻止发送（防止误归队/脏队标入库）
             if home_team not in (report.team_a, report.team_b):
                 failure_responses.append(
-                    f"❌ 第 {i} 份战报里的队伍（{report.team_a}、{report.team_b}）"
-                    f"没有本群绑定的战队（{home_team}）喵，所以拦下来没发：\n"
+                    f"❌ 第 {i} 份战报"
+                    f"未包含本群战队「{home_team}」喵：\n"
                     f"{report.team_a} VS {report.team_b} | {report.match_time}\n"
-                    f"📄 我收到的战报原文：\n{chunk.strip()}"
+                    f"📄 战报原文：\n{chunk.strip()}"
                 )
                 continue
 
@@ -1343,10 +1342,10 @@ class BattleReportPlugin(Star):
             # 踢馆记录（对阵数 1 或 0），卡门槛会把它们全挡掉。
             if report.kind != KIND_RAID and len(report.duels) < min_duels:
                 failure_responses.append(
-                    f"❌ 第 {i} 份战报还没打完喵"
-                    f"（只有 {len(report.duels)} 场对阵，至少要 {min_duels} 场）：\n"
+                    f"❌ 第 {i} 份战报对局不足喵"
+                    f"，需要至少 {min_duels} 场，当前 {len(report.duels)} 场：\n"
                     f"{report.team_a} VS {report.team_b} | {report.match_time}\n"
-                    f"📄 我收到的战报原文：\n{chunk.strip()}"
+                    f"📄 战报原文：\n{chunk.strip()}"
                 )
                 continue
 
@@ -1376,8 +1375,8 @@ class BattleReportPlugin(Star):
                 if unfinished:
                     msg += "\n这些对局还空着比分喵：\n" + "\n".join(unfinished)
                 msg += (
-                    "\n📄 我收到的战报原文：\n" + chunk.strip()
-                    + "\n（把比分填上再发一次喵）"
+                    "\n📄 战报原文：\n" + chunk.strip()
+                    + "\n请填好比分后重新提交喵。"
                 )
                 failure_responses.append(msg)
                 continue
@@ -1585,7 +1584,7 @@ class BattleReportPlugin(Star):
                 if not entries:
                     yield event.plain_result(
                         f"📋 {home_team} {year}年{mon}月：这个月还没结算呢喵。\n"
-                        f"（结算是超管、战队管理员或群管理/群主来做的：/结算 {mon}月）"
+                        f"请联系本队管理员结算喵。"
                     )
                     return
                 yield event.plain_result(
@@ -1687,9 +1686,7 @@ class BattleReportPlugin(Star):
                 return
             yield event.plain_result(
                 f"♻️ {home_team} {year}年{mon}月 的结算重置好啦喵～ "
-                f"（删掉了 {removed} 条记录）\n"
-                f"这个月又变回「未结算」了喵：/排行 {mon}月 不再显示「奖金」列，"
-                f"重新 /结算 {mon}月 会当成第一次结算、重新 @ 获奖成员哦。"
+                f"\n重新结算：/结算 {mon}月"
             )
         except Exception:
             logger.exception("重置结算失败")
@@ -2002,7 +1999,7 @@ class BattleReportPlugin(Star):
         if not isinstance(members, list):
             members = []
         if not members:
-            yield event.plain_result("⚠️ 这个群没有成员列表喵（可能机器人不在群里，或者适配器不支持）。")
+            yield event.plain_result("⚠️ 暂时无法获取本群成员列表喵。")
             return
 
         # 排序：群主 → 管理员 → 成员，同角色按入群时间升序

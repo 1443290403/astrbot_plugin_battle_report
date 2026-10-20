@@ -293,7 +293,7 @@ def build_next_round(
         if not has_result:
             return RoundBuildResult(
                 False, draft_text, [],
-                [f"喵…第 {prev_round} 轮还没分出胜者喵（要先把上一轮的比分填进战报）。"],
+                [f"喵…第 {prev_round} 轮还没分出胜者，请先填写比分。"],
             )
         a = [name for name, alive in alive_a.items() if alive and name not in pending_a]
         b = [name for name, alive in alive_b.items() if alive and name not in pending_b]
@@ -307,7 +307,7 @@ def build_next_round(
         if not added:
             return RoundBuildResult(
                 False, draft_text, [],
-                ["喵…没有可配对的空闲存活选手呢（有一边没人可打）。"
+                ["喵…暂时没有可配对的选手。"
                  + ("请先完成未结束的对局喵。" if pending_a or pending_b else "")],
             )
     else:
@@ -351,7 +351,7 @@ def build_next_round(
                 else:
                     errors.append(
                         f"喵…这行对局解析不了喵：{line}"
-                        f"（应为『玩家A 玩家B』或『玩家A 比分 玩家B』）"
+                        f"\n用法：玩家A 玩家B，或 玩家A 比分 玩家B。"
                     )
                     continue
             if team_a:
@@ -616,7 +616,7 @@ def format_raid_results(report, home_team: str) -> str:
         else:
             verdict = f"💀 踢馆失败（{report.team_a}），{defenders}"
     else:
-        verdict = "⚠️ 胜负未定（最后一场为平局），未计算积分"
+        verdict = "⚠️ 胜负未定，暂不计算积分"
     lines.append(verdict)
     return "\n".join(lines)
 
