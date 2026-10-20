@@ -91,6 +91,27 @@ async def collect(generator):
     return [value async for value in generator]
 
 
+def test_round_command_fills_only_available_survivors(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    draft = """战队: a队 VS b队
+时间: 2026.10.20
+规则: 2/3【KOF】
+地点: 100
+------第一轮------
+云玩家  2:0  复读机
+萌新  0:2  鸽子
+遗老  0:2  柠檬
+路人甲  2:0  路人乙
+------第二轮------
+云玩家  0:0  柠檬"""
+    obj._read_latest_report = AsyncMock(return_value=draft)
+    response = asyncio.run(collect(obj.round_cmd(event('/第二轮'))))
+    assert len(response) == 1
+    assert response[0].splitlines() == draft.splitlines() + ['路人甲  0:0  鸽子']
+    obj._read_latest_report.assert_awaited_once()
+    obj.db.insert_report.assert_not_awaited()
+
+
 def report(group='100', team='DYG', colon=':'):
     return f'战队{colon} KC VS {team}\n时间: 2026.08.01\n规则: 人头赛\n地点: {group}\n------第一轮------\n甲 2:0 乙'
 

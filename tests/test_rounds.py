@@ -1,6 +1,8 @@
 """追加轮次（/第N轮）逻辑单元测试。"""
 
-from lineup import build_next_round, parse_round_no
+import pytest
+
+from lineup import build_next_round, parse_round_no, record_from_info
 
 DRAFT = """战队: KC VS DYG
 时间: 2026.08.01
@@ -11,6 +13,18 @@ DRAFT = """战队: KC VS DYG
 凯撒亮 2:0 蓝大
 悠悠球 0:2 红大
 ------第二轮------"""
+
+PARTIAL_ROUND = """战队: a队 VS b队
+时间: 2026.10.20
+规则: 2/3【KOF】
+地点: 123
+------第一轮------
+A  2:0  SA
+ASDA  0:2  DD
+ASD  0:2  QW
+CC  2:0  FF
+------第二轮------
+A  0:0  QW"""
 
 
 def _round_section(text: str, round_no: int) -> list[str]:
@@ -54,6 +68,83 @@ def test_random_match_prev_winners():
     assert all("悠悠球" not in ln for ln in section)
     assert all("老千" not in ln for ln in section)
     assert all("蓝大" not in ln for ln in section)
+
+
+@pytest.mark.parametrize("seed", [None, "partial", "another-seed"])
+def test_auto_round_only_pairs_survivors_not_already_in_unfinished_matches(seed):
+    draft = PARTIAL_ROUND
+    result = build_next_round(draft, 2, [], seed=seed)
+    assert result.ok
+    assert result.added_lines == ["CC  0:0  DD"]
+    assert result.new_text.splitlines() == draft.splitlines() + ["CC  0:0  DD"]
+
+
+def test_repeating_auto_round_does_not_add_more_matches():
+    first = build_next_round(PARTIAL_ROUND, 2, [], seed="repeat")
+    assert first.ok
+    second = build_next_round(first.new_text, 2, [], seed="repeat-again")
+    assert not second.ok
+    assert second.new_text == first.new_text and second.added_lines == []
+    assert any("未结束" in error for error in second.errors)
+
+
+@pytest.mark.parametrize("score,busy_match,expected", [
+    ("2:0", "CC  0:0  替补甲", "A  0:0  DD"),
+    ("0:2", "替补乙  0:0  DD", "CC  0:0  QW"),
+])
+def test_finished_round_winner_can_fight_again_in_same_round(score, busy_match, expected):
+    draft = PARTIAL_ROUND.replace("A  0:0  QW", f"A  {score}  QW\n{busy_match}")
+    result = build_next_round(draft, 2, [], seed="winner-returns")
+    assert result.ok and result.added_lines == [expected]
+
+
+def test_finished_round_draw_eliminates_both_players():
+    draft = PARTIAL_ROUND.replace("A  0:0  QW", "A  1:1  QW")
+    result = build_next_round(draft, 2, [])
+    assert result.ok and result.added_lines == ["CC  0:0  DD"]
+
+
+def test_round_winner_who_later_loses_does_not_return():
+    draft = PARTIAL_ROUND.replace("A  0:0  QW", "A  2:0  QW\nA  0:2  DD")
+    result = build_next_round(draft, 2, [])
+    assert result.ok and result.added_lines == ["CC  0:0  DD"]
+
+
+def test_recording_both_matches_returns_their_winners_to_same_round_pool():
+    paired = build_next_round(PARTIAL_ROUND, 2, [], seed="fill")
+    left_wins = record_from_info(paired.new_text, "A 20")
+    assert left_wins.ok
+    right_wins = record_from_info(left_wins.new_text, "CC 02")
+    assert right_wins.ok
+    result = build_next_round(right_wins.new_text, 2, [])
+    assert result.ok and result.added_lines == ["A  0:0  DD"]
+
+
+def test_pending_players_are_scoped_to_their_own_team():
+    draft = PARTIAL_ROUND.replace("\nA  ", "\n同名  ").replace("DD", "同名")
+    result = build_next_round(draft, 2, [])
+    assert result.ok and result.added_lines == ["CC  0:0  同名"]
+
+
+def test_auto_round_stops_when_one_side_is_fully_scheduled():
+    draft = PARTIAL_ROUND.replace("A  0:0  QW", "A  0:0  SA\nCC  0:0  FF")
+    result = build_next_round(draft, 2, [])
+    assert not result.ok
+    assert result.new_text == draft and result.added_lines == []
+
+
+def test_auto_later_round_also_excludes_existing_participants():
+    draft = PARTIAL_ROUND.replace("第一轮", "第九轮").replace("第二轮", "第十轮")
+    result = build_next_round(draft, 10, [], seed="later")
+    assert result.ok and result.added_lines == ["CC  0:0  DD"]
+
+
+def test_auto_round_does_not_duplicate_a_previous_winner():
+    draft = PARTIAL_ROUND.split("------第二轮------")[0] + "A  2:0  FF\n------第二轮------"
+    result = build_next_round(draft, 2, [], seed="unique")
+    assert result.ok
+    names = [line.split()[0] for line in result.added_lines]
+    assert len(names) == len(set(names)) == 2
 
 
 def test_random_match_no_pairable_fails():

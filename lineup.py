@@ -249,8 +249,9 @@ def build_next_round(
 ) -> RoundBuildResult:
     """在战报草稿上追加第 round_no 轮。
 
-    无 info_lines 时：从上一轮可确认的胜者中随机配对（两队各自洗牌后按索引配对，
-    人数较少一侧以 TK 占位）。
+    无 info_lines 时：从上一轮与本轮的空闲存活选手中随机配对。
+    未结束对局的双方暂不参与；本轮胜者可继续匹配，败者或非零平分双方淘汰。
+    两队各自洗牌后按索引配对，不补 TK 占位。
     有 info_lines 时：每行『玩家A』『玩家B』或『玩家A 比分 玩家B』追加为对局；
     比分可写冒号形式（2:0）或紧凑两位数字形式（20 表示 2:0）。
     """
@@ -271,22 +272,31 @@ def build_next_round(
         )
 
     if not info_lines:
-        # 随机匹配上一轮胜者
-        winners_a: list[str] = []
-        winners_b: list[str] = []
-        for d in report.duels:
-            if d.round_no != prev_round:
-                continue
-            if d.score_a > d.score_b:
-                winners_a.append(d.player_a)
-            elif d.score_b > d.score_a:
-                winners_b.append(d.player_b)
-        if not winners_a and not winners_b:
+        # 按轮次及对局顺序更新最后状态，避免赢过但随后淘汰的选手重新入池。
+        # 两队分别记录，既去重，也不会混淆对手战队的同名 ID。
+        alive_a: dict[str, bool] = {}
+        alive_b: dict[str, bool] = {}
+        pending_a: set[str] = set()
+        pending_b: set[str] = set()
+        has_result = False
+        for current_round in (prev_round, round_no):
+            for d in report.duels:
+                if d.round_no != current_round:
+                    continue
+                if d.score_a == 0 and d.score_b == 0:
+                    pending_a.add(d.player_a)
+                    pending_b.add(d.player_b)
+                    continue
+                has_result = True
+                alive_a[d.player_a] = d.score_a > d.score_b
+                alive_b[d.player_b] = d.score_b > d.score_a
+        if not has_result:
             return RoundBuildResult(
                 False, draft_text, [],
                 [f"喵…第 {prev_round} 轮还没分出胜者喵（要先把上一轮的比分填进战报）。"],
             )
-        a, b = list(winners_a), list(winners_b)
+        a = [name for name, alive in alive_a.items() if alive and name not in pending_a]
+        b = [name for name, alive in alive_b.items() if alive and name not in pending_b]
         if seed:
             random.seed(seed)
         random.shuffle(a)
@@ -297,7 +307,8 @@ def build_next_round(
         if not added:
             return RoundBuildResult(
                 False, draft_text, [],
-                ["喵…上一轮没有可配对的胜者呢（有一边没人可打）。"],
+                ["喵…没有可配对的空闲存活选手呢（有一边没人可打）。"
+                 + ("请先完成未结束的对局喵。" if pending_a or pending_b else "")],
             )
     else:
         # 玩家→队伍映射（左=team_a，右=team_b），用于按队伍对齐对局顺序
