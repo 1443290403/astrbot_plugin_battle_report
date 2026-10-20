@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.16.0`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
+> 对应版本：`1.17.0`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -37,6 +37,7 @@
 
 ```
 main.py                    命令入口 / 权限 / 平台消息收发 / 编排
+  ├── help_guide.py         三类用途流程帮助 + 未完成配置的开通引导 ← 纯 Python
   ├── command_args.py       引号/空格/批量 ID 的命令参数解析        ← 纯 Python
   ├── lineup.py            排表、追加轮次、记录比分、战报文本还原  ← 纯 Python
   ├── battle_report_parser.py  战报文本解析、胜负判定、时间参数解析  ← 纯 Python
@@ -116,7 +117,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | `_check_enabled()` | 本群未被超管禁用 | `/第N轮`、`/记录`、**`/帮助`** |
 | `_group_check()` | `_check_db()` + `_check_enabled()` | 绝大多数命令 |
 | `_admin_check()` | `_check_db()` + 超管身份 | `/禁群`、`/启群`、`/查群`、`/群列表`、`/通告` |
-| `_require_home()` | `_group_check()` + 群号 + **本群已绑定战队** | 用户与身份类命令（见 §5-M02） |
+| `_require_home()` | `_group_check()` + 群号 + **本群已绑定战队及明确群属性**，缺项返回开通流程 | 用户与身份类命令（见 §5-M02） |
 
 **特例（改动时注意）：**
 
@@ -206,7 +207,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **写入路径（唯一）：** `/发送` 要求本群已绑定战队，否则拒收；`matches.home_team = 群绑定战队`。并且校验**战报的 `战队:` 行必须包含本战队**，否则阻止（防误归队 / 脏队标入库）。
 
-**读取路径（唯一）：** `_require_home()` —— **仅群绑定，无配置兜底**。未绑定的群一律拒绝，提示 `/绑定战队`。使用者：`/排行`、`/战绩`、`/趋势`、`/导出`、`/踢馆`、`/我的ID`、`/查ID`、`/绑定ID`、`/解绑ID`、`/管理ID`、`/我的战绩`、`/改名`。
+**读取路径（唯一）：** `_require_home()` —— **本群绑定，无配置兜底**。未绑定战队或未明确设置有效群属性时拒绝查询，统一返回 `help_guide.render_setup_guide` 的分步引导。使用者：`/排行`、`/战绩`、`/趋势`、`/导出`、`/踢馆`、`/我的ID`、`/查ID`、`/绑定ID`、`/解绑ID`、`/管理ID`、`/我的战绩`、`/改名`。
 
 > **v1.13.0 起已收敛为一条路径。** 此前存在 `_get_effective_home()`（群绑定 → 配置 `home_team` 兜底），导致"未绑定的群 `/排行` 能出 KC 的数据、`/查ID` 却报未绑定"。配置项 `home_team` 已随之删除。
 >
@@ -402,7 +403,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 - `lineup.generate_template` 的战报模板与 `main._FORMAT_EXAMPLE` —— **对局行的双空格是 `battle_report_parser` 的解析契约**
 - `lineup.format_duel_results` / `format_raid_results` 的**逐场数据行**
 - `/查ID` `/管理ID` `/群列表` `/战队列表` 的**列表项行**、数值与小数位
-- `render_help` 的正文（只改抬头与收尾；`HELP_SECTIONS` 的栏目名与命令语法一字不动）
+- `stats.render_help` 保留为命令索引，命令语法不可改错；默认流程在 `help_guide.py`，描述必须符合真实权限与命令行为
 
 > **「结算完成」/「结算查询」的措辞是判据，不是文案**（§5-M14、§7.1）—— 这两个词分别承担「写过库」与「只读查询」的区分，且 CLAUDE.md 要求两个回执**刻意不同形**，不许当文案顺手改得一致。
 >
@@ -410,15 +411,18 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ---
 
-### M-11 群属性、帮助分类与提交限制
+### M-11 群属性、流程帮助与提交限制
 
-- `CHAT_TYPE_SECTIONS`：友谊群显示排表/追加轮次/记录，战报群显示提交/管理/查询，主群显示查询/ID；所有群都可看到战队设置帮助。
-- **仅战报群允许 `/发送`**（含旧别名、引用、批量与踢馆）。先拒绝私聊，再检查数据库、禁群、群类型、绑定和可选管理提交条件。
-- 缺省群类型仍为友谊群，升级不自动变成战报群。超管或本队管理员需显式 `/群聊属性 战报群`。
-- 绑定与属性设置必须是超管或对应战队管理员；群主/群管身份本身不授予此权限。
-- 超管可设置任意群；普通战队管理员重绑需同时管理原队和目标队。
-- 私聊授权/查询管理员等超管命令仍可使用，禁止的是战报提交。
-- `ALL_SECTIONS` 自动包含除超级管理以外的栏目，新命令必须同步帮助和分类。
+- 群名维持友谊群、战报群、主群；未设置时默认友谊群，不新增别名、不改写旧行。
+- `help_guide.py` 的 `WORKFLOWS` 是三类流程的唯一文案源：友谊群排表/记分/追加/交接，战报群提交/回执/先删后改/删除，主群查ID/绑定/战绩/排行/趋势/导出。
+- `render_setup_guide` 解释超管授权、超管或本队管理员绑定和选择用途，按真实状态标注完成步骤；默认用途与明确设置分开。
+- `database.get_group_chat_type_setting` 返回已设置的有效属性或 None；`get_group_chat_type` 返回默认友谊群但不自动写行。无需新增字段或变更 schema。
+- 友谊群默认可排表、记录、追加轮次；`_require_home` 对依赖战队的查询/身份/导出检查战队与明确属性，缺项返回开通流程。属性明确为友谊群后仍可使用查询。
+- **仅战报群允许 `/发送`**（旧别名、引用、批量、踢馆同入口）。未完成设置先给出战报群开通路径；已设为其他用途的群提示去本队战报群，不自行切换属性。
+- 战队或属性设置成功后立即发送对应流程；超管先设置属性但尚未绑定战队时，仍提示剩余步骤。
+- 默认 `/帮助` 不要求开通；缺项显示开通提示与默认流程。`/帮助 全部` 分条发三类流程；`/帮助 友谊群|战报群|主群` 只读预览；`/帮助 设置` 看开通步骤；`/帮助 命令` 保留旧索引；`/帮助 超管` 保留管理索引。
+- 帮助读取数据库失败时提示状态暂不可读并提供通用流程，不能把数据库错误说成“本群未绑定”；群禁用仍拦帮助。
+- 设置权限维持超管任意群、本队管理员本队；普通 QQ 群角色不单独提供这两项设置权限，重绑仍要求管理两队。
 
 ---
 
@@ -848,7 +852,7 @@ year = now.year - 1 if month > now.month else now.year
 
 | 编号 | 命令 | 行为 |
 |---|---|---|
-| **F-26** | `/帮助 [全部\|超管]` | 无参数按群属性展示；`全部` = 除超管外全部；`超管` = 仅超管段。**只做 `_check_enabled`（群被禁用时不回复），不校验 DB 就绪、不要求绑定战队** |
+| **F-26** | `/帮助 [友谊群\|战报群\|主群\|设置\|全部\|命令\|超管]` | 无参按当前用途显示流程与缺失设置；用途参数只读预览；全部分条发流程；命令保留索引。不要求开通，数据库失败有静态预览，禁用群仍拦截 |
 
 ---
 
@@ -858,7 +862,7 @@ year = now.year - 1 if month > now.month else now.year
 
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
-| **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `stats.CHAT_TYPE_SECTIONS` 归类 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
+| **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
 | **对局加一个属性**（如 出场序号/时长） | ① `Duel` dataclass ② `parse_battle_report` ③ `duels` 表 + 迁移 ④ `insert_report` ⑤ **所有读出 duels 的 SELECT**：`get_export_rows`、`get_reports_for_export`、`get_player_match_stats` ⑥ dict 组装处（`get_reports_for_export` 逐字段手写）⑦ `format_duels_block` 还原 ⑧ CSV 列 | ⑤⑥ 是"逐字段罗列"的写法，**漏一个字段就是静默丢数据** |
 | **改胜负判定** | ① `determine_match_winner` + 两个 winner 函数 ② 历史 `matches.winner` 回填脚本 ③ 战队战绩/对战记录 ④ 导出胜负过滤 ⑤ `compute_match_stats` 的 winner 守卫 ⑥ 提交时的拒录分支 | M-07：**历史数据不会自动重算** |
@@ -957,6 +961,7 @@ year = now.year - 1 if month > now.month else now.year
 | [command_args.py](command_args.py) | ~90 | 引号边界、空格 ID、单名字与管理ID参数，共用于入口/导出/排表/记录/轮次 | 无 |
 | [lineup.py](lineup.py) | ~755 | 排表、追加轮次、记录比分、战报文本还原、导出过滤 | 无 |
 | [battle_report_parser.py](battle_report_parser.py) | ~735 | 战报解析（友谊 + 踢馆）、胜负判定、`is_kof`、内容指纹、月份/参数解析 | 无 |
+| [help_guide.py](help_guide.py) | ~160 | 三类用途流程、开通步骤、配置状态与只读预览 | 无 |
 | [stats.py](stats.py) | ~700 | 积分/胜率/表格/帮助文案、`rank_aligns`、**踢馆判定与计分（踢馆侧唯一实现）**、**结算奖金公式与名次（`rank_bonus` / `ranks_for` / `attach_bonus`）**、**结算回执（写 `format_settlement` / 只读 `format_settlement_view`，行体共用 `_settlement_lines`）**、**结算公告（`settlement_awards_changed` 判要不要 @ / `settlement_announcement` 分段文案 / `format_settlement_repeat` 不 @ 时的提示）**、**排行图片左侧面板的 8 行（`build_team_panel`）** | 无 |
 | [chart.py](chart.py) | ~300 | Pillow 趋势图 + 排行表格图（`make_ranking_image` 的 `panel` 参数只负责画，不懂语义） | Pillow |
 | [tests/](tests/) | ~3440 | 13 个纯逻辑测试 + 1 个 DB 集成测试（见 §12） | pytest |
@@ -997,7 +1002,7 @@ year = now.year - 1 if month > now.month else now.year
 
 - [ ] **命令注册**：`@filter.command` + `alias`（带 `/` 与不带 `/` 两种）
 - [ ] **权限**：明确选 `_group_check` / `_require_home` / `_admin_check` / 无校验（并说明理由）
-- [ ] **帮助**：`HELP_SECTIONS` 加段 + `CHAT_TYPE_SECTIONS` 归类
+- [ ] **帮助**：`HELP_SECTIONS` 更新索引 + `help_guide.WORKFLOWS` 更新实际流程
 - [ ] **配置**：是否需新配置项？→ `_conf_schema.json` + 读取处 + README
 - [ ] **口径核对**：过一遍 §5 的 14 条，逐条确认新代码是否遵守（尤其是 M-02 过滤、M-03 名解析、M-04 的 0:0、M-13 的 `kind` 隔离、M-14 的名次与月份）
 - [ ] **`kind` 隔离**（若新功能要读 `matches`/`duels`）：跑 `grep -n "FROM duels\|FROM matches" database.py`，逐个决定「算不算友谊」，要排除就补 `AND m.kind = 'friendly'`（清单见 §5-M13，验收见 §12）
@@ -1119,6 +1124,13 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 - 裸空格绑定存在歧义时“完整现有 ID 优先”，推荐显式引号列表；原始 ID 带多个空格或命令关键字时也用引号。
 - `allow_private_chat` 已从配置/代码/现行文档删除；旧配置中即使残留 true 也不能启用私聊提交。
 
+### 10.7 v1.17.0 帮助与开通状态
+
+- 保留原群名和 schema v18。没有属性行与明确设置为友谊群通过读取结果区分，不创建隐式默认行。
+- 原来只绑定战队、尚未明确设置群属性的群，查询/身份/导出现在先显示开通步骤。由超管或本队管理员补一条 `/群聊属性 友谊群|战报群|主群` 即可恢复，并立即获得对应流程。
+- 记录比分与追加轮次不新增开通门槛；友谊群内草稿修改不等于修改已入库数据，帮助明确区分。
+- 已入库战报修改流程是先删旧记录再重发，没有新增原地编辑命令；结算快照规则不变。
+
 ## 11. 配置项（`_conf_schema.json`）
 
 | 配置 | 默认 | 作用于 |
@@ -1146,7 +1158,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
-| `test_main.py` | 真实 handler + 框架桩；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；不代表真实 QQ 联调 |
+| `test_main.py` | 真实 handler + 框架桩；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；不代表真实 QQ 联调 |
 | `test_command_args.py` | 引号/转义/标点、裸空格兼容、查询关键字保护、导出顺序、排表→记录→轮次→重新解析完整链路 |
 | `test_database_lifecycle.py` | 唯一键并发冲突不得借第二条连接、初始化迁移失败释放池 |
 | `test_winner.py` | 人头赛 / KOF 胜负判定（含替补不扩容、同名首发与替补区分、TK 占位、判罚） |
@@ -1159,14 +1171,15 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `test_fingerprint.py` | **内容指纹**（§5-M12）：同内容同指纹、改比分/换战队变指纹、换提交人/群/地点不变、写死的算法锚点（**友谊赛锚点必须继续成立** —— 这是"`kind` 只在非友谊赛进指纹"的验收） |
 | `test_config_schema.py` | `_conf_schema.json` 格式合法性、死配置不许回归、`min_duels` 存在性 |
 | `test_export.py` | 文本还原（raw 头部保留、双空格、`(替)`/`(规则)`/`(馆主)`、`round_no == 0` 无轮次头）、导出过滤全分支 |
-| `test_stats.py` | 帮助分类与渲染（`test_render_help_head_and_tail_are_catgirl`：抬头与末行含语气，而 **`▎排表` / `默认本月` / `群属性：/群聊属性` / `/帮助 全部` 等命令字面量逐字不变**，§5-M10）、**`build_team_panel` 的 8 行标签顺序 / ceil 取整回归 / 不套 10 分封顶 / 空 dict 兜底 / `:g` 与表格同格式 / 胜率 1 位小数** |
+| `test_help_guide.py` | 三类流程的步骤顺序、真实命令与排表示例、先删再重发、权限说明、开通完成状态、预览无副作用 |
+| `test_stats.py` | 命令索引与渲染（`test_render_help_head_and_tail_are_catgirl`：抬头与末行含语气，而 **`▎排表` / `默认本月` / `群属性：/群聊属性` / `/帮助 全部` 等命令字面量逐字不变**，§5-M10）、**`build_team_panel` 的 8 行标签顺序 / ceil 取整回归 / 不套 10 分封顶 / 空 dict 兜底 / `:g` 与表格同格式 / 胜率 1 位小数** |
 | `test_chart.py` | 排行图片生成、行数缩放、长名、不截断、**`rank_aligns()` 与表头列数一致且全为 `center`**、**15 列（带奖金列）渲染冒烟**、**「战队战绩」面板**：面板比表格高时图变高（`body_h = max()` 的裁切回归）、表格更高时高度不变、`panel=None`/不传/`[]` 三者尺寸逐像素相同、`max_rows=1` 的省略行与面板共存 |
 | `test_database_stats.py` | **DB 集成**（排行/战绩/趋势/导出/迁移/用户绑定/群管理/**重复战报拒收**/**踢馆**/**结算**：写入后取回、重结算行数不翻倍、追加后回到前 4 名会删掉多余行、不同战队/月份互不干扰、`player_name` 与排行同源、小数往返、**`get_settlement_entries` 的明细与排序**（只读 `/结算` 的数据源）、**`clear_settlement` 的重置**（只删本队本月、返回行数、重复重置返回 0、重置后可重新结算且不残留旧行）、**`get_qq_ids_by_names`**（空名单不查库、只返回有 QQ 的、按 `users.name` 而非参赛ID、跨战队不串门）；**`get_home_team_record` 的 `attack_points` 与 `get_raid_team_stats` 等值**——面板「零额外查询」的护栏） |
 
 **数据库测试需显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1`**；独立使用
 `ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`，默认本机，不读取插件配置。
 建删库名为 `astrbot_battle_report_test_<进程号>`，应指向隔离测试服务。
-新增集成测试覆盖身份并发、同名归属、角色日期趋势、KOF 队伍趋势、中断迁移重放、跨队同名趋势，以及战队授权持久化/隔离/撤销、v17→v18 保留业务数据和现有空格 ID 的完整读写。
+新增集成测试覆盖身份并发、同名归属、角色日期趋势、KOF 队伍趋势、中断迁移重放、跨队同名趋势，以及战队授权持久化/隔离/撤销、v17→v18 保留业务数据和现有空格 ID 的完整读写，以及默认友谊群与明确配置的区分、历史属性保持不变。
 
 **踢馆侧的 DB 验收标准（★必跑）：** `test_raid_does_not_move_friendly_numbers` —— 插入一份踢馆报后，**所有友谊查询的返回值必须逐字段不变**（比对时把 `raid_points`/`total_points` 等踢馆字段摘掉）。这是 §5-M13 那 18 处 `kind` 过滤的**唯一**验收手段：漏写一处不会报错，只会让数据静默变脏。另有 `test_raid_same_player_keeps_friendly_untouched`（同一个人既打友谊又踢馆时，友谊口径仍不变）。
 
@@ -1178,7 +1191,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.16.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

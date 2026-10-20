@@ -14,6 +14,11 @@ import aiomysql
 from pymysql.err import IntegrityError
 
 try:
+    from .help_guide import FRIENDLY_GROUP, normalize_chat_type
+except ImportError:
+    from help_guide import FRIENDLY_GROUP, normalize_chat_type
+
+try:
     from . import stats
     from .battle_report_parser import (
         KIND_FRIENDLY, KIND_RAID, RAID_PLACEHOLDER, report_fingerprint,
@@ -689,7 +694,10 @@ class Database:
         return rows[0]["home_team"] if rows else None
 
     async def set_group_chat_type(self, group_id: str, chat_type: str) -> None:
-        """设置群属性（友谊群/战报群/主群）。"""
+        """设置群属性，只接受友谊群、战报群或主群。"""
+        chat_type = normalize_chat_type(chat_type)
+        if chat_type is None:
+            raise ValueError("群属性应为友谊群、战报群或主群")
         await self._execute(
             """INSERT INTO group_chat_type (group_id, chat_type)
                VALUES (%s, %s) AS new
@@ -697,13 +705,17 @@ class Database:
             (group_id, chat_type),
         )
 
-    async def get_group_chat_type(self, group_id: str) -> str:
-        """获取群属性；未绑定缺省为友谊群。"""
+    async def get_group_chat_type_setting(self, group_id: str) -> str | None:
+        """读取明确设置的属性；没有设置或旧值无效时返回 None。"""
         rows = await self._query(
             "SELECT chat_type FROM group_chat_type WHERE group_id = %s",
             (group_id,),
         )
-        return rows[0]["chat_type"] if rows else "友谊群"
+        return normalize_chat_type(rows[0]["chat_type"]) if rows else None
+
+    async def get_group_chat_type(self, group_id: str) -> str:
+        """获取实际用途；未明确设置时默认友谊群，不自动写入设置。"""
+        return await self.get_group_chat_type_setting(group_id) or FRIENDLY_GROUP
 
     async def backfill_group_home(self, group_id: str, home_team: str) -> None:
         """把该群已有战报的 home_team 回填为当前主体。"""

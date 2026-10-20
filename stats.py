@@ -799,7 +799,7 @@ def format_settlement_repeat() -> str:
     return "\n\n喵～ 这次结算出来的获奖名次和上次一样，就不打扰大家了喵～ 🐾"
 
 
-# ---------- 帮助分类（按群属性展示） ----------
+# ---------- 命令索引（/帮助 命令；默认流程见 help_guide.py） ----------
 
 HELP_SECTIONS = {
     "排表": (
@@ -884,12 +884,6 @@ HELP_SECTIONS = {
     ),
 }
 
-CHAT_TYPE_SECTIONS = {
-    "友谊群": ["排表", "追加轮次", "记录比分", "战队设置"],
-    "战报群": ["提交战报", "管理", "查询", "战队设置"],
-    "主群": ["查询", "用户与参赛ID", "战队设置"],
-}
-
 ALL_SECTIONS = [k for k in HELP_SECTIONS if k != "超级管理"]
 
 
@@ -899,6 +893,6 @@ def render_help(section_keys: list[str]) -> str:
     for k in section_keys:
         parts.append(HELP_SECTIONS[k])
     parts.append("群属性：/群聊属性 <友谊群|战报群|主群>（超管或本队管理员）")
-    parts.append("/帮助 全部 查看全部 | /帮助 超管 查看超管指令")
+    parts.append("/帮助 查看本群流程 | /帮助 全部 查看三类流程 | /帮助 超管 查看超管指令")
     parts.append("🐾 有不懂的地方随时喊我喵～")
     return "\n\n".join(parts)

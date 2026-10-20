@@ -848,7 +848,7 @@ def test_rename_user():
 
 def test_group_chat_type():
     async def ops(db):
-        # 缺省为友谊群
+        # 缺省为友谊群，但未明确设置
         assert await db.get_group_chat_type("G1") == "友谊群"
         await db.set_group_chat_type("G1", "战报群")
         assert await db.get_group_chat_type("G1") == "战报群"
@@ -1642,4 +1642,23 @@ def test_existing_space_id_bind_query_rename_and_unbind():
         assert (await db.get_player_binding(TEAM, 'ice boundary'))['user_id'] is None
         after = await db.get_reports_for_export(TEAM)
         assert before == after
+    _with_db(ops)
+
+
+def test_group_type_explicit_setting_is_distinct_from_default():
+    async def ops(db):
+        assert await db.get_group_chat_type('new') == '友谊群'
+        assert await db.get_group_chat_type_setting('new') is None
+        assert not await db._query('SELECT * FROM group_chat_type WHERE group_id = %s',('new',))
+        await db.set_group_chat_type('new','友谊群')
+        assert await db.get_group_chat_type_setting('new') == '友谊群'
+        await db._execute('INSERT INTO group_chat_type(group_id,chat_type) VALUES (%s,%s)',('legacy','友谊群'))
+        assert await db.get_group_chat_type('legacy') == '友谊群'
+        assert await db.get_group_chat_type_setting('legacy') == '友谊群'
+        await db.set_group_chat_type('legacy','友谊群')
+        row = await db._query('SELECT chat_type FROM group_chat_type WHERE group_id = %s',('legacy',))
+        assert row[0]['chat_type'] == '友谊群'
+        with pytest.raises(ValueError):
+            await db.set_group_chat_type('new','未知')
+        assert await db.get_group_chat_type('new') == '友谊群'
     _with_db(ops)

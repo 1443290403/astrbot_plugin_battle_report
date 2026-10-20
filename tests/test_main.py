@@ -80,6 +80,7 @@ def plugin(mod, tmp_path):
         get_group_ban=AsyncMock(return_value=False),
         get_group_home=AsyncMock(return_value='KC'),
         get_group_chat_type=AsyncMock(return_value='战报群'),
+        get_group_chat_type_setting=AsyncMock(return_value='战报群'),
         is_team_admin=AsyncMock(return_value=False),
         insert_report=AsyncMock(return_value=123),
     )
@@ -107,11 +108,12 @@ def test_private_submissions_are_always_blocked(plugin_module, tmp_path, super_a
     ev.bot.call_action.assert_not_awaited()
 
 
-@pytest.mark.parametrize('chat_type', ['友谊群', '主群', ''])
+@pytest.mark.parametrize('chat_type', ['友谊群', '主群'])
 def test_only_report_groups_can_submit(plugin_module, tmp_path, chat_type):
     obj = plugin(plugin_module, tmp_path)
     obj.config['super_admin'] = '10001'
     obj.db.get_group_chat_type.return_value = chat_type
+    obj.db.get_group_chat_type_setting.return_value = chat_type
     ev = event('/发送\n' + report(), admin=True)
     response = asyncio.run(collect(obj.submit_report(ev)))
     assert '只有战报群' in response[0]
@@ -487,3 +489,131 @@ def test_export_quoted_space_id_uses_same_player_filter(plugin_module, tmp_path)
     asyncio.run(collect(obj.export(event('/导出 "ice boundary" 七月 json'))))
     obj.db.resolve_role.assert_awaited_once_with('KC', 'ice boundary')
     obj.db.get_export_rows.assert_awaited_once_with('KC', '2026-07-01', '2026-07-31')
+
+
+@pytest.mark.parametrize('role', ['友谊群','战报群','主群'])
+def test_help_shows_group_workflow_instead_of_command_catalog(plugin_module, tmp_path, role):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_chat_type_setting.return_value = role
+    response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
+    assert len(response) == 1
+    assert role+'操作流程' in response[0]
+    assert '①' in response[0] and '②' in response[0]
+    assert '本群开通流程' not in response[0]
+
+
+def test_unconfigured_help_defaults_to_competition_and_shows_setup(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_home.return_value = None
+    obj.db.get_group_chat_type_setting.return_value = None
+    response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
+    assert '友谊群操作流程' in response[0]
+    assert '本群开通流程' in response[0]
+    assert '/绑定战队 KC' in response[0] and '/群聊属性' in response[0]
+
+
+@pytest.mark.parametrize('home,role', [(None,None), ('KC',None), (None,'主群')])
+def test_require_home_returns_actionable_setup_for_incomplete_group(plugin_module,tmp_path,home,role):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db.get_group_home.return_value = home
+    obj.db.get_group_chat_type_setting.return_value = role
+    obj.db.get_player_ranking = AsyncMock()
+    response = asyncio.run(collect(obj.ranking(event('/排行'))))
+    assert '开通流程' in response[0]
+    assert '/设置战队管理员' in response[0]
+    obj.db.get_player_ranking.assert_not_awaited()
+
+
+def test_export_also_requires_explicit_group_configuration(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db.get_group_chat_type_setting.return_value = None
+    obj.db.get_export_rows = AsyncMock()
+    response = asyncio.run(collect(obj.export(event('/导出 json'))))
+    assert '开通流程' in response[0]
+    assert '/群聊属性 主群' in response[0]
+    obj.db.get_export_rows.assert_not_awaited()
+
+
+def test_missing_submission_setup_explains_report_group_steps(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db.get_group_chat_type_setting.return_value = None
+    response = asyncio.run(collect(obj.submit_report(event('/发送\n'+report()))))
+    assert '开通流程' in response[0]
+    assert '/群聊属性 战报群' in response[0]
+    obj.db.insert_report.assert_not_awaited()
+
+
+def test_setting_type_immediately_displays_selected_workflow(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj.db.set_group_chat_type = AsyncMock()
+    for role in ['友谊群','战报群','主群']:
+        response = asyncio.run(collect(obj.set_chat_type(event('/群聊属性 '+role),role)))
+        assert '✅' in response[0]
+        assert role+'操作流程' in response[1]
+        assert '开通流程' not in response[1]
+    response = asyncio.run(collect(obj.set_chat_type(event('/群聊属性 友谊群'),'友谊群')))
+    assert '友谊群操作流程' in response[1]
+    assert obj.db.set_group_chat_type.await_args.args[1] == '友谊群'
+
+
+def test_bind_team_displays_remaining_setup_and_default_match_workflow(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj.db.get_group_home.return_value = None
+    obj.db.get_group_chat_type_setting.return_value = None
+    obj.db.set_group_home = AsyncMock()
+    obj.db.backfill_group_home = AsyncMock()
+    response = asyncio.run(collect(obj.bind_home(event('/绑定战队 KC'))))
+    assert '✅' in response[0]
+    assert '战队：KC' in response[1]
+    assert '友谊群操作流程' in response[1]
+    assert '/群聊属性' in response[1]
+
+
+def test_help_preview_and_all_do_not_change_group_type(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db.get_group_chat_type_setting.return_value = '友谊群'
+    obj.db.set_group_chat_type = AsyncMock()
+    preview = asyncio.run(collect(obj.help_cmd(event('/帮助 主群'),'主群')))
+    assert '主群操作流程（预览）' in preview[0]
+    assert '本群：主群' not in preview[0]
+    all_guides = asyncio.run(collect(obj.help_cmd(event('/帮助 全部'),'全部')))
+    assert len(all_guides) == 3
+    assert all('操作流程' in text for text in all_guides)
+    obj.db.set_group_chat_type.assert_not_awaited()
+    reference = asyncio.run(collect(obj.help_cmd(event('/帮助 命令'),'命令')))
+    assert '▎排表' in reference[0] and '▎用户与参赛ID' in reference[0]
+
+
+def test_help_still_works_when_database_is_unavailable(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db_ready = False
+    response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
+    assert '暂时读不到本群设置' in response[0]
+    assert '友谊群操作流程（预览）' in response[1]
+    obj.db.get_group_home.assert_not_awaited()
+    obj.db.get_group_chat_type_setting.assert_not_awaited()
+
+
+def test_help_does_not_mistake_database_error_for_unbound_group(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db.get_group_home.side_effect = RuntimeError('offline')
+    response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
+    assert '暂时读不到' in response[0]
+    assert '战队：未绑定' not in '\n'.join(response)
+
+
+def test_disabled_group_cannot_bypass_ban_through_help(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.db.get_group_ban.return_value = True
+    response = asyncio.run(collect(obj.help_cmd(event('/帮助'))))
+    assert len(response) == 1 and '禁用' in response[0]
+    assert '操作流程' not in response[0]
+
+
+def test_private_help_is_general_and_cannot_submit(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    response = asyncio.run(collect(obj.help_cmd(event('/帮助',group=''))))
+    assert '请到' in response[0] and '私聊不能提交' in response[0]
+    assert '友谊群操作流程（预览）' in response[1]
