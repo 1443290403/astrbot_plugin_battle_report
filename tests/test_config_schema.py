@@ -2,7 +2,7 @@
 
 两个目的：
 
-1. **格式**：它是 AstrBot 读的配置文件、也是 conftest 的 DEFAULTS 来源 ——
+1. **格式**：它是 AstrBot 读的配置文件、测试配置在 conftest 中独立定义 ——
    写坏一个逗号会让**所有**数据库测试在收集阶段就崩掉，且报错信息是
    「conftest 导入失败」而非「配置有误」，很难一眼看懂。
 2. **防死配置回归**：`home_team`、`default_days` 都曾是「界面有开关、代码里
@@ -62,3 +62,11 @@ def test_min_duels_present_and_sane():
 def test_min_games_still_present():
     """min_games 是排名门槛，与 min_duels 是两件事，别在清理时误删。"""
     assert "min_games" in _schema()
+
+
+def test_new_install_does_not_assign_author_super_admin():
+    assert _schema()["super_admin"]["default"] == ""
+
+
+def test_private_submission_switch_is_removed():
+    assert 'allow_private_chat' not in _schema()

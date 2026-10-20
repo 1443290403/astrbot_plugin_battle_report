@@ -3,13 +3,7 @@
     "description": "是否仅管理员可提交战报",
     "type": "bool",
     "default": false,
-    "hint": "开启后仅群管理员/群主可提交战报"
-  },
-  "allow_private_chat": {
-    "description": "是否允许私聊提交战报",
-    "type": "bool",
-    "default": true,
-    "hint": "私聊提交时用战报『地点:』字段作为群号（须为纯数字），并据此查该群绑定的战队"
+    "hint": "仅战报群可提交；开启后仅超管、战队管理员、AstrBot 管理员或本群群主/管理可提交；私聊始终禁止"
   },
   "ranking_limit": {
     "description": "排行榜展示条数",
@@ -56,8 +50,8 @@
   "super_admin": {
     "description": "超级管理员QQ（可禁用/开启群功能）",
     "type": "string",
-    "default": "1443290403",
-    "hint": "仅该QQ可用 /禁群 /启群 /查群 控制群级功能开关"
+    "default": "",
+    "hint": "请填写你自己的 QQ；留空时超级管理员命令不可用，不预授予作者账号权限"
   },
   "pairing_seed": {
     "description": "排表随机种子（留空则每次随机；填写则固定以便复现）",

@@ -12,9 +12,9 @@ from stats import (
 
 
 def test_chat_type_sections():
-    assert CHAT_TYPE_SECTIONS["友谊群"] == ["排表", "追加轮次", "记录比分"]
-    assert CHAT_TYPE_SECTIONS["战报群"] == ["提交战报", "管理", "查询"]
-    assert CHAT_TYPE_SECTIONS["主群"] == ["查询", "用户与参赛ID"]
+    assert CHAT_TYPE_SECTIONS["友谊群"] == ["排表", "追加轮次", "记录比分", "战队设置"]
+    assert CHAT_TYPE_SECTIONS["战报群"] == ["提交战报", "管理", "查询", "战队设置"]
+    assert CHAT_TYPE_SECTIONS["主群"] == ["查询", "用户与参赛ID", "战队设置"]
 
 
 def test_all_sections_excludes_super():

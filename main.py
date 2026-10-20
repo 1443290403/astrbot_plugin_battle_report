@@ -19,6 +19,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -27,14 +28,15 @@ from astrbot.api.message_components import At, File, Image, Node, Nodes, Plain, 
 from astrbot.api.star import Star, StarTools, register
 
 from . import chart, lineup, stats
+from .command_args import parse_command_args, parse_managed_ids, single_name
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
 from .battle_report_parser import (
     KIND_RAID,
+    TEAM_RE,
     _TOKEN_MONTH_RE,
     _cn_to_int,
+    _clean_player_name,
     _parse_month_filter,
-    _strip_ruled,
-    _strip_sub,
     determine_match_winner,
     is_raid_header,
     month_range,
@@ -59,7 +61,7 @@ _SETTLE_CMDS = ("结算", "/结算")
 _RESET_SETTLE_CMDS = ("重置结算", "/重置结算")
 
 # /第N轮 命令（N 为数字或中文，第 1 轮由排表生成）
-_ROUND_CMD_RE = re.compile(r"^\s*第\s*([一二三四五六七八九十百零\d]+)\s*轮")
+_ROUND_CMD_RE = re.compile(r"^\s*/?第\s*([一二三四五六七八九十百零\d]+)\s*轮(?=\s|$)")
 
 
 class RoundCommandFilter(CustomFilter):
@@ -82,7 +84,7 @@ _FORMAT_EXAMPLE = (
 
 _HELP_HINT = "\n还想看点别的就发：/帮助 喵～"
 # 未绑定战队 / 非群聊 的统一提示（全插件共用，避免同一种情况出现多套说法）
-_NEED_HOME = "⚠️ 本群还没绑定战队喵，这个功能用不了。\n请管理/群主用 /绑定战队 <战队> 绑定一下喵～ (๑•̀ㅂ•́)و"
+_NEED_HOME = "⚠️ 本群还没绑定战队喵，这个功能用不了。\n请超管或战队管理员用 /绑定战队 <战队> 绑定一下喵～ (๑•̀ㅂ•́)و"
 _NEED_GROUP = "⚠️ 这个要在群里用喵。"
 
 # 以下几条在多个 handler 里逐字重复，抽成常量；改文案只改这里
@@ -102,7 +104,7 @@ _GROUP_DISABLED = "🚫 群 {} 已经禁用插件功能喵。"
 def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     """剥离指令词前缀（兼容带/不带唤醒前缀）。"""
     raw = raw.strip()
-    for cmd in cmds:
+    for cmd in sorted(cmds, key=len, reverse=True):
         if raw == cmd:
             return ""
         if raw.startswith(cmd):
@@ -129,6 +131,10 @@ def _parse_settle_args(payload: str) -> tuple[int | None, int]:
         m = _TOKEN_MONTH_RE.match(tok)
         if m:
             month = _cn_to_int(m.group(1) or m.group(2))
+            if month is None or not 1 <= month <= 12:
+                raise ValueError("月份要在 1~12 之间喵。")
+            continue
+        raise ValueError(f"无法识别参数「{tok}」喵，请用：/结算 [月份] [名次数]。")
     return month, ranks
 
 
@@ -138,7 +144,7 @@ def _is_report_text(text: str) -> bool:
     if not lines:
         return False
     first = lines[0].lstrip()
-    return first.startswith("战队:") or is_raid_header(first)
+    return bool(TEAM_RE.match(first)) or is_raid_header(first)
 
 
 def _parse_chunk(chunk: str) -> "ParseResult":
@@ -153,7 +159,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.15.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.16.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -221,12 +227,17 @@ class BattleReportPlugin(Star):
             return None
         return (datetime.now() - timedelta(days=days)).date().isoformat()
 
-    async def _is_manager(self, event: AstrMessageEvent) -> bool:
-        """是否 AstrBot 管理员 / 群管理 / 群主。"""
-        if event.is_admin():
+    async def _is_manager(self, event: AstrMessageEvent, group_id: str | None = None) -> bool:
+        """本队管理员兼具插件内的群管理权限；不会改变 QQ 平台角色。"""
+        if self._is_super_admin(event) or event.is_admin():
             return True
+        target_group = group_id or event.get_group_id()
+        if target_group and self.db_ready and self.db:
+            home = await self.db.get_group_home(target_group)
+            if home and await self.db.is_team_admin(home, event.get_sender_id()):
+                return True
         try:
-            group = await event.get_group()
+            group = await event.get_group(group_id) if group_id else await event.get_group()
         except Exception as e:
             logger.warning(f"获取群信息失败: {e}")
             group = None
@@ -280,7 +291,7 @@ class BattleReportPlugin(Star):
         best = None  # (time, text)
         for msg in messages:
             text = self._extract_msg_text(msg)
-            if text and text.lstrip().startswith("战队:"):
+            if text.strip() and TEAM_RE.match(text.lstrip().splitlines()[0]):
                 t = msg.get("time") or 0
                 if best is None or t >= best[0]:
                     best = (t, text)
@@ -358,7 +369,7 @@ class BattleReportPlugin(Star):
                     idx, len(t), str(t)[:50],
                 )
             # 只取战报消息（友谊赛『战队:』开头，或踢馆『A踢馆B』开头）
-            return [t for t in texts if _is_report_text(t)]
+            return [chunk for t in texts if _is_report_text(t) for chunk in split_reports(t)]
 
         # 非转发：被引用消息自身的文本（须为战报）
         text = self._extract_msg_text(msg)
@@ -377,7 +388,7 @@ class BattleReportPlugin(Star):
                 if alt and len(alt) > len(text):
                     logger.info("引用消息 get_msg 疑似截断，已从群消息历史取到更完整文本 (%d→%d)", len(text), len(alt))
                     text = alt
-            return [text]
+            return split_reports(text)
         return None
 
     async def _read_msg_by_id_from_history(self, event, message_id) -> str | None:
@@ -473,21 +484,30 @@ class BattleReportPlugin(Star):
 
     @filter.command("绑定战队", alias={"/绑定战队"})
     async def bind_home(self, event: AstrMessageEvent, team: str = ""):
-        """绑定本群战队（管理/群主）"""
-        err = await self._group_check(event)
+        """超管可任意绑定；战队管理员重绑需同时管理原队和目标队。"""
+        is_super = self._is_super_admin(event)
+        err = self._check_db() if is_super else await self._group_check(event)
         if err:
             yield event.plain_result(err)
-            return
-        if not await self._is_manager(event):
-            yield event.plain_result("❌ 绑定战队只有群管理/群主能做喵。")
             return
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result(_NEED_GROUP)
             return
-        team = team.strip().upper()
-        if not team:
-            yield event.plain_result("用法喵：绑定战队 <战队名>")
+        try:
+            team = single_name(_strip_command(event.get_message_str(), ("绑定战队", "/绑定战队")) or team).upper()
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        if not team or len(team) > 64:
+            yield event.plain_result("用法喵：绑定战队 <战队名>（最多 64 字）")
+            return
+        if not is_super and not await self.db.is_team_admin(team, event.get_sender_id()):
+            yield event.plain_result(f"❌ 只有 {team} 的战队管理员才能绑定该战队喵，请超管先设置战队管理员。")
+            return
+        old_home = await self.db.get_group_home(group_id)
+        if not is_super and old_home and old_home != team and not await self.db.is_team_admin(old_home, event.get_sender_id()):
+            yield event.plain_result(f"❌ 本群属于 {old_home} 喵，重绑需要同时拥有原战队和目标战队的管理权限。")
             return
         await self.db.set_group_home(group_id, team)
         await self.db.backfill_group_home(group_id, team)
@@ -511,7 +531,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"🏠 本群战队：{home} 喵～")
         else:
             yield event.plain_result(
-                "喵…本群还没绑定战队，请管理/群主用 /绑定战队 <战队> 绑一下。"
+                "喵…本群还没绑定战队，请超管或战队管理员用 /绑定战队 <战队> 绑一下。"
             )
 
     # ---------- 群禁用管理（超级管理员） ----------
@@ -524,6 +544,60 @@ class BattleReportPlugin(Star):
         if not self._is_super_admin(event):
             return _ADMIN_ONLY
         return None
+
+    @filter.command("设置战队管理员", alias={"/设置战队管理员"})
+    async def set_team_admins(self, event: AstrMessageEvent):
+        """超管覆盖指定战队的管理员名单，支持多个 QQ。"""
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        try:
+            args = parse_command_args(_strip_command(event.get_message_str(), ("设置战队管理员", "/设置战队管理员")), split_commas=True)
+            if len(args) < 2:
+                raise ValueError("用法喵：/设置战队管理员 <战队> <QQ号[,QQ号...]>")
+            home, qqs = args[0].value.upper(), [a.value for a in args[1:]]
+            if len(home) > 64 or any(not re.fullmatch(r"[1-9][0-9]{0,19}", qq) for qq in qqs):
+                raise ValueError("战队名最多 64 字，QQ号须为不以 0 开头的纯数字喵。")
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        await self.db.set_team_admins(home, qqs)
+        yield event.plain_result(f"✅ {home} 的战队管理员已设为 {'、'.join(dict.fromkeys(qqs))} 喵～（覆盖原名单）")
+
+    @filter.command("移除战队管理员", alias={"/移除战队管理员"})
+    async def remove_team_admin(self, event: AstrMessageEvent):
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        try:
+            args = parse_command_args(_strip_command(event.get_message_str(), ("移除战队管理员", "/移除战队管理员")))
+            if len(args) != 2 or not re.fullmatch(r"[1-9][0-9]{0,19}", args[1].value):
+                raise ValueError("用法喵：/移除战队管理员 <战队> <QQ号>")
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        home, qq = args[0].value.upper(), args[1].value
+        removed = await self.db.remove_team_admin(home, qq)
+        yield event.plain_result(f"✅ 已移除 {home} 的战队管理员 {qq} 喵～" if removed else f"喵…{qq} 本来就不是 {home} 的战队管理员。")
+
+    @filter.command("查看战队管理员", alias={"/查看战队管理员"})
+    async def view_team_admins(self, event: AstrMessageEvent):
+        err = await self._admin_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        try:
+            home = single_name(_strip_command(event.get_message_str(), ("查看战队管理员", "/查看战队管理员"))).upper()
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        if not home:
+            yield event.plain_result("用法喵：/查看战队管理员 <战队>")
+            return
+        admins = await self.db.get_team_admins(home)
+        yield event.plain_result(f"📋 {home} 的战队管理员喵：{'、'.join(admins) if admins else '尚未设置'}")
 
     @filter.command("禁群", alias={"/禁群"})
     async def ban_group(self, event: AstrMessageEvent, group_id: str = ""):
@@ -614,18 +688,24 @@ class BattleReportPlugin(Star):
 
     @filter.command("群聊属性", alias={"/群聊属性"})
     async def set_chat_type(self, event: AstrMessageEvent, chat_type: str = ""):
-        """设置当前群属性：友谊群/战报群/主群（管理/群主）"""
-        err = await self._group_check(event)
+        """超管可设置任意群，本群绑定战队的管理员可设置本队群属性。"""
+        is_super = self._is_super_admin(event)
+        err = self._check_db() if is_super else await self._group_check(event)
         if err:
             yield event.plain_result(err)
-            return
-        if not await self._is_manager(event):
-            yield event.plain_result("❌ 群属性只有群管理/群主能改喵。")
             return
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result(_NEED_GROUP)
             return
+        home = await self.db.get_group_home(group_id)
+        if not is_super:
+            if not home:
+                yield event.plain_result(_NEED_HOME)
+                return
+            if not await self.db.is_team_admin(home, event.get_sender_id()):
+                yield event.plain_result(f"❌ 只有超管或 {home} 的战队管理员才能设置群聊属性喵。")
+                return
         chat_type = chat_type.strip()
         if chat_type not in ("友谊群", "战报群", "主群"):
             yield event.plain_result("用法喵：群聊属性 <友谊群|战报群|主群>")
@@ -724,9 +804,8 @@ class BattleReportPlugin(Star):
 
     def _is_super_admin(self, event) -> bool:
         """是否超级管理员。"""
-        return str(event.get_sender_id()) == str(
-            self.config.get("super_admin", "1443290403") or ""
-        )
+        admin = str(self.config.get("super_admin", "") or "").strip()
+        return bool(admin) and str(event.get_sender_id()) == admin
 
     async def _check_enabled(self, event) -> str | None:
         """群被禁用时返回提示文案。"""
@@ -786,7 +865,12 @@ class BattleReportPlugin(Star):
         if err:
             yield event.plain_result(err)
             return
-        status = await self.db.get_pool_status(home, keyword.strip() or None, 20)
+        try:
+            keyword = single_name(_strip_command(event.get_message_str(), ("查ID", "/查ID")) or keyword)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        status = await self.db.get_pool_status(home, keyword or None, 20)
         if not status:
             yield event.plain_result(f"喵…战队 {home} 里没有匹配的参赛ID呢。")
             return
@@ -811,7 +895,11 @@ class BattleReportPlugin(Star):
             return
         raw = event.get_message_str()
         payload = _strip_command(raw, ("绑定ID", "/绑定ID"))
-        names = [_strip_ruled(_strip_sub(p)[0])[0] for p in payload.split() if p.strip()]
+        try:
+            names = await self._parse_player_ids(home, payload)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         if not names:
             yield event.plain_result("用法喵：绑定ID <参赛ID> [参赛ID ...]")
             return
@@ -833,7 +921,11 @@ class BattleReportPlugin(Star):
             return
         raw = event.get_message_str()
         payload = _strip_command(raw, ("解绑ID", "/解绑ID"))
-        names = [_strip_ruled(_strip_sub(p)[0])[0] for p in payload.split() if p.strip()]
+        try:
+            names = await self._parse_player_ids(home, payload)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         if not names:
             yield event.plain_result("用法喵：解绑ID <参赛ID> [参赛ID ...]")
             return
@@ -848,7 +940,10 @@ class BattleReportPlugin(Star):
                 lines.append(f"⚠️ 参赛ID「{p}」本来就没绑角色喵，不用解。")
                 continue
             if (my_user and binding["user_id"] == my_user["id"]) or is_manager:
-                await self.db.unbind_player(home, p)
+                changed = await self.db.unbind_player(home, p, None if is_manager else my_user["id"])
+                if not changed:
+                    lines.append(f"⚠️ 参赛ID「{p}」的绑定已变化喵，请重新查询。")
+                    continue
                 tag = "（管理操作）" if is_manager and not (my_user and binding["user_id"] == my_user["id"]) else ""
                 lines.append(f"✅ 参赛ID「{p}」解绑好啦喵～{tag}")
             else:
@@ -859,42 +954,24 @@ class BattleReportPlugin(Star):
 
     async def _bind_one_id(self, home, player, qq, my_user):
         """绑定单个参赛ID到用户。返回 (提示文案, 生效的 my_user)。"""
-        pool = await self.db.get_player_pool(home, player, 50)
-        if player not in pool:
+        status, user = await self.db.bind_player_to_self(home, player, qq)
+        if status == "not_found":
             return f"❌ 战队 {home} 的参赛记录里没有「{player}」这个参赛ID喵。", my_user
-
-        binding = await self.db.get_player_binding(home, player)
-        if binding and binding.get("user_id"):
-            # 该参赛ID已绑定某角色
-            if my_user and my_user["id"] == binding["user_id"]:
-                return f"✅ 参赛ID「{player}」早就在你自己的角色下啦喵～", my_user
-            if my_user:
-                # 已绑定其他角色：无论该角色是否被认领，都不得改绑到自己的角色
-                return (
-                    f"❌ 参赛ID「{player}」已经绑在角色「{binding['user_name']}」身上了喵，"
-                    f"不能再改绑到你的角色「{my_user['name']}」哦。"
-                ), my_user
-            # 我无角色 → 认领该ID所在的角色
-            status, uid = await self.db.claim_user_by_name(home, binding["user_name"], qq)
-            if status == "claimed_else":
-                return f"❌ 参赛ID「{player}」已经被别的角色（{binding['user_name']}）认领走了喵。", my_user
-            if status == "not_found":
-                uid = await self.db.find_or_create_user(home, binding["user_name"], qq)
-                await self.db.bind_player_to_user(home, player, uid)
-            user = await self.db.get_user_by_id(uid)
-            players = await self.db.get_user_players(home, uid)
-            return (
-                f"✅ 角色「{user['name']}」（{home}）认领好啦喵～ (=^･ω･^=)\n"
-                f"参赛ID也一起绑上了喵：\n"
-                f"📌 该角色参赛ID：{'、'.join(players)}",
-                user,
-            )
-
-        # 未绑定 → 挂到我的角色（无角色则创建，以参赛ID为初始角色名）
-        uid = await self.db.find_or_create_user(home, player, qq)
-        await self.db.bind_player_to_user(home, player, uid)
-        user = await self.db.get_user_by_id(uid)
+        if status in ("bound_else", "claimed_else"):
+            return f"❌ 参赛ID「{player}」或同名角色已被其他角色绑定或认领喵，请超管、战队管理员或群管理/群主处理。", my_user
         return f"✅ 参赛ID「{player}」绑到你的角色「{user['name']}」上啦喵～ (=^･ω･^=)", user
+
+    async def _parse_player_ids(self, home: str, payload: str) -> list[str]:
+        args = parse_command_args(payload, split_commas=True)
+        # 兼容数据库中已有的裸空格 ID；明确引用/逗号列表时按列表解释。
+        if len(args) > 1 and not any(a.quoted for a in args) and not any(c in payload for c in ",，、"):
+            whole = _clean_player_name(payload.strip())[0]
+            if await self.db.get_player_binding(home, whole) is not None:
+                return [whole]
+        names = list(dict.fromkeys(_clean_player_name(a.value)[0] for a in args))
+        if any(not name for name in names):
+            raise ValueError("参赛ID不能为空喵。")
+        return names
 
     @filter.command("管理ID", alias={"/管理ID"})
     async def admin_id(self, event: AstrMessageEvent):
@@ -904,7 +981,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result(err)
             return
         if not await self._is_manager(event):
-            yield event.plain_result("❌ 管理参赛ID只有群管理/群主能做喵。")
+            yield event.plain_result("❌ 管理参赛ID需要超管、战队管理员或群管理/群主权限喵。")
             return
 
         raw = event.get_message_str()
@@ -922,24 +999,21 @@ class BattleReportPlugin(Star):
             yield event.plain_result("\n".join(lines))
             return
 
-        # 最后一个空白分隔符为用户名，其余为逗号分隔的参赛ID集合
-        parts = payload.rsplit(None, 1)
-        if len(parts) < 2:
-            yield event.plain_result(_USAGE_MANAGE_ID)
-            return
-        id_part, username = parts[0], parts[1].strip()
-        players = [_strip_ruled(_strip_sub(p)[0])[0] for p in id_part.split(",") if p.strip()]
-        if not players or not username:
-            yield event.plain_result(_USAGE_MANAGE_ID)
+        try:
+            players, username = parse_managed_ids(payload)
+            players = [_clean_player_name(p)[0] for p in players]
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
             return
 
-        pool = await self.db.get_player_pool(home, None, 500)
-        uid = await self.db.find_or_create_user(home, username)
+        uid = None
         lines = []
         for p in players:
-            if p not in pool:
+            if await self.db.get_player_binding(home, p) is None:
                 lines.append(f"❌ 战队 {home} 的参赛记录里没有「{p}」这个参赛ID喵。")
                 continue
+            if uid is None:
+                uid = await self.db.find_or_create_user(home, username)
             await self.db.bind_player_to_user(home, p, uid)
             lines.append(f"✅ 参赛ID「{p}」绑到用户「{username}」上啦喵～")
         yield event.plain_result("\n".join(lines))
@@ -1017,7 +1091,11 @@ class BattleReportPlugin(Star):
         if not user:
             yield event.plain_result(_NEED_BIND)
             return
-        name = name.strip()
+        try:
+            name = single_name(_strip_command(event.get_message_str(), ("改名", "/改名")) or name)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         if not name:
             yield event.plain_result("用法喵：改名 <新名字>")
             return
@@ -1141,17 +1219,29 @@ class BattleReportPlugin(Star):
             )
             for r in responses
         ]
-        yield event.chain_result([Nodes(nodes)])
+        for start in range(0, len(nodes), 100):
+            yield event.chain_result([Nodes(nodes[start:start + 100])])
 
-    @filter.command("发送", alias={"/发送", "/战报"})
+    @filter.command("发送", alias={"/发送", "战报", "/战报"})
     async def submit_report(self, event: AstrMessageEvent):
         """提交战报（可一次粘贴多份，按『战队:』行拆分）"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("❌ 禁止私聊提交战报喵，请到本战队的战报群使用 /发送。")
+            return
         err = await self._group_check(event)
         if err:
             yield event.plain_result(err)
             return
-        if self.config.get("submit_requires_admin", False) and not event.is_admin():
-            yield event.plain_result("❌ 当前配置下只有管理员能提交战报喵。")
+        if await self.db.get_group_chat_type(group_id) != "战报群":
+            yield event.plain_result("❌ 只有战报群可以提交战报喵，请战队管理员用 /群聊属性 战报群 设置。")
+            return
+        home_team = await self.db.get_group_home(group_id)
+        if not home_team:
+            yield event.plain_result(_NEED_HOME)
+            return
+        if self.config.get("submit_requires_admin", False) and not await self._is_manager(event):
+            yield event.plain_result("❌ 当前配置下只有战队管理员、群管理/群主或 AstrBot 管理员能提交战报喵。")
             return
 
         raw = event.get_message_str()
@@ -1201,39 +1291,6 @@ class BattleReportPlugin(Star):
             for x in self._send_responses(event, fail_msgs):
                 yield x
             return
-
-        # 确定群号
-        group_id = event.get_group_id()
-        if not group_id:
-            _no_group = "⚠️ 认不出这是哪个群喵：请在群里提交，或者把战报『地点:』那行填成群号。"
-            if not self.config.get("allow_private_chat", True):
-                yield event.plain_result(
-                    "⚠️ 私聊提交关掉了喵，请到群里提交战报。"
-                )
-                return
-            # 私聊没有群上下文，只能从战报的『地点:』取群号。该字段是自由
-            # 文本，必须确认是纯数字才当群号用 —— 否则会拿「上海」「XX网吧」
-            # 之类的文本去查战队，既必然查不到、又白白拖慢每条消息。
-            loc = (parsed[0][1].location or "").strip()
-            if not loc:
-                yield event.plain_result(_no_group)
-                return
-            if not loc.isdigit():
-                yield event.plain_result(
-                    f"⚠️ 认不出这是哪个群喵：『地点:』写的是「{loc}」，不是群号。\n"
-                    "请在群里提交，或者把『地点:』改成群号（纯数字）。"
-                )
-                return
-            group_id = loc
-
-        # 上传需群已绑定战队
-        bound_home = await self.db.get_group_home(group_id)
-        if not bound_home:
-            yield event.plain_result(
-                "❌ 本群还没绑定战队喵，战报传不上去。\n请管理/群主用 /绑定战队 <战队> 绑定一下喵～"
-            )
-            return
-        home_team = bound_home
 
         # 单份战报的最少对局数（默认 3）。只作提交前置条件，与排名的
         # min_games 门槛无关；2 人赛制的战队可通过配置放行。
@@ -1372,7 +1429,7 @@ class BattleReportPlugin(Star):
             if warnings:
                 success_responses.append("⚠️ 解析时有点小警告喵：\n" + "\n".join(warnings))
 
-        # 成功集与失败集分别发送（各自 ≤3 逐条，否则合并转发）
+        # 成功集与失败集分别发送（各自 ≥2 条合并转发，每条最多 100 个节点）
         for x in self._send_responses(event, success_responses):
             yield x
         for x in self._send_responses(event, failure_responses):
@@ -1380,7 +1437,7 @@ class BattleReportPlugin(Star):
 
     # ---------- 查询 ----------
 
-    @filter.command("排行", alias={"/排行", "/战报排行"})
+    @filter.command("排行", alias={"/排行", "战报排行", "/战报排行"})
     async def ranking(self, event: AstrMessageEvent):
         """排行榜（个人/队伍），默认本月，末尾可加 X月"""
         err, home_team = await self._require_home(event)
@@ -1444,9 +1501,9 @@ class BattleReportPlugin(Star):
                     try:
                         cells = stats.build_ranking_cells(rows)
                         aligns = stats.rank_aligns(len(cells[0]))
-                        out = self.data_dir / "rankings" / f"rank_{int(time.time())}.png"
-                        path = chart.make_ranking_image(
-                            cells, aligns, title, out, max_rows, panel
+                        out = self.data_dir / "rankings" / f"rank_{uuid4().hex}.png"
+                        path = await asyncio.to_thread(
+                            chart.make_ranking_image, cells, aligns, title, out, max_rows, panel
                         )
                         yield event.chain_result([
                             Plain(f"{caption}："),
@@ -1476,9 +1533,13 @@ class BattleReportPlugin(Star):
         # 权限先于业务参数（参数错也要先告诉非管理员他没有写权限）。
         is_admin = await self._is_manager(event)
 
-        month, reward_ranks = _parse_settle_args(
-            _strip_command(event.get_message_str(), _SETTLE_CMDS)
-        )
+        try:
+            month, reward_ranks = _parse_settle_args(
+                _strip_command(event.get_message_str(), _SETTLE_CMDS)
+            )
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         if not 1 <= reward_ranks <= stats.MAX_REWARD_RANKS:
             yield event.plain_result(
                 f"❌ 名次数要在 1~{stats.MAX_REWARD_RANKS} 之间喵。"
@@ -1501,7 +1562,7 @@ class BattleReportPlugin(Star):
                 if not entries:
                     yield event.plain_result(
                         f"📋 {home_team} {year}年{mon}月：这个月还没结算呢喵。\n"
-                        f"（结算是群管理/群主来做的：/结算 {mon}月）"
+                        f"（结算是超管、战队管理员或群管理/群主来做的：/结算 {mon}月）"
                     )
                     return
                 yield event.plain_result(
@@ -1579,14 +1640,18 @@ class BattleReportPlugin(Star):
             yield event.plain_result(err)
             return
         if not await self._is_manager(event):
-            yield event.plain_result("❌ 重置结算只有群管理/群主能做喵。")
+            yield event.plain_result("❌ 重置结算需要超管、战队管理员或群管理/群主权限喵。")
             return
 
         # 复用 `/结算` 的参数解析（月份在中/在末尾都认）。名次数对重置没有意义，
         # 解析出来直接丢掉 —— `/重置结算 7月 12` 与 `/重置结算 7月` 等价。
-        month, _ = _parse_settle_args(
-            _strip_command(event.get_message_str(), _RESET_SETTLE_CMDS)
-        )
+        try:
+            month, _ = _parse_settle_args(
+                _strip_command(event.get_message_str(), _RESET_SETTLE_CMDS)
+            )
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         _, _, key = settle_month_range(month)
         year, mon = int(key[:4]), int(key[5:7])
 
@@ -1607,7 +1672,7 @@ class BattleReportPlugin(Star):
             logger.exception("重置结算失败")
             yield event.plain_result("❌ 重置出错了喵…稍后再试一次嘛 (；・∀・)")
 
-    @filter.command("战绩", alias={"/战绩", "/战报战绩"})
+    @filter.command("战绩", alias={"/战绩", "战报战绩", "/战报战绩"})
     async def record(self, event: AstrMessageEvent):
         """个人战绩，默认本月，末尾可加 X月"""
         err, home_team = await self._require_home(event)
@@ -1617,7 +1682,11 @@ class BattleReportPlugin(Star):
         payload, month = _parse_month_filter(
             _strip_command(event.get_message_str(), _RECORD_CMDS)
         )
-        name = payload.strip()
+        try:
+            name = single_name(payload)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         date_from, date_to = month_range(month)
         suffix = f"（{month}月）" if month else "（本月）"
         try:
@@ -1640,7 +1709,7 @@ class BattleReportPlugin(Star):
             logger.exception("战绩查询失败")
             yield event.plain_result(_ERR_QUERY)
 
-    @filter.command("踢馆", alias={"/踢馆", "/战报踢馆"})
+    @filter.command("踢馆", alias={"/踢馆", "战报踢馆", "/战报踢馆"})
     async def raid(self, event: AstrMessageEvent):
         """踢馆成绩（无玩家名=本战队），默认本月，末尾可加 X月"""
         err, home_team = await self._require_home(event)
@@ -1650,7 +1719,11 @@ class BattleReportPlugin(Star):
         payload, month = _parse_month_filter(
             _strip_command(event.get_message_str(), _RAID_CMDS)
         )
-        name = payload.strip()
+        try:
+            name = single_name(payload)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         date_from, date_to = month_range(month)
         suffix = f"{month}月" if month else "本月"
         try:
@@ -1672,37 +1745,35 @@ class BattleReportPlugin(Star):
             logger.exception("踢馆查询失败")
             yield event.plain_result(_ERR_QUERY)
 
-    @filter.command("趋势", alias={"/趋势", "/战报趋势"})
+    @filter.command("趋势", alias={"/趋势", "战报趋势", "/战报趋势"})
     async def trend(self, event: AstrMessageEvent):
         """胜率走势图，默认本月，末尾可加 X月 或 [最近N天]"""
         err, home_team = await self._require_home(event)
         if err:
             yield event.plain_result(err)
             return
-        payload, month = _parse_month_filter(
-            _strip_command(event.get_message_str(), _TREND_CMDS)
-        )
-        tokens = payload.split()
-        name = tokens[0] if tokens else ""
-        days = tokens[1] if len(tokens) > 1 else ""
-        if not name:
-            # 未指定时默认展示战队
-            name = home_team
-        if not name:
-            yield event.plain_result("用法喵：趋势 <玩家名或队伍名> [最近N天|X月]")
+        payload = _strip_command(event.get_message_str(), _TREND_CMDS)
+        try:
+            # 趋势与导出共用引号/月份/最近N天解析；兼容旧的末尾裸数字天数。
+            args = parse_export_payload(payload)
+            tokens = parse_command_args(payload)
+            if len(tokens) >= 2 and not tokens[-1].quoted and tokens[-1].value.isdigit():
+                args = parse_export_payload(payload[:tokens[-1].start])
+                args["days"] = int(tokens[-1].value)
+            name = args["player"] or home_team
+            month = args["month"]
+            if month is not None:
+                date_from, date_to = month_range(month)
+                title_suffix = f"{month}月"
+            elif args["days"]:
+                date_from, date_to = self._date_from(args["days"]), None
+                title_suffix = f"最近 {args['days']} 天"
+            else:
+                date_from, date_to = month_range(None)
+                title_suffix = "本月"
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
             return
-
-        # 日期范围：月份 优先 → 数字天数 → 默认本月
-        if month is not None:
-            date_from, date_to = month_range(month)
-            title_suffix = f"{month}月"
-        elif days.isdigit():
-            d = int(days)
-            date_from, date_to = self._date_from(d), None
-            title_suffix = f"最近 {d} 天"
-        else:
-            date_from, date_to = month_range(None)
-            title_suffix = "本月"
 
         try:
             role = await self.db.resolve_role(home_team, name)
@@ -1714,16 +1785,16 @@ class BattleReportPlugin(Star):
                 )
             else:
                 display = name
-                pts = await self.db.get_player_trend(home_team, name, date_from, date_to)
+                pts = await self.db.get_player_trend(home_team, name, date_from, date_to, side_team=home_team)
             if not pts:
                 pts = await self.db.get_team_trend(home_team, name, date_from, date_to)
             if not pts:
                 yield event.plain_result(f"喵…没找到「{name}」{title_suffix}的数据呢。")
                 return
             points = stats.compute_cumulative(pts)
-            out = self.data_dir / "trends" / f"trend_{int(time.time())}.png"
-            path = chart.make_trend_chart(
-                points,
+            out = self.data_dir / "trends" / f"trend_{uuid4().hex}.png"
+            path = await asyncio.to_thread(
+                chart.make_trend_chart, points,
                 f"{display} 胜率走势（{title_suffix}）",
                 out,
                 int(self.config.get("trend_chart_width", 960) or 960),
@@ -1737,7 +1808,7 @@ class BattleReportPlugin(Star):
             logger.exception("趋势图生成失败")
             yield event.plain_result("❌ 走势图生成失败了喵…稍后再试一次嘛 (；・∀・)")
 
-    @filter.command("导出", alias={"/导出", "/战报导出"})
+    @filter.command("导出", alias={"/导出", "战报导出", "/战报导出"})
     async def export(self, event: AstrMessageEvent):
         """导出战报：可指定玩家/胜场负场/时间（X月|最近N天），合并转发或 csv/json 文件"""
         # 这里不用 _require_home：导出的文件名要用到群号，所以需自行保留 group_id
@@ -1749,9 +1820,13 @@ class BattleReportPlugin(Star):
         if not group_id:
             yield event.plain_result(_NEED_GROUP)
             return
-        args = parse_export_payload(
-            _strip_command(event.get_message_str(), _EXPORT_CMDS)
-        )
+        try:
+            args = parse_export_payload(
+                _strip_command(event.get_message_str(), _EXPORT_CMDS)
+            )
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
         fmt = args["fmt"]
         outcome = args["outcome"]
 
@@ -1839,7 +1914,7 @@ class BattleReportPlugin(Star):
                 content = json.dumps(rows, ensure_ascii=False, indent=2, default=str)
                 encoding = "utf-8"
 
-            out = self.data_dir / "exports" / f"battle_report_{group_id}.{fmt}"
+            out = self.data_dir / "exports" / f"battle_report_{group_id}_{uuid4().hex}.{fmt}"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(content, encoding=encoding)
             yield event.chain_result([
@@ -1933,7 +2008,7 @@ class BattleReportPlugin(Star):
                 m.get("card", ""), role, m.get("area", ""), join_time,
             ])
 
-        out = self.data_dir / "exports" / f"members_{gid}.csv"
+        out = self.data_dir / "exports" / f"members_{gid}_{uuid4().hex}.csv"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(buffer.getvalue(), encoding="utf-8-sig")
 
@@ -1952,7 +2027,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result(err)
             return
         if not await self._is_manager(event):
-            yield event.plain_result("❌ 删战报只有群管理/群主能做喵。")
+            yield event.plain_result("❌ 删战报需要超管、战队管理员或群管理/群主权限喵。")
             return
         group_id = event.get_group_id()
         if not group_id:
@@ -1986,7 +2061,7 @@ class BattleReportPlugin(Star):
             "✅ 最近那条战报撤销好啦喵～" if ok else "❌ 撤销失败了喵… (；・∀・)"
         )
 
-    @filter.command("帮助", alias={"/帮助", "/战报帮助"})
+    @filter.command("帮助", alias={"/帮助", "战报帮助", "/战报帮助"})
     async def help_cmd(self, event: AstrMessageEvent, arg: str = ""):
         """帮助（按群属性分类；全部/超管）"""
         arg = arg.strip()

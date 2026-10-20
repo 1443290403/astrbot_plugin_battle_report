@@ -6,6 +6,8 @@
 
 import re
 import time
+import hashlib
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiomysql
@@ -22,7 +24,7 @@ except ImportError:  # 单元测试以顶层模块方式导入 database
         KIND_FRIENDLY, KIND_RAID, RAID_PLACEHOLDER, report_fingerprint,
     )
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -83,7 +85,11 @@ class Database:
             minsize=1,
             maxsize=10,
         )
-        await self._init_schema()
+        try:
+            await self._init_schema()
+        except BaseException:
+            await self.close()
+            raise
 
     async def _ensure_database(self) -> None:
         """以无库连接执行 CREATE DATABASE IF NOT EXISTS。"""
@@ -175,6 +181,15 @@ class Database:
                         created_at BIGINT NOT NULL
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
+                # v18：战队管理员独立于 QQ 群角色；不从旧群主/群管理自动授予权限。
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS team_admins (
+                        home_team VARCHAR(64) NOT NULL,
+                        qq_id VARCHAR(64) NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        PRIMARY KEY (home_team, qq_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
                 await cur.execute(
                     """CREATE TABLE IF NOT EXISTS users (
                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -213,20 +228,28 @@ class Database:
                         INDEX idx_settle_team_month (home_team, month)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
+                async def column_exists(table: str, column: str) -> bool:
+                    await cur.execute(
+                        "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+                        (table, column),
+                    )
+                    return (await cur.fetchone())[0] > 0
+
+                async def ensure_column(table: str, column: str, definition: str):
+                    if not await column_exists(table, column):
+                        await cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
                 # 迁移
                 await cur.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version")
                 row = await cur.fetchone()
                 current = row[0] if row else 0
                 if current < 2:
                     # v2：matches 增加 winner 列（记录胜者战队）
-                    await cur.execute(
-                        "ALTER TABLE matches ADD COLUMN winner VARCHAR(64) DEFAULT ''"
-                    )
+                    await ensure_column("matches", "winner", "VARCHAR(64) DEFAULT ''")
                 if current < 3:
                     # v3：matches 增加 home_team 列（记录上传方主体战队）
-                    await cur.execute(
-                        "ALTER TABLE matches ADD COLUMN home_team VARCHAR(64) DEFAULT ''"
-                    )
+                    await ensure_column("matches", "home_team", "VARCHAR(64) DEFAULT ''")
                 if current < 7:
                     # v7：群禁用表（超级管理员控制群级功能开关）
                     await cur.execute(
@@ -266,8 +289,8 @@ class Database:
                         )
                 if current < 8:
                     # v8：matches 记录原始战报文本（逐字回放导出）；duels 记录对阵顺序
-                    await cur.execute("ALTER TABLE matches ADD COLUMN raw_text MEDIUMTEXT")
-                    await cur.execute("ALTER TABLE duels ADD COLUMN seq INT NOT NULL DEFAULT 0")
+                    await ensure_column("matches", "raw_text", "MEDIUMTEXT")
+                    await ensure_column("duels", "seq", "INT NOT NULL DEFAULT 0")
                     # 回填旧数据 seq：按 match 内 id 顺序编号
                     await cur.execute(
                         """UPDATE duels d JOIN (
@@ -277,8 +300,8 @@ class Database:
                     )
                 if current < 9:
                     # v9：duels 记录替补标识（a_sub / b_sub，1=替补）
-                    await cur.execute("ALTER TABLE duels ADD COLUMN a_sub TINYINT NOT NULL DEFAULT 0")
-                    await cur.execute("ALTER TABLE duels ADD COLUMN b_sub TINYINT NOT NULL DEFAULT 0")
+                    await ensure_column("duels", "a_sub", "TINYINT NOT NULL DEFAULT 0")
+                    await ensure_column("duels", "b_sub", "TINYINT NOT NULL DEFAULT 0")
                 if current < 10:
                     # v10：自增主键/外键/QQ用户ID/时间戳从 INT 扩容到 BIGINT，
                     # 防止数据量达十位后自增溢出、QQ号溢出、以及 2038 年时间戳溢出。
@@ -306,11 +329,10 @@ class Database:
                         "ALTER TABLE group_ban MODIFY created_at BIGINT NOT NULL",
                     ):
                         await cur.execute(sql)
-                    if fk_exists:
-                        await cur.execute(
-                            "ALTER TABLE duels ADD CONSTRAINT fk_duels_match FOREIGN KEY (match_id) "
-                            "REFERENCES matches(id) ON DELETE CASCADE"
-                        )
+                    await cur.execute(
+                        "ALTER TABLE duels ADD CONSTRAINT fk_duels_match FOREIGN KEY (match_id) "
+                        "REFERENCES matches(id) ON DELETE CASCADE"
+                    )
                 if current < 11:
                     # v11：群属性表（友谊群/战报群/主群，缺省友谊群）
                     await cur.execute(
@@ -321,16 +343,15 @@ class Database:
                     )
                 if current < 12:
                     # v12：duels 记录判罚落败标记（a_ruled / b_ruled，1=判罚落败）
-                    await cur.execute("ALTER TABLE duels ADD COLUMN a_ruled TINYINT NOT NULL DEFAULT 0")
-                    await cur.execute("ALTER TABLE duels ADD COLUMN b_ruled TINYINT NOT NULL DEFAULT 0")
+                    await ensure_column("duels", "a_ruled", "TINYINT NOT NULL DEFAULT 0")
+                    await ensure_column("duels", "b_ruled", "TINYINT NOT NULL DEFAULT 0")
                 if current < 13:
                     # v13：判罚标记合并为单字段 ruled（1=本场对局被规则）；判罚方比分更低即败方
-                    await cur.execute("ALTER TABLE duels ADD COLUMN ruled TINYINT NOT NULL DEFAULT 0")
-                    await cur.execute(
-                        "UPDATE duels SET ruled = 1 WHERE a_ruled = 1 OR b_ruled = 1"
-                    )
-                    await cur.execute("ALTER TABLE duels DROP COLUMN a_ruled")
-                    await cur.execute("ALTER TABLE duels DROP COLUMN b_ruled")
+                    await ensure_column("duels", "ruled", "TINYINT NOT NULL DEFAULT 0")
+                    for legacy_column in ("a_ruled", "b_ruled"):
+                        if await column_exists("duels", legacy_column):
+                            await cur.execute(f"UPDATE duels SET ruled = 1 WHERE {legacy_column} = 1")
+                            await cur.execute(f"ALTER TABLE duels DROP COLUMN {legacy_column}")
                 if current < 14:
                     # v14：回填替补标记——某选手同场首轮（round_no==1）未出场、却在后续轮次
                     # 出场，即视为替补（a_sub/b_sub=1）。领域规则：替补替换首轮选手、不扩容
@@ -422,7 +443,7 @@ class Database:
                         )
                 # v17：月度结算（settlements 表）。表本身在上面已经无条件建好，这里
                 # 没有需要迁移的存量数据 —— 所以**没有 current < 17 的分支**，靠末尾
-                # 那句统一的「写版本行」把版本推到 17 即可。
+                # 那句统一的「写版本行」推进。v18 的 team_admins 同样使用幂等建表。
                 if current < SCHEMA_VERSION:
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
 
@@ -456,13 +477,6 @@ class Database:
                 return cur.rowcount
 
     # ---------- 战报写入 / 删除 ----------
-
-    async def _find_by_fingerprint(self, fingerprint: str) -> int | None:
-        """按内容指纹查既有战报 id；不存在返回 None。"""
-        rows = await self._query(
-            "SELECT id FROM matches WHERE fingerprint = %s LIMIT 1", (fingerprint,)
-        )
-        return int(rows[0]["id"]) if rows else None
 
     async def insert_report(self, report, winner: str = "", home_team: str = "", raw_text: str = "") -> int:
         """插入一份战报（match + duels），返回 match_id。winner 为胜者，home_team 为上传方主体战队，raw_text 为原始战报文本（逐字回放导出用）。
@@ -559,13 +573,14 @@ class Database:
             except IntegrityError as e:
                 # 并发兜底：两个请求同时通过上面的预检时，唯一索引会拦住后到的那个。
                 # InnoDB 会让后到的插入等待前一个事务结束，所以拿到 1062 时对方
-                # 一定已提交 —— 回滚后用新连接回查能得到它的 id（在本事务里查是
-                # REPEATABLE READ 的旧快照，查不到）。回查不到（对方刚被删）则给 None。
+                # 一定已提交。回滚已结束旧快照，直接复用本连接回查，避免重复请求
+                # 占满连接池后又各自借第二条连接造成死锁。
                 await conn.rollback()
                 if e.args and e.args[0] == _DUP_ENTRY and "uk_matches_fingerprint" in str(e):
-                    raise DuplicateReportError(
-                        await self._find_by_fingerprint(fingerprint)
-                    ) from None
+                    async with conn.cursor() as cur:
+                        await cur.execute("SELECT id FROM matches WHERE fingerprint = %s LIMIT 1", (fingerprint,))
+                        row = await cur.fetchone()
+                    raise DuplicateReportError(int(row[0]) if row else None) from None
                 raise
             except Exception:
                 await conn.rollback()
@@ -631,6 +646,30 @@ class Database:
                 raise
 
     # ---------- 群主体绑定 ----------
+
+    async def set_team_admins(self, home_team: str, qq_ids: list[str]) -> None:
+        """覆盖本队管理员名单；使用同队身份锁保证并发设置的一致性。"""
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute("DELETE FROM team_admins WHERE home_team = %s", (home_team,))
+            for qq in dict.fromkeys(qq_ids):
+                await cur.execute(
+                    "INSERT INTO team_admins (home_team, qq_id, created_at) VALUES (%s, %s, %s)",
+                    (home_team, qq, int(time.time())),
+                )
+
+    async def remove_team_admin(self, home_team: str, qq_id: str) -> int:
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute("DELETE FROM team_admins WHERE home_team = %s AND qq_id = %s", (home_team, qq_id))
+            return cur.rowcount
+
+    async def get_team_admins(self, home_team: str) -> list[str]:
+        rows = await self._query("SELECT qq_id FROM team_admins WHERE home_team = %s ORDER BY qq_id", (home_team,))
+        return [row["qq_id"] for row in rows]
+
+    async def is_team_admin(self, home_team: str, qq_id: str) -> bool:
+        return bool(await self._query(
+            "SELECT 1 FROM team_admins WHERE home_team = %s AND qq_id = %s LIMIT 1", (home_team, qq_id)
+        ))
 
     async def set_group_home(self, group_id: str, home_team: str) -> None:
         """绑定群的主体战队（覆盖写入）。"""
@@ -722,34 +761,105 @@ class Database:
 
     # ---------- 用户与参赛ID ----------
 
-    async def find_or_create_user(self, home_team: str, name: str, qq_id: str = "") -> int:
-        """按 战队+名字 查找用户（角色）；不存在则创建。
+    @asynccontextmanager
+    async def _identity_cursor(self, home_team: str):
+        """同战队身份操作串行化（含多进程），并在一笔事务里完成校验和写入。"""
+        assert self.pool is not None
+        lock_key = hashlib.sha256(
+            f"battle-report:identity:{self.db}:{home_team.casefold()}".encode()
+        ).hexdigest()
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT GET_LOCK(%s, 10) AS acquired", (lock_key,))
+                if (await cur.fetchone())["acquired"] != 1:
+                    raise RuntimeError("身份操作繁忙，请稍后重试")
+                try:
+                    await conn.begin()
+                    try:
+                        yield cur
+                        await conn.commit()
+                    except BaseException:
+                        await conn.rollback()
+                        raise
+                finally:
+                    try:
+                        await cur.execute("SELECT RELEASE_LOCK(%s)", (lock_key,))
+                    except BaseException:
+                        # 命名锁属于连接，释放失败的连接不能放回连接池。
+                        conn.close()
+                        raise
 
-        用户本身是队员角色：若该 QQ 已有角色则复用（一个 QQ 一个角色），
-        否则按名字创建新角色。
-        """
-        rows = await self._query(
-            "SELECT id FROM users WHERE home_team = %s AND name = %s",
-            (home_team, name),
-        )
-        if rows:
-            return rows[0]["id"]
+    async def _find_or_create_user(self, cur, home_team: str, name: str, qq_id: str) -> int:
         if qq_id:
-            rows = await self._query(
+            await cur.execute(
                 "SELECT id FROM users WHERE home_team = %s AND qq_id = %s",
                 (home_team, qq_id),
             )
-            if rows:
-                return rows[0]["id"]
-        await self._execute(
+            row = await cur.fetchone()
+            if row:
+                return row["id"]
+        await cur.execute(
+            "SELECT id, qq_id FROM users WHERE home_team = %s AND name = %s",
+            (home_team, name),
+        )
+        row = await cur.fetchone()
+        if row:
+            if qq_id and row["qq_id"] and str(row["qq_id"]) != str(qq_id):
+                raise ValueError("该角色已被其他 QQ 认领")
+            if qq_id and not row["qq_id"]:
+                await cur.execute("UPDATE users SET qq_id = %s WHERE id = %s", (qq_id, row["id"]))
+            return row["id"]
+        await cur.execute(
             "INSERT INTO users (home_team, name, qq_id, created_at) VALUES (%s, %s, %s, %s)",
             (home_team, name, qq_id, int(time.time())),
         )
-        rows = await self._query(
-            "SELECT id FROM users WHERE home_team = %s AND name = %s",
-            (home_team, name),
-        )
-        return rows[0]["id"]
+        return cur.lastrowid
+
+    async def find_or_create_user(self, home_team: str, name: str, qq_id: str = "") -> int:
+        """优先复用该 QQ 的角色；同名角色不得绕过归属校验。"""
+        async with self._identity_cursor(home_team) as cur:
+            return await self._find_or_create_user(cur, home_team, name, qq_id)
+
+    async def bind_player_to_self(self, home_team: str, player: str, qq_id: str) -> tuple[str, dict | None]:
+        """普通成员绑定入口；精确查 ID，认领/建角色/绑定在同一事务内。"""
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute(
+                "SELECT user_id FROM player_ids WHERE home_team = %s AND player_name = %s FOR UPDATE",
+                (home_team, player),
+            )
+            binding = await cur.fetchone()
+            if binding is None:
+                return "not_found", None
+            await cur.execute(
+                "SELECT id, name, qq_id FROM users WHERE home_team = %s AND qq_id = %s",
+                (home_team, qq_id),
+            )
+            mine = await cur.fetchone()
+            if binding["user_id"]:
+                await cur.execute(
+                    "SELECT id, name, qq_id FROM users WHERE home_team = %s AND id = %s",
+                    (home_team, binding["user_id"]),
+                )
+                owner = await cur.fetchone()
+                if owner is None:
+                    raise ValueError("参赛ID指向不存在的角色，请管理员修复")
+                if mine and mine["id"] != owner["id"]:
+                    return "bound_else", owner
+                if owner["qq_id"] and str(owner["qq_id"]) != str(qq_id):
+                    return "claimed_else", owner
+                await cur.execute("UPDATE users SET qq_id = %s WHERE id = %s", (qq_id, owner["id"]))
+                owner["qq_id"] = qq_id
+                return "ok", owner
+            try:
+                uid = await self._find_or_create_user(cur, home_team, player, qq_id)
+            except ValueError:
+                return "claimed_else", None
+            await cur.execute(
+                "UPDATE player_ids SET user_id = %s WHERE home_team = %s AND player_name = %s",
+                (uid, home_team, player),
+            )
+            await cur.execute("SELECT id, name, qq_id FROM users WHERE id = %s", (uid,))
+            return "ok", await cur.fetchone()
 
     async def get_user_by_qq(self, home_team: str, qq_id: str) -> dict | None:
         """按 战队+QQ 查找用户。"""
@@ -790,17 +900,18 @@ class Database:
 
     async def rename_user(self, home_team: str, user_id: int, new_name: str) -> str:
         """修改用户角色名（战队内唯一）。返回状态：'ok' / 'conflict'。"""
-        rows = await self._query(
-            "SELECT id FROM users WHERE home_team = %s AND name = %s AND id != %s",
-            (home_team, new_name, user_id),
-        )
-        if rows:
-            return "conflict"
-        await self._execute(
-            "UPDATE users SET name = %s WHERE id = %s",
-            (new_name, user_id),
-        )
-        return "ok"
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute(
+                "SELECT id FROM users WHERE home_team = %s AND name = %s AND id != %s",
+                (home_team, new_name, user_id),
+            )
+            if await cur.fetchone():
+                return "conflict"
+            await cur.execute(
+                "UPDATE users SET name = %s WHERE home_team = %s AND id = %s",
+                (new_name, home_team, user_id),
+            )
+            return "ok"
 
     async def claim_user_by_name(self, home_team: str, name: str, qq_id: str) -> tuple[str, int]:
         """把 QQ 认领到指定名字的用户。
@@ -809,22 +920,25 @@ class Database:
             (状态, user_id)：状态为 'ok'（认领成功/已是本人）、'claimed_else'（已被他人认领）、
             'not_found'（用户不存在，user_id 为 0）。
         """
-        rows = await self._query(
-            "SELECT id, qq_id FROM users WHERE home_team = %s AND name = %s",
-            (home_team, name),
-        )
-        if not rows:
-            return "not_found", 0
-        uid = rows[0]["id"]
-        cur = rows[0]["qq_id"] or ""
-        if cur and str(cur) != str(qq_id):
-            return "claimed_else", uid
-        if not cur:
-            await self._execute(
-                "UPDATE users SET qq_id = %s WHERE id = %s",
-                (qq_id, uid),
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute(
+                "SELECT id, qq_id FROM users WHERE home_team = %s AND name = %s",
+                (home_team, name),
             )
-        return "ok", uid
+            row = await cur.fetchone()
+            if not row:
+                return "not_found", 0
+            uid = row["id"]
+            if row["qq_id"] and str(row["qq_id"]) != str(qq_id):
+                return "claimed_else", uid
+            await cur.execute(
+                "SELECT id FROM users WHERE home_team = %s AND qq_id = %s AND id <> %s",
+                (home_team, qq_id, uid),
+            )
+            if await cur.fetchone():
+                return "claimed_else", uid
+            await cur.execute("UPDATE users SET qq_id = %s WHERE id = %s", (qq_id, uid))
+            return "ok", uid
 
     async def get_player_pool(self, home_team: str, keyword: str | None = None, limit: int = 50) -> list[str]:
         """该战队已入库的参赛ID（发送战报时写入 player_ids），可选模糊匹配。"""
@@ -871,19 +985,26 @@ class Database:
 
     async def bind_player_to_user(self, home_team: str, player_name: str, user_id: int) -> None:
         """把参赛ID绑定到用户（覆盖）。"""
-        await self._execute(
-            """INSERT INTO player_ids (home_team, player_name, user_id, created_at)
-               VALUES (%s, %s, %s, %s) AS new
-               ON DUPLICATE KEY UPDATE user_id = new.user_id""",
-            (home_team, player_name, user_id, int(time.time())),
-        )
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute("SELECT id FROM users WHERE home_team = %s AND id = %s", (home_team, user_id))
+            if not await cur.fetchone():
+                raise ValueError("目标角色不属于本战队")
+            await cur.execute(
+                """INSERT INTO player_ids (home_team, player_name, user_id, created_at)
+                   VALUES (%s, %s, %s, %s) AS new
+                   ON DUPLICATE KEY UPDATE user_id = new.user_id""",
+                (home_team, player_name, user_id, int(time.time())),
+            )
 
-    async def unbind_player(self, home_team: str, player_name: str) -> None:
+    async def unbind_player(self, home_team: str, player_name: str, user_id: int | None = None) -> int:
         """解除参赛ID绑定（user_id 置 NULL）。"""
-        await self._execute(
-            "UPDATE player_ids SET user_id = NULL WHERE home_team = %s AND player_name = %s",
-            (home_team, player_name),
-        )
+        async with self._identity_cursor(home_team) as cur:
+            owner_clause = " AND user_id = %s" if user_id is not None else ""
+            await cur.execute(
+                "UPDATE player_ids SET user_id = NULL WHERE home_team = %s AND player_name = %s" + owner_clause,
+                (home_team, player_name, user_id) if user_id is not None else (home_team, player_name),
+            )
+            return cur.rowcount
 
     async def get_user_players(self, home_team: str, user_id: int) -> list[str]:
         """某用户绑定的参赛ID列表。"""
@@ -1302,23 +1423,30 @@ class Database:
         player: str,
         date_from: str | None = None,
         date_to: str | None = None,
+        side_team: str | None = None,
     ) -> list[tuple[str, int, int]]:
-        """个人按日期的胜/负场次（按战队跨群），返回 [(date, wins, losses)]。"""
+        """个人按日期的胜/负场次；可限定选手所属队伍，避免跨队同名。"""
         d1, d2 = self._date_bounds(date_from, date_to)
         date_clause = " AND m.match_time <= %s" if date_to else ""
+        a_clause = " AND d.player_a_team = %s" if side_team else ""
+        b_clause = " AND d.player_b_team = %s" if side_team else ""
         params = [home_team, player, d1]
         if date_to:
             params.append(d2)
+        if side_team:
+            params.append(side_team)
         params += [home_team, player, d1]
         if date_to:
             params.append(d2)
+        if side_team:
+            params.append(side_team)
         rows = await self._query(
             f"""SELECT m.match_time AS date,
                       SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END) AS wins,
                       SUM(CASE WHEN d.result='B' THEN 1 ELSE 0 END) AS losses
                FROM duels d JOIN matches m ON d.match_id = m.id
                WHERE m.home_team = %s AND d.player_a = %s AND m.match_time >= %s
-                 AND m.kind = 'friendly'{date_clause}
+                 AND m.kind = 'friendly'{date_clause}{a_clause}
                GROUP BY m.match_time
                UNION ALL
                SELECT m.match_time,
@@ -1326,7 +1454,7 @@ class Database:
                       SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END)
                FROM duels d JOIN matches m ON d.match_id = m.id
                WHERE m.home_team = %s AND d.player_b = %s AND m.match_time >= %s
-                 AND m.kind = 'friendly'{date_clause}
+                 AND m.kind = 'friendly'{date_clause}{b_clause}
                GROUP BY m.match_time""",
             tuple(params),
         )
@@ -1353,13 +1481,13 @@ class Database:
         ph = ",".join(["%s"] * len(players))
         date_clause = " AND m.match_time <= %s" if date_to else ""
         params = [home_team, d1, home_team]
+        params += list(players)
         if date_to:
             params.append(d2)
-        params += list(players)
         params += [home_team, d1, home_team]
+        params += list(players)
         if date_to:
             params.append(d2)
-        params += list(players)
         rows = await self._query(
             f"""SELECT m.match_time AS date,
                       SUM(CASE WHEN d.result='A' THEN 1 ELSE 0 END) AS wins,
@@ -1398,38 +1526,16 @@ class Database:
     ) -> list[tuple[str, int, int]]:
         """队伍按日期的胜/负场次（按战队跨群），返回 [(date, wins, losses)]。"""
         d1, d2 = self._date_bounds(date_from, date_to)
-        date_clause = " AND m.match_time <= %s" if date_to else ""
-        params = [home_team, team, d1]
-        if date_to:
-            params.append(d2)
-        params += [home_team, team, d1]
-        if date_to:
-            params.append(d2)
         rows = await self._query(
-            f"""WITH match_scores AS (
-                   SELECT d.match_id,
-                          SUM(CASE d.result WHEN 'A' THEN 1 ELSE 0 END) a_wins,
-                          SUM(CASE d.result WHEN 'B' THEN 1 ELSE 0 END) b_wins
-                   FROM duels d GROUP BY d.match_id
-               ),
-               team_sides AS (
-                   SELECT m.match_time AS date, m.team_a AS team,
-                          CASE WHEN s.a_wins > s.b_wins THEN 1 ELSE 0 END win,
-                          CASE WHEN s.a_wins < s.b_wins THEN 1 ELSE 0 END loss
-                   FROM matches m JOIN match_scores s ON m.id = s.match_id
-                   WHERE m.home_team = %s AND m.team_a = %s AND m.match_time >= %s
-                     AND m.kind = 'friendly'{date_clause}
-                   UNION ALL
-                   SELECT m.match_time, m.team_b,
-                          CASE WHEN s.b_wins > s.a_wins THEN 1 ELSE 0 END,
-                          CASE WHEN s.b_wins < s.a_wins THEN 1 ELSE 0 END
-                   FROM matches m JOIN match_scores s ON m.id = s.match_id
-                   WHERE m.home_team = %s AND m.team_b = %s AND m.match_time >= %s
-                     AND m.kind = 'friendly'{date_clause}
-               )
-               SELECT date, SUM(win) wins, SUM(loss) losses
-               FROM team_sides GROUP BY date ORDER BY date""",
-            tuple(params),
+            """SELECT m.match_time AS date,
+                      SUM(CASE WHEN m.winner = %s THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN m.winner <> %s THEN 1 ELSE 0 END) AS losses
+               FROM matches m
+               WHERE m.home_team = %s AND (m.team_a = %s OR m.team_b = %s)
+                 AND m.kind = 'friendly' AND m.winner <> ''
+                 AND m.match_time >= %s AND m.match_time <= %s
+               GROUP BY m.match_time ORDER BY m.match_time""",
+            (team, team, home_team, team, team, d1, d2),
         )
         return [(str(r["date"]), int(r["wins"] or 0), int(r["losses"] or 0)) for r in rows]
 

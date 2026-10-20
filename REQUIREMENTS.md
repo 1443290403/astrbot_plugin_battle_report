@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.15.0`｜数据库 `SCHEMA_VERSION = 17`｜最后核对：2026-09-10
+> 对应版本：`1.16.0`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -37,6 +37,7 @@
 
 ```
 main.py                    命令入口 / 权限 / 平台消息收发 / 编排
+  ├── command_args.py       引号/空格/批量 ID 的命令参数解析        ← 纯 Python
   ├── lineup.py            排表、追加轮次、记录比分、战报文本还原  ← 纯 Python
   ├── battle_report_parser.py  战报文本解析、胜负判定、时间参数解析  ← 纯 Python
   ├── stats.py             积分/胜率/表格/帮助文案                ← 纯 Python
@@ -95,16 +96,17 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ## 3. 角色与权限模型
 
-### 3.1 四级身份
+### 3.1 身份与权限
 
 | 身份 | 判定函数 | 能力 |
 |---|---|---|
-| **超级管理员** | `_is_super_admin()`（配置 `super_admin` 的 QQ） | 禁用/启用群、群列表、通告、导出群成员 |
-| **管理 / 群主** | `_is_manager()` = AstrBot 管理员 ∨ 群主 ∨ 群管理 | 绑定战队、群聊属性、删除战报、管理ID、解绑他人ID |
+| **超级管理员** | `_is_super_admin()`（配置 `super_admin` 的 QQ） | 任意群战队/属性设置、战队管理员授权/撤销/查看、禁用/启用群、群列表、通告、导出群成员及插件管理操作 |
+| **战队管理员** | `db.is_team_admin(home_team, QQ)` | 仅对应战队的绑定/群属性设置；在本队已绑定群内兼具插件中的群管理权限 |
+| **管理 / 群主** | `_is_manager()` = 超管 ∨ AstrBot 管理员 ∨ 本队战队管理员 ∨ 群主 ∨ 群管理 | 删除战报、管理ID、解绑他人ID、结算/重置；战队绑定与群属性另用严格的战队授权检查 |
 | **提交者本人** | `get_last_match_by_submitter()` | 撤销自己最近一条战报 |
 | **普通成员** | 默认 | 排表、追加轮次、记录比分、提交、查询、绑定自己的ID |
 
-> `_is_manager` **包含** `event.is_admin()`（AstrBot 全局管理员），所以全局管理员在任何群都有管理权。
+> 战队管理员权限只在本队已绑定群内生效，不修改 QQ 平台角色。超管保留任意群设置权限；QQ 群主/群管、AstrBot 全局管理员若不是超管或对应战队管理员，不能设置群战队与群属性。普通管理员重绑需同时管理原队和目标队。
 
 ### 3.2 前置校验（每个命令入口的组合）
 
@@ -125,8 +127,9 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 ### 3.3 群级开关
 
 - `group_ban` 表：超管可整群禁用插件。所有走 `_group_check`/`_check_enabled` 的命令会被拦截
-- `group_chat_type` 表：群属性（友谊群/战报群/主群），**仅影响 `/帮助` 显示哪些分类**（见 §5-M11）
-- 配置 `submit_requires_admin`：开启后仅 AstrBot 管理员可提交战报（群管理**不在**此列，注意与 `_is_manager` 的区别）
+- `group_chat_type` 表：群属性（友谊群/战报群/主群），决定帮助分类与**是否允许提交战报**；仅战报群可以提交（见 §5-M11）
+- 配置 `submit_requires_admin`：仅在战报群中生效，开启后需 `_is_manager`。私聊始终禁止，超管也不例外。
+- 超管修改战队/属性时不受群禁用限制；普通战队管理员仍受禁用限制。提交入口始终检查群禁用，不提供超管豁免。
 
 ---
 
@@ -139,6 +142,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | **matches** | `id`, `group_id`, `team_a`, `team_b`, `match_time`, `rule`, `location`, `submitted_by`, `submitted_name`, `created_at`, `winner`, `home_team`, `raw_text`, `fingerprint`, `kind` | 一份战报一条。`raw_text` 存原始文本用于逐字回放；`fingerprint` 是内容指纹（见 §5-M12）；`kind` 为 `'friendly'`（缺省）/ `'raid'`（踢馆，见 §5-M13） |
 | **duels** | `id`, `match_id`, `round_no`, `player_a`, `score_a`, `player_b`, `score_b`, `player_a_team`, `player_b_team`, `result`, `seq`, `a_sub`, `b_sub`, `ruled`, `owner` | 对局。`result` 为 ENUM('A','B','DRAW')；`seq` 是提交时的原始顺序（还原导出用）；`owner` 表示本局**防守方（右侧）**是馆主（仅踢馆报有意义，见 §5-M13）；外键 CASCADE 到 matches |
 | **teams** | `group_id`, `team_name`, `player_name` | `/排表` 写入的名单（按群覆盖式）。**不参与任何统计**，仅留档 |
+| **team_admins** | `home_team`, `qq_id`, `created_at` | v18 战队管理员；`PRIMARY KEY(home_team, qq_id)`；超管显式授权，不从群角色自动导入 |
 | **group_home** | `group_id`, `home_team`, `created_at` | 群 → 主体战队绑定 |
 | **group_ban** | `group_id`, `banned`, `created_at` | 群级功能开关 |
 | **group_chat_type** | `group_id`, `chat_type` | 群属性，缺省友谊群 |
@@ -167,6 +171,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | v15 | matches 加 `fingerprint CHAR(64) NULL` + 唯一键 `uk_matches_fingerprint`（重复战报去重，见 §5-M12）。历史行留 `NULL`，不受约束 |
 | v16 | matches 加 `kind VARCHAR(16) NOT NULL DEFAULT 'friendly'`；duels 加 `owner TINYINT NOT NULL DEFAULT 0`（踢馆，见 §5-M13）。两份 ALTER 都先探 `information_schema.COLUMNS` 再加，可重放；历史行自动落到 `'friendly'` / `0` |
 | v17 | 新建 `settlements`（月度结算，见 §5-M14）。**没有 `current < 17` 分支** —— 表用 `CREATE TABLE IF NOT EXISTS` 与其它基础表并列无条件建好，语句本身幂等，不需要 `information_schema` 探测（探测只对 `ALTER` 是必需的），也没有存量数据要迁；靠末尾那句统一的「写版本行」把版本推到 17 |
+| v18 | 新建 `team_admins`，`CREATE TABLE IF NOT EXISTS` 幂等创建，末尾推进版本；不修改现有战报/ID/群配置，不自动授权任何人 |
 
 > ⚠️ **写迁移的坑**（已在 v14 踩过）：MySQL 不允许 `UPDATE duels` 的子查询里直接 `SELECT FROM duels`（错误 1093）。必须把子查询包成派生表 `(…) r1` 强制物化，否则 `initialize()` 抛异常 → 全插件报"数据库未连接"。
 >
@@ -184,7 +189,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ### M-01 群隔离键 `group_id`
 
-- **来源**：群聊 → `event.get_group_id()`；私聊 → 战报的 `地点:` 字段（需配置 `allow_private_chat=true`）
+- **来源**：仅允许战报群，取 `event.get_group_id()`；私聊不能提交，`地点:` 不再用于决定落库群号。
 - **落库范围**：`matches.group_id`、`teams.group_id`、`group_home`/`group_ban`/`group_chat_type` 的 `group_id`
 - **真正生效的地方只有两处**：
   1. **删除校验** —— `delete_match()` 要求 `group_id` 匹配，防止跨群删
@@ -216,6 +221,14 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 ---
 
 ### M-03 玩家名解析口径（角色聚合）
+
+**命令输入（v1.16.0）：** 统一使用 `command_args.parse_command_args` / `single_name` / `parse_managed_ids`，
+引号中的空格、逗号和关键字属于 ID；支持英文单双引号和中文弯引号。
+绑定/解绑若未加引号且没有逗号，先精确匹配整段 ID，存在则视为一个名字；不存在才沿用空白分隔批量。
+`/管理ID` 保留逗号分隔 ID、末尾角色名规则，双方都支持引号；单名字查询和改名保留完整名字。
+这只是输入边界解析，不改写数据库 ID，不合并引号内名字的空格，不改变 SQL 的角色归并口径。
+排表、记录与追加轮次也使用统一解析器；生成的战报正文写原始 ID，不把引号存入 ID。
+
 
 **定义：** 显示名 = `COALESCE(users.name, 参赛ID)`。即：参赛ID 若被绑定到某角色，就用**角色名**展示并聚合该角色下**全部**参赛ID；未绑定则直接用参赛ID。
 
@@ -275,7 +288,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 - `duels.result` 在**插入时**由比分比较算好落库（A / B / DRAW），后续统计全部读它，**不回读比分**
 - `ruled`（单字段，v13 合并自 a_ruled/b_ruled）：本对局有判罚落败
   - **判罚方比分必然更低** → 必为败方 → `result` 自然正确，无需特殊处理
-  - **双方不会被同时判罚**（保证单一字段够用）
+  - **双方不会被同时判罚**（保证单一字段够用）；v1.15.4 起解析阶段强制校验：带标记的一方必须比分更低，否则整份拒收
   - `_clean_player_name()` 循环剥离 `(规则)` 与 `(替)` 标记，可叠加
 - **还原时补标记**：`lineup.format_duels_block()` 给败方 ID 补 `(规则)`；`format_duel_results()`（提交后核对）**不显示**替补/判罚标记，只显示干净 ID
 
@@ -370,15 +383,15 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 | 工具 | 用途 | 关键点 |
 |---|---|---|
-| `_read_latest_report()` | 读"最近一条战报" | `get_group_msg_history(count=50)`，取 `time` 最大且**行首为 `战队:`** 的消息 |
-| `_extract_reply_reports()` | 从引用消息提取 | 支持引用**合并转发**（`get_forward_msg` 逐条提取） |
+| `_read_latest_report()` | 读"最近一条战报" | `get_group_msg_history(count=50)`，取 `time` 最大且**首行匹配 `TEAM_RE`** 的消息（支持中英文冒号） |
+| `_extract_reply_reports()` | 从引用消息提取 | 支持引用**合并转发**（`get_forward_msg` 逐条提取），单条消息或单个节点里的多份战报均再次 `split_reports` 拆分 |
 | `_extract_msg_text()` | 提取纯文本 | message 段拼接 vs `raw_message` **取较长者**（防平台截断） |
 | `_read_msg_by_id_from_history()` | 截断兜底 | `get_msg` 结果解析失败时，按 ID 回群历史重取 |
-| `_send_responses()` | 分段回复 | **1 条** → `plain_result` 逐条发；**≥2 条** → `Node` 合并转发。注意调用处的注释写着"≤3 逐条"，与实现不符（以代码为准） |
+| `_send_responses()` | 分段回复 | **1 条** → `plain_result` 逐条发；**≥2 条** → `Node` 合并转发，每条最多 100 个节点 |
 | 导出分批 | 合并转发节点上限 | `max_nodes = 100`（QQ 限制） |
-| `split_reports()` | 拆分多份战报 | 同样以**行首 `战队:`** 为分隔标志 |
+| `split_reports()` | 拆分多份战报 | 以 `TEAM_RE` 或 `is_raid_header` 为分隔标志，支持中英文冒号；前导空行不产出空报 |
 
-> **"行首 `战队:`" 是战报的识别标志，出现在 3 个地方**（读最近战报、拆多份、引用转发过滤）。改战报头部格式（比如把 `战队: KC VS DYG` 改成 `队伍：KC vs DYG`）会同时打断这三处，且**旧消息里的战报会全部读不到**。
+> **头部识别共用 `TEAM_RE` / `is_raid_header`**：解析、最近战报、引用、批量拆分必须同步。更改格式时保留历史消息兼容。
 
 **★ 文案口吻（v1.15.0）：改「句子」，不改「数据」。** 所有面向用户的**叙述性**回复统一为猫娘口吻，中等浓度：句尾「喵」/「喵～」，关键回执配**一个**颜文字（取固定小集合 `(=^･ω･^=)` / `(；・∀・)` / `(๑•̀ㅂ•́)و` / `🐾`，与既有结算公告一致；不是每句都配，长回复只在结尾）。绝对**不**自称「人家」、**不**称用户「主人」。
 
@@ -397,13 +410,15 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ---
 
-### M-11 群属性与帮助分类
+### M-11 群属性、帮助分类与提交限制
 
-- `CHAT_TYPE_SECTIONS`（[stats.py](stats.py)）：友谊群 → 排表/追加轮次/记录比分；战报群 → 提交/管理/查询；主群 → 查询/用户与参赛ID
-- `ALL_SECTIONS` = `HELP_SECTIONS` 中除"超级管理"外的全部键（自动推导，新增 section 自动纳入）
-- `/帮助` 无参数按本群属性展示；`/帮助 全部` 展示除超管外全部；`/帮助 超管` 仅超管段
-
-> **新增命令必须同步三处：** `HELP_SECTIONS` 加段、`CHAT_TYPE_SECTIONS` 归类、命令别名（带 `/` 与不带 `/` 两种写法）。
+- `CHAT_TYPE_SECTIONS`：友谊群显示排表/追加轮次/记录，战报群显示提交/管理/查询，主群显示查询/ID；所有群都可看到战队设置帮助。
+- **仅战报群允许 `/发送`**（含旧别名、引用、批量与踢馆）。先拒绝私聊，再检查数据库、禁群、群类型、绑定和可选管理提交条件。
+- 缺省群类型仍为友谊群，升级不自动变成战报群。超管或本队管理员需显式 `/群聊属性 战报群`。
+- 绑定与属性设置必须是超管或对应战队管理员；群主/群管身份本身不授予此权限。
+- 超管可设置任意群；普通战队管理员重绑需同时管理原队和目标队。
+- 私聊授权/查询管理员等超管命令仍可使用，禁止的是战报提交。
+- `ALL_SECTIONS` 自动包含除超级管理以外的栏目，新命令必须同步帮助和分类。
 
 ---
 
@@ -689,13 +704,13 @@ year = now.year - 1 if month > now.month else now.year
 
 **流程与逐项校验（顺序即代码顺序，改动时勿插队）：**
 
-1. `_group_check()` → DB 就绪 + 群未禁用
-2. `submit_requires_admin` 配置 → 仅管理员
-3. 无参数且无引用 → 直接提示用法
-4. **优先从引用消息提取**（含合并转发），否则按 `战队:` **或踢馆头**拆分多份（`split_reports`）
-5. **逐份解析**，失败不阻断其余（记录行号 + 原文 + 格式示例）。每份按**首行**分流：`_is_report_text` 认 `战队:` 或 `is_raid_header`，`_parse_chunk` 决定走 `parse_battle_report` 还是 `parse_raid_report`
-6. 确定 `group_id`：群聊直接用；私聊则取战报 `地点:` 字段（需 `allow_private_chat`，且该字段 `strip()` 后**必须全是数字**才当群号 —— 它是自由文本，可能写着"上海"之类）
-7. **必须已绑定战队**，否则拒收
+1. 无群号立即拒绝私聊；随后 `_group_check()` 检查数据库就绪与群启用。
+2. 本群属性必须为战报群，必须已绑定战队；开启 `submit_requires_admin` 时额外 `_is_manager` 校验。
+3. 无参数且无引用 → 直接提示用法。
+4. 优先从引用消息提取（含合并转发、节点内多报），否则 `split_reports` 拆分粘贴文本。
+5. 逐份解析，失败不阻断其他份；友谊/踢馆按首行分流。
+6. `report.group_id` 只取本群号，不读取地点作为群号。
+7. `home_team` 只取本群绑定战队。
 8. **战报的两侧队标之一必须包含本群绑定战队**，否则阻止（v1.12.15 新增；踢馆报即 `home_team ∈ (team_a, team_b)`，同一段代码成立，无需分支）
 9. **对局数 < `min_duels`（配置，默认 3）直接拒** —— **踢馆报豁免**（踢馆天然只有 1~5 局，`min_duels` 默认 3 会误杀）
 10. **胜负未定（`winner is None`）拒录**，并列出未填比分的对局（踢馆报列出的对局不带轮次前缀）
@@ -801,10 +816,10 @@ year = now.year - 1 if month > now.month else now.year
 
 | 编号 | 命令 | 权限 | 行为 |
 |---|---|---|---|
-| **F-16** | `/绑定战队 <战队>` | 管理/群主 | 绑定本群战队 + `backfill_group_home` 回填空值；队标转大写 |
+| **F-16** | `/绑定战队 <战队>` | 超管或目标战队管理员（重绑另检查原队） | 绑定本群战队 + `backfill_group_home` 回填空值；队标转大写 |
 | **F-17** | `/查看战队` | 任意 | 查看本群绑定战队 |
 | **F-18** | `/战队列表` | 任意 | 全部战队（来源：group_home ∪ player_ids ∪ matches 双方队标） |
-| **F-19** | `/群聊属性 <友谊群\|战报群\|主群>` | 管理/群主 | 设置群属性（默认友谊群） |
+| **F-19** | `/群聊属性 <友谊群\|战报群\|主群>` | 超管或本队战队管理员 | 设置群属性（默认友谊群） |
 
 ### 域 F：超级管理员
 
@@ -814,6 +829,13 @@ year = now.year - 1 if month > now.month else now.year
 | **F-21** | `/群列表 [战队]` | 全部群 + 绑定战队 + 禁用状态；可按战队过滤 |
 | **F-22** | `/通告 <内容>` / `/通告 <群号或QQ>\n<内容>` | 广播（带北京时间戳，群发间隔 0.2s 防风控）；首行纯数字则视为指定目标 |
 | **F-23** | `/导出群成员 <群号>` | 导出群成员 CSV（QQ号/昵称/名片/角色/所在地/入群时间），群主→管理员→成员排序。**不依赖数据库**（与 `/帮助` 同为两个例外） |
+
+
+| 编号 | 命令 | 入口 | 权限与行为 |
+|---|---|---|---|
+| **F-30** | `/设置战队管理员 <战队> <QQ号[,QQ号...]>` | `set_team_admins` | 仅超管，覆盖该队名单，支持多 QQ、去重，其他队不变 |
+| **F-31** | `/移除战队管理员 <战队> <QQ号>` | `remove_team_admin` | 仅超管，撤销该 QQ 在该队的授权；原本无授权时正常提示 |
+| **F-32** | `/查看战队管理员 <战队>` | `view_team_admins` | 仅超管，只读查看该队管理员 |
 
 ### 域 G：战报治理
 
@@ -849,11 +871,12 @@ year = now.year - 1 if month > now.month else now.year
 | **改「战队战绩」面板**（加行/改口径/换取值） | ① `stats._TEAM_PANEL_LABELS`（若加行）② `stats.build_team_panel` 的**返回值列表是手写的**，与 ① 顺序必须逐字一致 ③ `get_home_team_record` 是否已透传所需键（踢馆相关的键**只透传 `attack_points` 一个**，见 §7.3 第 19 条）④ `tests/test_stats.py` 的标签顺序用例 | 面板不走 `build_ranking_cells`，**改排行列的那套清单对它一个都不适用**；反过来把面板塞进 `build_ranking_cells` 会破坏 14/15 列契约 |
 | **改玩家名解析口径** | ① `get_player_ranking` 的 2 处 `COALESCE` ② `get_player_match_stats` 的 2 处 ③ `resolve_role` ④ 跨队同名三处（§5-M03） | 漏一处 → 同一个人出现两个名字 |
 | **改战队归属解析** | ① `_require_home`（**唯一**解析路径）② 所有聚合 SQL 的 `m.home_team = %s` ③ `backfill_group_home` ④ `/发送` 的绑定校验 | M-02：v1.13.0 起只有群绑定一条路径，别再引入配置兜底 |
-| **新增配置项** | ① `_conf_schema.json` 加定义 ② `main.py` 读取 ③ `README.md` 配置表 ④ 本文件 §11 | `tests/conftest.py` 从 schema 自动加载默认值，**无需改测试**；`tests/test_config_schema.py` 会校验格式 |
+| **新增配置项** | ① `_conf_schema.json` 加定义 ② `main.py` 读取 ③ `README.md` 配置表 ④ 本文件 §11 | `tests/conftest.py` 使用独立测试连接配置，不继承插件配置；`tests/test_config_schema.py` 会校验格式 |
 | **删除配置项** | 同上四处**一起删** | 只从 schema 删会留下"界面没有、代码在读"的隐式默认值；只从代码删会留下界面上的死开关（`home_team`、`default_days` 就是这么来的，§10-3/§10-4） |
 | **新增群级开关** | ① 建表（仿 `group_ban`/`group_chat_type`：`group_id` 主键）② 迁移 ③ 读/写函数 ④ 在**每个**命令入口串进校验链 | 漏了某个命令的入口 → 该开关对它无效 |
 | **改导出** | ① `get_export_rows`（CSV/JSON 行）vs `get_reports_for_export`（合并转发）——**两条独立链路** ② `report_to_text` ③ `filter_report_outcome` ④ main 里的 CSV 表头 ⑤ 100 节点分批 | 两条链路常被当成一条改，结果"文件导出变了、转发没变" |
 | **改删除/撤销** | ① `delete_match` 的群归属校验 ② `get_last_match_by_submitter` ③ 外键 `ON DELETE CASCADE`（旧表可能没有，代码显式删 duels 兜底） | 删除是**物理删除**，无软删/回收站 |
+| **改命令中的名字参数** | ① `command_args.py` ② main 绑定/解绑/管理/查ID/改名/战绩/踢馆/趋势/导出 ③ parser 导出参数 ④ lineup 排表/记录/追加轮次 ⑤ 测试和用户示例 | 不改数据库原始 ID；有空格/逗号/关键字时靠引号明确边界 |
 | **改用户/身份** | ① `users`/`player_ids` 表 ② `find_or_create_user` 的"一QQ一角色" ③ `claim_user_by_name` ④ `bind_player_to_user` / `unbind_player` ⑤ `resolve_role` ⑥ **所有依赖 COALESCE 的 SQL** | "一QQ一角色"是不变量，改绑定语义会连锁影响 6 处 |
 | **新增一个战报类型**（如「擂台」「车轮战」） | ① `parser` 加 `KIND_*` + 独立 `parse_xxx_report`（**不要改造 `parse_battle_report`**，友谊赛路径零改动）② `report_fingerprint` 把新 kind 写进 payload（友谊赛不进，见 §5-M12）③ `determine_match_winner` 开头按 `report.kind` 分流 ④ `stats` 加该类型唯一的判定/计分实现 ⑤ `database` 加该类型的取数函数（**注意按哪一侧取数**，踢馆就是 M-02 的例外）⑥ `main._is_report_text` / `_parse_chunk` / `split_reports` 的**首行识别标志**扩到新类型 ⑦ `lineup` 的还原与回执 ⑧ **`grep -n "FROM duels\|FROM matches" database.py`：每个既有的聚合查询都要决定**「要不要把这一类型算进去」，要排除就补 `AND m.kind = 'friendly'` ⑨ 导出两条链路 ⑩ 文档四处（本文件 §5 加 M-xx / §6 加 F-xx / README 功能与格式示例） | **⑧ 是本次最大的静默损坏风险点**（踢馆一次要动 18 处）。漏一处 → 新类型的数据会渗进友谊统计，"积分"列数值凭空调高，且**不会报错**。验收标准是"插入一份新类型的战报后，所有友谊查询逐字段不变"（§12） |
 
@@ -904,7 +927,7 @@ year = now.year - 1 if month > now.month else now.year
 
 | 口径 | 受影响功能 |
 |---|---|
-| **M-01 群隔离** | F-24、F-25（+ 私聊提交的 F-04） |
+| **M-01 群隔离** | F-24、F-25、仅战报群提交的 F-04 |
 | **M-02 战队归属** | F-04、F-05、F-06、F-07、F-08、F-09、F-10~F-15、F-16、F-17 |
 | **M-03 玩家名解析** | F-05、F-06、F-07、F-08、F-09、F-11、F-12、F-13、F-14 |
 | **M-04 0:0 占位** | F-02、F-03、F-04、F-05、F-06、F-07、F-08 |
@@ -914,7 +937,7 @@ year = now.year - 1 if month > now.month else now.year
 | **M-08 时间范围** | F-05、F-06、F-07、F-08、F-09 |
 | **M-09 输出渲染** | F-05、F-07、F-08、F-23 |
 | **M-10 平台消息** | F-01、F-02、F-03、F-04、F-08、F-22、F-23 |
-| **M-11 群属性帮助** | F-26、F-19 |
+| **M-11 群属性/提交** | F-04、F-16、F-19、F-26、F-30~F-32 |
 | **M-12 去重指纹** | F-04、F-24（删除后才能重提同一份） |
 | **M-13 踢馆** | F-04（分流入库）、F-05（踢馆积分/总积分列、队伍榜的踢馆加点、**左侧「战队战绩」面板的守馆/踢馆三行**）、F-06、F-08（导出不过滤 kind）、F-09、F-27；以及**所有友谊聚合的反向约束** —— 改 M-04 / M-07 时也要回头确认踢馆侧是否同源（§7.3 第 12~16 条）。**改 M-14 的 10 分封顶时要回头确认面板三行仍取原始分量**（§7.3 第 19 条） |
 | **M-14 月度结算（10 分封顶）** | F-28（`/结算` 的**写路径**：管理/群主结算发奖金 + **@ 获奖成员的结算公告**；**读路径**：其他人只读查询已结算结果）、**F-29（`/重置结算`：把该月打回未结算，与 F-28 共用 `settle_month_range` 的月份口径）**、F-05（个人榜的奖金列，仅已结算月份）、F-12 `/绑定ID`（**间接**：公告能不能真 @ 到人取决于有没有绑 QQ，见 §10.4-27）；依赖 M-03（玩家名必须与榜单同源，否则奖金对不上人、公告 @ 错人）与 M-13 展示口径的排序 key（名次共用 `ranks_for`）。**反向约束**：改排行排序 key / `ranks_for` 时要同步 `tests/test_settlement.py`；改 `settlements` 表结构或 `month` 的 `YYYY-MM` 形态时，**两条 `get_settlement*` 都要看**（一个是查表贴列、一个是明细回执，见 §5-M14 接口表）；改 `users.name` / `qq_id` 的写入路径时要回头看结算公告的 @ 是否还能取到 QQ（§7.3 第 21 条） |
@@ -931,6 +954,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|---|
 | [main.py](main.py) | ~1770 | 全部命令入口、权限、编排、平台消息收发、文本/文件输出 | AstrBot |
 | [database.py](database.py) | ~1640 | 建库建表迁移 + 全部 SQL 聚合 + `settlements` 的两条读取路径（`get_settlement` 查表贴奖金列 / `get_settlement_entries` 明细回执）+ `get_qq_ids_by_names`（展示名 → QQ，结算公告用）+ `set_settlement` / `clear_settlement`（结算的写与撤销） | aiomysql |
+| [command_args.py](command_args.py) | ~90 | 引号边界、空格 ID、单名字与管理ID参数，共用于入口/导出/排表/记录/轮次 | 无 |
 | [lineup.py](lineup.py) | ~755 | 排表、追加轮次、记录比分、战报文本还原、导出过滤 | 无 |
 | [battle_report_parser.py](battle_report_parser.py) | ~735 | 战报解析（友谊 + 踢馆）、胜负判定、`is_kof`、内容指纹、月份/参数解析 | 无 |
 | [stats.py](stats.py) | ~700 | 积分/胜率/表格/帮助文案、`rank_aligns`、**踢馆判定与计分（踢馆侧唯一实现）**、**结算奖金公式与名次（`rank_bonus` / `ranks_for` / `attach_bonus`）**、**结算回执（写 `format_settlement` / 只读 `format_settlement_view`，行体共用 `_settlement_lines`）**、**结算公告（`settlement_awards_changed` 判要不要 @ / `settlement_announcement` 分段文案 / `format_settlement_repeat` 不 @ 时的提示）**、**排行图片左侧面板的 8 行（`build_team_panel`）** | 无 |
@@ -981,7 +1005,7 @@ year = now.year - 1 if month > now.month else now.year
 - [ ] **传导矩阵**：逐行过 §7.1，确认没有连带漏改
 - [ ] **数据迁移**：改了表结构？→ §7.2 七步
 - [ ] **历史数据**：新口径对旧数据成立吗？→ 迁移回填 or `scripts/` 脚本
-- [ ] **测试**：纯逻辑加到对应 `test_*.py`；涉及 DB 的加 `test_database_stats.py`（需 `ASTRBOT_TEST_MYSQL_PASSWORD`）
+- [ ] **测试**：纯逻辑加到对应 `test_*.py`；涉及 DB 的加 `test_database_stats.py`（需显式 `ASTRBOT_TEST_MYSQL_ENABLE=1` 与独立测试连接配置）
 - [ ] **文档（两份必须一起改，缺一不可）**：
   - [ ] [README.md](README.md) —— 使用者视角：核心功能条目、命令语法、配置表、必要时「💡 几个概念」
   - [ ] **本文件（REQUIREMENTS.md）** —— 开发者视角：§6 加 F-xx 条目；若引入新口径改 §5；若产生新联动改 §7；若产生新技术债改 §10；若加配置项改 §11；若加测试改 §12
@@ -1066,12 +1090,40 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ---
 
+### 10.5 v1.15.4 审查修复与新增约束（历史记录）
+
+本节记录上版修复；私聊提交相关实现已由 v1.16.0 的 M-01/M-11 严格拒收策略取代。
+
+详见 [CODE_REVIEW.md](CODE_REVIEW.md)。本次不增加数据库字段，`SCHEMA_VERSION` 仍为 17；
+保留既有内容指纹及业务计分规则。
+
+- 私聊逐份校验目标群，成员校验采用 `get_group_member_list`；失败则拒绝该份，其他份继续。
+- 普通绑定统一走 `bind_player_to_self`，精确查 ID；同战队身份写操作通过 MySQL 命名锁串行化，
+  校验与认领/绑定放在一个事务中。角色选择优先 QQ 身份，不能通过同名角色绕过归属检查。
+  普通解绑的 UPDATE 同时约束当前 `user_id`，管理员绑定校验角色战队；管理ID也不再用限量名单做存在性判断。
+- `get_players_trend` 的参数严格按 SQL 占位符顺序排列；队伍趋势读 `matches.winner`，
+  原始 ID 趋势在命令入口传 `side_team=home_team`，避免对手同名串数。
+- 日期必须为合法公历且处于 MySQL DATE 年份范围；拒绝同队对阵、胜方/双方判罚。
+  结算/重置拒绝非法月份与未知参数，不能静默落到缺省月份写库。
+- 旧 v2/v3/v8/v9/v12/v13 ADD/DROP COLUMN 支持重放，v10 中断后恢复外键；
+  初始化失败关闭连接池，重复战报唯一键冲突回滚后用同一连接回查。
+- 图片通过 `asyncio.to_thread` 生成；所有图片/导出文件用 UUID 避免覆盖。
+  产物清理仍是待完善项，不能在 yield 之后立即删文件（框架稍后才读取文件）。
+- `super_admin` 默认空，未配置不给任何 QQ 超管权限；旧安装的已保存配置需人工检查。
+
+### 10.6 v1.16.0 权限和带空格 ID
+
+- 权限唯一来源为配置超管 QQ、`team_admins` 授权与平台群角色。战队设置不使用宽泛的 `_is_manager`，其余管理入口共用它以继承战队管理员权限。
+- 不自动导入群主/群管理为战队管理员，超管仍保留任意群设置权。
+- ID 引号解析不改变指纹算法、统计 SQL 或历史 ID。引号未闭合在任何写入前拒绝。
+- 裸空格绑定存在歧义时“完整现有 ID 优先”，推荐显式引号列表；原始 ID 带多个空格或命令关键字时也用引号。
+- `allow_private_chat` 已从配置/代码/现行文档删除；旧配置中即使残留 true 也不能启用私聊提交。
+
 ## 11. 配置项（`_conf_schema.json`）
 
 | 配置 | 默认 | 作用于 |
 |---|---|---|
-| `submit_requires_admin` | false | F-04（**仅 AstrBot 管理员**，不含群管理） |
-| `allow_private_chat` | true | F-04 私聊提交（用 `地点:` 作群号） |
+| `submit_requires_admin` | false | F-04，战报群内额外要求 `_is_manager`（含超管和本队管理员） |
 | `ranking_limit` | 10 | F-05 `全部` 分支的条数 |
 | `ranking_image` | true | F-05 输出形态（关 → 文本表格） |
 | `ranking_image_max_rows` | 30 | F-05 `全部` 分支图片截断；**默认个人榜不截断** |
@@ -1079,7 +1131,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `min_duels` | 3 | F-04 单份战报最少对局数，低于即拒收。**与 `min_games` 是两件事**：一个是提交前置条件，一个是排名门槛 |
 | `trend_chart_width` / `height` | 960 / 480 | F-07 图片尺寸 |
 | `default_rule` | `2/3【KOF】` | F-01 未指定规则时的默认值；**同时决定 M-07 走哪个判定分支** |
-| `super_admin` | 1443290403 | F-20/F-21/F-22/F-23 权限 |
+| `super_admin` | 空 | F-20/F-21/F-22/F-23 权限，留空时不授予超管 |
 | `pairing_seed` | 空 | F-01/F-02 随机种子（填空则固定，便于复现） |
 | `mysql_host/port/user/password/db` | — | 数据库连接；`db` 会做标识符白名单校验防注入 |
 
@@ -1093,7 +1145,10 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 | 测试文件 | 覆盖 |
 |---|---|
-| `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数解析 |
+| `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
+| `test_main.py` | 真实 handler + 框架桩；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；不代表真实 QQ 联调 |
+| `test_command_args.py` | 引号/转义/标点、裸空格兼容、查询关键字保护、导出顺序、排表→记录→轮次→重新解析完整链路 |
+| `test_database_lifecycle.py` | 唯一键并发冲突不得借第二条连接、初始化迁移失败释放池 |
 | `test_winner.py` | 人头赛 / KOF 胜负判定（含替补不扩容、同名首发与替补区分、TK 占位、判罚） |
 | `test_rounds.py` | `/第N轮` 随机配对、指定对阵、紧凑比分、队对齐、部分成功 |
 | `test_record.py` | `/记录` 找未记录对阵、右侧选手、插入最新轮次 |
@@ -1108,11 +1163,14 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `test_chart.py` | 排行图片生成、行数缩放、长名、不截断、**`rank_aligns()` 与表头列数一致且全为 `center`**、**15 列（带奖金列）渲染冒烟**、**「战队战绩」面板**：面板比表格高时图变高（`body_h = max()` 的裁切回归）、表格更高时高度不变、`panel=None`/不传/`[]` 三者尺寸逐像素相同、`max_rows=1` 的省略行与面板共存 |
 | `test_database_stats.py` | **DB 集成**（排行/战绩/趋势/导出/迁移/用户绑定/群管理/**重复战报拒收**/**踢馆**/**结算**：写入后取回、重结算行数不翻倍、追加后回到前 4 名会删掉多余行、不同战队/月份互不干扰、`player_name` 与排行同源、小数往返、**`get_settlement_entries` 的明细与排序**（只读 `/结算` 的数据源）、**`clear_settlement` 的重置**（只删本队本月、返回行数、重复重置返回 0、重置后可重新结算且不残留旧行）、**`get_qq_ids_by_names`**（空名单不查库、只返回有 QQ 的、按 `users.name` 而非参赛ID、跨战队不串门）；**`get_home_team_record` 的 `attack_points` 与 `get_raid_team_stats` 等值**——面板「零额外查询」的护栏） |
 
-**运行 DB 测试需 `ASTRBOT_TEST_MYSQL_PASSWORD` 环境变量**（`conftest.py` 从 `_conf_schema.json` 读默认值，密码走环境变量避免入库）。
+**数据库测试需显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1`**；独立使用
+`ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`，默认本机，不读取插件配置。
+建删库名为 `astrbot_battle_report_test_<进程号>`，应指向隔离测试服务。
+新增集成测试覆盖身份并发、同名归属、角色日期趋势、KOF 队伍趋势、中断迁移重放、跨队同名趋势，以及战队授权持久化/隔离/撤销、v17→v18 保留业务数据和现有空格 ID 的完整读写。
 
 **踢馆侧的 DB 验收标准（★必跑）：** `test_raid_does_not_move_friendly_numbers` —— 插入一份踢馆报后，**所有友谊查询的返回值必须逐字段不变**（比对时把 `raid_points`/`total_points` 等踢馆字段摘掉）。这是 §5-M13 那 18 处 `kind` 过滤的**唯一**验收手段：漏写一处不会报错，只会让数据静默变脏。另有 `test_raid_same_player_keeps_friendly_untouched`（同一个人既打友谊又踢馆时，友谊口径仍不变）。
 
-> ⚠️ **`test_database_stats.py` 会连 `_conf_schema.json` 里配置的那台 MySQL**，并在开始时执行 `DROP DATABASE IF EXISTS astrbot_battle_report_test`。默认配置指向本机，但**若改了 `mysql_host` 指向生产库，它就会在生产库上建/删测试库**。跑之前先确认配置指向。
+> 数据库测试默认整模块跳过；启用前请配置隔离实例。测试进程之间使用不同库名，避免互相删库。
 >
 > ⚠️ **指纹唯一键改变了这些测试的前提**：同一测试内插入"内容一字不差"的两份战报现在会抛 `DuplicateReportError`。此前靠"只改 `group_id`/`submitted_by`"来造两份数据的用例，必须改成有真实的 `match_time` 差异（见各用例里的注释）。
 
@@ -1120,7 +1178,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.15.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.16.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

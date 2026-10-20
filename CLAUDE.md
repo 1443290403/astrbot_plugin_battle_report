@@ -40,11 +40,21 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 - 积分/胜率/玩家名解析在 Python 与多处 SQL 里各写一遍（§7.3），只改一处会让数据自相矛盾
 - `min_games`（排名门槛，在 SQL 的 `HAVING` 里）与 `min_duels`（提交前置条件，在 `main.py`）是**两件事**，别混
 
+## v1.16.0 权限与参数约束
+
+- `/绑定战队`、`/群聊属性`：超管可设置任意群；其他人必须是对应战队管理员，QQ 群主/群管理和 AstrBot 全局管理员身份本身不提供这两项权限。
+- `_is_manager` 包含超管、AstrBot 全局管理员、本群绑定战队管理员和 QQ 群主/群管理；战队管理员仅在本队已绑定群内继承插件管理权限。
+- `/发送` 先拒绝私聊，再检查群启用、属性为战报群及绑定。引用、批量、踢馆均共用此入口；不再读取 `allow_private_chat`。
+- 参赛 ID 用 `command_args.py` 的统一解析，允许引号、保留 ID 内空格。别重新用 `payload.split()` 拆名字。
+- `team_admins` 按 `(home_team, qq_id)` 授权，schema v18；设置名单是覆盖，必须保留撤销与查看入口。
+
 ## 测试
 
 ```bash
-pytest tests/ --ignore=tests/test_database_stats.py   # 纯逻辑，无需 DB
-ASTRBOT_TEST_MYSQL_PASSWORD=<密码> pytest tests/       # 含 DB 集成测试
+pytest tests/   # 默认跳过数据库模块，无需 DB
+ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest tests/  # 独立测试实例
 ```
 
-⚠️ `test_database_stats.py` 会连 `_conf_schema.json` 里配的那台 MySQL，并 `DROP DATABASE IF EXISTS astrbot_battle_report_test`。默认指向本机，但**改过 `mysql_host` 就指向生产库了**——跑之前先确认。
+数据库测试只使用独立的 `ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`（默认本机），
+**不继承插件配置**。必须显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1` 才启用；会创建并删除
+`astrbot_battle_report_test_<进程号>`。使用隔离测试实例，勿配置生产服务。

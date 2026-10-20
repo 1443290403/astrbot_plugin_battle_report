@@ -1,10 +1,11 @@
 """数据库聚合查询测试（连接本机 MySQL 测试库，结束时清理）。
 
-若本机 MySQL 不可用则跳过整个模块。使用独立测试库 astrbot_battle_report_test，
+若本机 MySQL 不可用则跳过整个模块。使用独立测试库 astrbot_battle_report_test_<进程号>，
 不会影响正式库数据。每个测试在同一个事件循环内完成 初始化→操作→清理。
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -14,10 +15,10 @@ from battle_report_parser import (
     parse_raid_report,
     split_reports,
 )
-from database import Database, DuplicateReportError
+from database import Database, DuplicateReportError, SCHEMA_VERSION
 from conftest import DEFAULTS
 
-TEST_DB = "astrbot_battle_report_test"
+TEST_DB = f"astrbot_battle_report_test_{os.getpid()}"
 GROUP_ID = "435823386"
 
 SAMPLE = """战队: KC VS DYG
@@ -98,6 +99,9 @@ async def _mysql_reachable() -> bool:
     except Exception:  # noqa: BLE001
         return False
 
+
+if os.environ.get("ASTRBOT_TEST_MYSQL_ENABLE") != "1":
+    pytest.skip("设置 ASTRBOT_TEST_MYSQL_ENABLE=1 才会建删独立测试库", allow_module_level=True)
 
 if not asyncio.run(_mysql_reachable()):
     pytest.skip("本机 MySQL 不可用，跳过数据库测试", allow_module_level=True)
@@ -1453,4 +1457,189 @@ def test_settlement_decimals_roundtrip():
         ])
         assert await db.get_settlement("KC", "2026-07") == {"红莲": 37.5}
 
+    _with_db(ops)
+
+
+# 审查回归：真实 MySQL 参数绑定、胜负口径、身份并发和中断迁移。
+def test_role_trend_with_date_end_and_multiple_ids():
+    async def ops(db):
+        await _ins(db)
+        assert await db.get_players_trend(TEAM, ["红莲", "凯撒亮"], "2026-08-01", "2026-08-31") == [
+            ("2026-08-01", 2, 2)
+        ]
+        assert await db.get_players_trend(TEAM, ["红莲"], "2026-07-01", "2026-07-31") == []
+    _with_db(ops)
+
+
+def test_team_trend_uses_recorded_kof_winner():
+    async def ops(db):
+        # 单首发对三首发：A 赢前两局、最后被终结；B 才是 KOF 胜方。
+        rep = parse_battle_report("战队: KC VS DYG\n时间: 2026.08.01\n规则: KOF\n"
+            "------第一轮------\n甲 2:0 乙\n甲 2:0 丁\n甲 0:2 戊").report
+        assert determine_match_winner(rep) == "DYG"
+        await _ins(db, rep, winner="DYG")
+        assert await db.get_team_trend(TEAM, TEAM) == [("2026-08-01", 0, 1)]
+        assert await db.get_team_trend(TEAM, "DYG") == [("2026-08-01", 1, 0)]
+    _with_db(ops)
+
+
+def test_self_binding_does_not_join_foreign_named_role():
+    async def ops(db):
+        await _ins(db)
+        other = await db.find_or_create_user(TEAM, "红莲", "20002")
+        status, user = await db.bind_player_to_self(TEAM, "红莲", "10001")
+        assert status == "claimed_else" and user is None
+        assert (await db.get_player_binding(TEAM, "红莲"))["user_id"] is None
+        # 自己已有角色时优先复用 QQ，而不是误用同名的别人的角色。
+        mine = await db.find_or_create_user(TEAM, "本人", "10001")
+        status, user = await db.bind_player_to_self(TEAM, "红莲", "10001")
+        assert status == "ok" and user["id"] == mine and user["id"] != other
+    _with_db(ops)
+
+
+def test_claimed_role_is_not_stolen_after_unbind():
+    async def ops(db):
+        await _ins(db)
+        status, original = await db.bind_player_to_self(TEAM, "红莲", "10001")
+        assert status == "ok"
+        await db.unbind_player(TEAM, "红莲")
+        status, _ = await db.bind_player_to_self(TEAM, "红莲", "20002")
+        assert status == "claimed_else"
+        assert (await db.get_user_by_id(original["id"]))["qq_id"] == "10001"
+    _with_db(ops)
+
+
+def test_self_binding_concurrent_same_id_and_same_qq():
+    async def ops(db):
+        await _ins(db)
+        results = await asyncio.gather(*(db.bind_player_to_self(TEAM, "红莲", qq) for qq in ["10001", "20002"]))
+        assert sorted(status for status, _ in results) == ["claimed_else", "ok"]
+        owner = next(user for status, user in results if status == "ok")
+        assert (await db.get_player_binding(TEAM, "红莲"))["qq_id"] == owner["qq_id"]
+        results = await asyncio.gather(*(db.bind_player_to_self(TEAM, p, "30003") for p in ["凯撒亮", "悠悠球"]))
+        assert all(status == "ok" for status, _ in results)
+        assert len({user["id"] for _, user in results}) == 1
+        assert len(await db._query("SELECT id FROM users WHERE home_team = %s AND qq_id = %s", (TEAM, "30003"))) == 1
+    _with_db(ops)
+
+
+def test_claim_user_concurrency_has_one_winner():
+    async def ops(db):
+        uid = await db.find_or_create_user(TEAM, "角色")
+        results = await asyncio.gather(*(db.claim_user_by_name(TEAM, "角色", qq) for qq in ["10001", "20002"]))
+        assert sorted(status for status, _ in results) == ["claimed_else", "ok"]
+        assert (await db.get_user_by_id(uid))["qq_id"] in ("10001", "20002")
+    _with_db(ops)
+
+
+def test_identity_lookup_is_exact_not_first_page_of_like_results():
+    async def ops(db):
+        for n in range(55):
+            await db._execute("INSERT INTO player_ids (home_team, player_name, created_at) VALUES (%s, %s, 0)",
+                (TEAM, "甲" + str(n)))
+        await db._execute("INSERT INTO player_ids (home_team, player_name, created_at) VALUES (%s, %s, 0)", (TEAM, "甲"))
+        status, _ = await db.bind_player_to_self(TEAM, "甲", "10001")
+        assert status == "ok"
+    _with_db(ops)
+
+
+def test_unbind_requires_current_owner_and_admin_binding_checks_team():
+    async def ops(db):
+        await _ins(db)
+        _, user = await db.bind_player_to_self(TEAM, "红莲", "10001")
+        other = await db.find_or_create_user(TEAM, "另一个", "20002")
+        await db.bind_player_to_user(TEAM, "红莲", other)
+        assert await db.unbind_player(TEAM, "红莲", user["id"]) == 0
+        assert (await db.get_player_binding(TEAM, "红莲"))["user_id"] == other
+        with pytest.raises(ValueError):
+            await db.bind_player_to_user("DYG", "牌大", other)
+    _with_db(ops)
+
+
+def test_migrations_can_replay_after_committed_ddl():
+    async def ops(db):
+        await _ins(db, winner="DYG")
+        # 模拟 DDL 已提交、版本游标未推进；v13 还处于只删了一列的状态。
+        await db._execute("UPDATE schema_version SET version = 0")
+        await db._execute("ALTER TABLE duels ADD COLUMN b_ruled TINYINT NOT NULL DEFAULT 0")
+        await db._execute("UPDATE duels SET b_ruled = 1 LIMIT 1")
+        await db._execute("ALTER TABLE duels DROP FOREIGN KEY fk_duels_match")
+        await db._init_schema()
+        assert (await db._query("SELECT MAX(version) AS v FROM schema_version"))[0]["v"] == SCHEMA_VERSION
+        assert (await db._query("SELECT SUM(ruled) AS n FROM duels"))[0]["n"] == 1
+        assert (await db._query("SELECT COUNT(*) AS n FROM information_schema.TABLE_CONSTRAINTS "
+            "WHERE constraint_schema = DATABASE() AND constraint_name = 'fk_duels_match'"))[0]["n"] == 1
+        assert len(await db.get_reports_for_export(TEAM)) == 1
+        # 重启再次运行同样可用。
+        await db._init_schema()
+    _with_db(ops)
+
+
+def test_unbound_player_trend_excludes_opposing_same_name():
+    async def ops(db):
+        rep = parse_battle_report('战队: KC VS DYG\n时间: 2026.08.01\n规则: 人头赛\n'
+            '------第一轮------\n同名 2:0 同名').report
+        await _ins(db, rep, winner='KC')
+        assert await db.get_player_trend(TEAM, '同名', '2026-08-01', '2026-08-31', side_team=TEAM) == [
+            ('2026-08-01', 1, 0)
+        ]
+    _with_db(ops)
+
+
+def test_team_admin_grants_are_persistent_scoped_and_replaceable():
+    async def ops(db):
+        await db.set_team_admins('KC', ['10001', '20002', '10001'])
+        await db.set_team_admins('BAR', ['30003'])
+        assert await db.get_team_admins('KC') == ['10001', '20002']
+        assert await db.is_team_admin('KC', '10001')
+        assert not await db.is_team_admin('BAR', '10001')
+        await db.set_team_admins('KC', ['40004'])
+        assert not await db.is_team_admin('KC', '10001')
+        assert await db.get_team_admins('KC') == ['40004']
+        assert await db.get_team_admins('BAR') == ['30003']
+        assert await db.remove_team_admin('KC', '40004') == 1
+        assert await db.remove_team_admin('KC', '40004') == 0
+        await db.set_team_admins('KC', ['50005'])
+        await db._init_schema()
+        assert await db.get_team_admins('KC') == ['50005']
+    _with_db(ops)
+
+
+def test_v17_upgrade_preserves_records_and_does_not_grant_qq_roles():
+    async def ops(db):
+        await _ins(db, winner='DYG')
+        await db.set_group_home(GROUP_ID, TEAM)
+        await db.set_group_chat_type(GROUP_ID, '战报群')
+        # 模拟旧 v17 安装：新表不存在，其他业务数据保持原状。
+        await db._execute('DROP TABLE team_admins')
+        await db._execute('UPDATE schema_version SET version = 17')
+        await db._init_schema()
+        assert await db.get_team_admins(TEAM) == []
+        assert await db.get_group_home(GROUP_ID) == TEAM
+        assert await db.get_group_chat_type(GROUP_ID) == '战报群'
+        assert len(await db.get_reports_for_export(TEAM)) == 1
+        assert (await db._query('SELECT MAX(version) AS v FROM schema_version'))[0]['v'] == SCHEMA_VERSION
+        await db.set_team_admins(TEAM, ['10001'])
+        await db._init_schema()
+        assert await db.is_team_admin(TEAM, '10001')
+    _with_db(ops)
+
+
+def test_existing_space_id_bind_query_rename_and_unbind():
+    async def ops(db):
+        rep = parse_battle_report(SAMPLE.replace('红莲', 'ice boundary')).report
+        await _ins(db, rep, winner='DYG')
+        before = await db.get_reports_for_export(TEAM)
+        status, user = await db.bind_player_to_self(TEAM, 'ice boundary', '10001')
+        assert status == 'ok'
+        assert await db.rename_user(TEAM, user['id'], 'ice user') == 'ok'
+        role = await db.resolve_role(TEAM, 'ice boundary')
+        assert role['user_name'] == 'ice user' and role['players'] == ['ice boundary']
+        assert (await db.get_pool_status(TEAM, 'ice boundary', 20))[0]['player'] == 'ice boundary'
+        assert await db.get_players_trend(TEAM, role['players'], '2026-08-01', '2026-08-31') == [
+            ('2026-08-01', 1, 1)]
+        assert await db.unbind_player(TEAM, 'ice boundary', user['id']) == 1
+        assert (await db.get_player_binding(TEAM, 'ice boundary'))['user_id'] is None
+        after = await db.get_reports_for_export(TEAM)
+        assert before == after
     _with_db(ops)

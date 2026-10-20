@@ -26,6 +26,11 @@ import re
 from dataclasses import dataclass, field
 
 try:
+    from .command_args import parse_command_args, single_name
+except ImportError:
+    from command_args import parse_command_args, single_name
+
+try:
     # AstrBot 以包方式导入插件（data.plugins.<插件名>.main）
     from .battle_report_parser import (
         RAID_RE, ROUND_RE, RULE_RE, SCORE_RE, _BARE_DATE_RE, _cn_to_int,
@@ -102,7 +107,11 @@ def parse_lineup(text: str, default_rule: str) -> RosterResult:
             )
             continue
         team_name = m.group(1).strip().upper()  # 队标含字母时统一转大写
-        players = [p.strip() for p in re.split(r"[\s,，、]+", m.group(2).strip()) if p.strip()]
+        try:
+            players = [arg.value for arg in parse_command_args(m.group(2), split_commas=True)]
+        except ValueError as e:
+            errors.append(f"第 {lineno} 行：{e}")
+            continue
         if not team_name:
             errors.append(f"第 {lineno} 行喵：队伍名是空的喵：{line}")
             continue
@@ -306,13 +315,21 @@ def build_next_round(
             m = SCORE_RE.search(line)
             if m:
                 sa, sb = int(m.group(1)), int(m.group(2))
-                pa = line[: m.start()].strip()
-                pb = line[m.end():].strip()
+                try:
+                    pa = single_name(line[: m.start()])
+                    pb = single_name(line[m.end():])
+                except ValueError as e:
+                    errors.append(str(e))
+                    continue
                 if not pa or not pb:
                     errors.append(f"喵…这行对局解析不了喵：{line}")
                     continue
             else:
-                parts = line.split()
+                try:
+                    parts = [arg.value for arg in parse_command_args(line)]
+                except ValueError as e:
+                    errors.append(str(e))
+                    continue
                 if len(parts) == 2:
                     pa, pb = parts[0], parts[1]
                     sa = sb = 0
@@ -469,7 +486,10 @@ def record_result(
 
 def record_from_info(draft_text: str, info: str) -> RecordResult:
     """根据记录信息行（如『随便 20』或『随便 20 黄大』）在草稿中记录比分。"""
-    tokens = info.split()
+    try:
+        tokens = [arg.value for arg in parse_command_args(info)]
+    except ValueError as e:
+        return RecordResult(False, draft_text, [], [str(e)])
     if len(tokens) == 2:
         player, score_token = tokens
         score = parse_score_token(score_token)

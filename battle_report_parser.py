@@ -24,7 +24,7 @@
 
     左=踢馆方（team_a），右=守馆方（team_b）。与友谊赛的三点差异：
     时间行**没有 `时间:` 前缀**；没有轮次分隔；防守方名后可带 `(馆主)`。
-    防守方名字恰为 `规则` 的对局行是**空位占位**（守馆方没派人），不入库。
+    防守方名字恰为 `规则` 的对局行是**空位占位**（守馆方没派人），保留对局但不建参赛ID。
 
 解析结果分致命错误（errors，非空则拒绝入库）与可忽略警告（warnings，入库后随
 回复提示）。"""
@@ -34,6 +34,11 @@ import json
 import re
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
+
+try:
+    from .command_args import parse_command_args
+except ImportError:
+    from command_args import parse_command_args
 
 
 KIND_FRIENDLY = "friendly"
@@ -70,6 +75,7 @@ class BattleReport:
     group_id: str = ""
     submitted_by: str = ""
     submitted_name: str = ""
+    created_at: int = 0
     duels: list[Duel] = field(default_factory=list)
     kind: str = KIND_FRIENDLY  # "friendly" | "raid"
 
@@ -218,11 +224,15 @@ def parse_export_payload(payload: str) -> dict:
         days = int(m.group(1))
         payload = payload[: m.start()].rstrip()
     payload, month = _parse_month_filter(payload)
-    tokens = payload.split()
+    tokens = parse_command_args(payload)
     fmt = None
     outcome = "全部"
     rest: list[str] = []
-    for t in tokens:
+    for token in tokens:
+        t = token.value
+        if token.quoted:
+            rest.append(t)
+            continue
         tl = t.lower()
         if tl in ("csv", "json"):
             fmt = tl
@@ -283,6 +293,8 @@ def settle_month_range(month: int | None = None) -> tuple[str, str, str]:
     now = datetime.now()
     if month is None:
         month = 12 if now.month == 1 else now.month - 1
+    if not 1 <= month <= 12:
+        raise ValueError("月份必须在 1~12 之间")
     year = now.year - 1 if month > now.month else now.year
     start, end = _month_bounds(year, month)
     return start, end, f"{year}-{month:02d}"
@@ -332,9 +344,9 @@ def _normalize_date(raw: str) -> str:
     if not (y.isdigit() and m.isdigit() and d.isdigit()):
         raise ValueError(f"无法识别的日期格式: {raw!r}")
     y, m, d = int(y), int(m), int(d)
-    if not (1 <= m <= 12 and 1 <= d <= 31):
+    if not 1000 <= y <= 9999:
         raise ValueError(f"日期数值非法: {raw!r}")
-    return f"{y:04d}-{m:02d}-{d:02d}"
+    return datetime(y, m, d).date().isoformat()
 
 
 def parse_battle_report(text: str) -> ParseResult:
@@ -426,6 +438,9 @@ def parse_battle_report(text: str) -> ParseResult:
         if not player_a or not player_b:
             errors.append(f"第 {lineno} 行：玩家名缺失：{line}")
             continue
+        if (a_ruled and score_a >= score_b) or (b_ruled and score_b >= score_a):
+            errors.append(f"第 {lineno} 行：判罚标记只能出现在比分更低的一方：{line}")
+            continue
 
         report.duels.append(
             Duel(round_no, player_a, score_a, player_b, score_b, a_sub, b_sub, a_ruled or b_ruled)
@@ -447,6 +462,8 @@ def parse_battle_report(text: str) -> ParseResult:
     # 完整性校验
     if not report.team_a or not report.team_b:
         errors.append("缺少战队信息，需以『战队: A VS B』开头。")
+    elif report.team_a == report.team_b:
+        errors.append("双方战队不能相同。")
     if not report.match_time:
         errors.append("缺少时间信息，需以『时间: 2026.08.01』开头。")
     if duel_count == 0:
@@ -460,7 +477,7 @@ def parse_battle_report(text: str) -> ParseResult:
 def is_raid_header(line: str) -> bool:
     """该行是否是踢馆战报的首行（如 `KC踢馆BAR`）。"""
     ln = line.strip()
-    if not ln or ln.startswith("战队:") or "规则" in ln:
+    if not ln or TEAM_RE.match(ln) or "规则" in ln:
         return False
     return bool(RAID_RE.match(ln))
 
@@ -470,13 +487,13 @@ def split_reports(text: str) -> list[str]:
     chunks: list[str] = []
     current: list[str] = []
     for ln in text.splitlines():
-        if ln.strip().startswith("战队:") or is_raid_header(ln):
-            if current:
+        if TEAM_RE.match(ln) or is_raid_header(ln):
+            if any(s.strip() for s in current):
                 chunks.append("\n".join(current))
             current = [ln]
         else:
             current.append(ln)
-    if current:
+    if any(s.strip() for s in current):
         chunks.append("\n".join(current))
     return chunks
 
@@ -582,6 +599,8 @@ def parse_raid_report(text: str) -> ParseResult:
 
     if not report.team_a or not report.team_b:
         errors.append("缺少战队信息，需以『KC踢馆BAR』开头。")
+    elif report.team_a == report.team_b:
+        errors.append("双方战队不能相同。")
     if not report.match_time:
         errors.append("缺少时间信息，需写一行日期（如 2026.8.30 21:00）。")
     if duel_lines == 0:

@@ -112,7 +112,7 @@ def test_sub_marker_variants():
 
 def test_ruled_marker_stripped():
     # 判罚落败标记剥离：只记录 ID，并用单字段 ruled 标记本场被规则
-    r = parse_battle_report("战队: A VS B\n时间: 2026.01.01\n------第一轮------\n红莲(规则) 1:2 蓝大（规则）")
+    r = parse_battle_report("战队: A VS B\n时间: 2026.01.01\n------第一轮------\n红莲(规则) 1:2 蓝大")
     assert not r.errors, r.errors
     d = r.report.duels[0]
     assert d.player_a == "红莲" and d.player_b == "蓝大"
@@ -328,3 +328,37 @@ def test_parse_export_all_default():
 def test_parse_export_multi_word_player():
     a = parse_export_payload("一吻便杀狗 胜场 7月")
     assert a["player"] == "一吻便杀狗" and a["outcome"] == "胜场"
+
+
+# 审查回归：日期必须能被 MySQL DATE 表示，比分标记不得改变败方含义。
+def test_calendar_validation():
+    import pytest
+    for value in ("2026.02.29", "2026.04.31", "0000.01.01", "999.01.01"):
+        with pytest.raises(ValueError):
+            _normalize_date(value)
+    assert _normalize_date("2024.2.29") == "2024-02-29"
+
+
+def test_invalid_date_is_report_error():
+    result = parse_battle_report(SAMPLE.replace("2026.08.01", "2026.02.30"))
+    assert result.report is None and result.errors
+
+
+def test_fullwidth_headers_split_multiple_reports():
+    text = "\n\n" + SAMPLE.replace("战队:", "战队 ：")
+    chunks = split_reports(text + "\n" + text)
+    assert len(chunks) == 2
+    assert all(not parse_battle_report(chunk).errors for chunk in chunks)
+
+
+def test_ruled_marker_cannot_be_on_winner_or_both_sides():
+    for duel in ("甲(规则) 2:1 乙", "甲(规则) 1:2 乙(规则)", "甲(规则) 1:1 乙"):
+        result = parse_battle_report("战队: A VS B\n时间: 2026.01.01\n------第一轮------\n" + duel)
+        assert result.report is None
+        assert any("判罚" in error for error in result.errors)
+
+
+def test_cannot_play_against_same_team():
+    from battle_report_parser import parse_raid_report
+    assert parse_battle_report(SAMPLE.replace("KC VS DYG", "KC VS kc")).errors
+    assert parse_raid_report("KC踢馆kc\n2026.8.30\n甲 2:1 乙").errors
