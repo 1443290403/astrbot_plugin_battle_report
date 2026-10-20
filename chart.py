@@ -93,9 +93,8 @@ def _win_rate_ticks(rates: list[float]) -> list[int]:
     lower = max(0.0, min((low + high - span) / 2, 100.0 - span))
     # 上界限制在最终取整后执行，避免 60% 的数据又被刻度扩到 70%。
     stop = min(100, (floor(high / 5) + 1) * 5)
-    # 选择能整除上界的整齐步长，保证每段刻度间距一致。
-    target_step = next(s for s in (5, 10, 20) if s >= span / 5)
-    step = max(s for s in (5, 10, 20) if s <= target_step and stop % s == 0)
+    # 胜率刻度固定每格 5 个百分点，不再随范围放大间隔。
+    step = 5
     # 尽量维持 10 个百分点跨度；接近 0% 时优先满足上界限制。
     lower = max(0, min(lower, stop - 10))
     start = floor(lower / step) * step
@@ -176,6 +175,11 @@ def make_trend_chart(
         else:
             draw.ellipse([gcoords[0][0] - 3, gcoords[0][1] - 3, gcoords[0][0] + 3, gcoords[0][1] + 3],
                          fill="#999999")
+
+    # 点位标注使用实际胜率；白色描边保证与灰色场次线交叉时仍可辨认。
+    for point, (x, y) in zip(points, coords):
+        draw.text((x, y - 8), f"{point['win_rate']:g}%", font=font_small,
+                  fill="#2f6fed", anchor="ms", stroke_width=2, stroke_fill="white")
 
     # x 轴日期标签（抽样，显示 MM-DD）
     step = max(1, n // 10)

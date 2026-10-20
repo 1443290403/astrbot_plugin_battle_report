@@ -18,7 +18,7 @@ def test_win_rate_axis_covers_values_without_excessive_zoom(rates):
     assert ticks[-1] - max(rates) <= 5
     assert ticks[-1] % 5 == 0
     assert all(isinstance(tick, int) for tick in ticks)
-    assert len({b - a for a, b in zip(ticks, ticks[1:])}) == 1
+    assert {b - a for a, b in zip(ticks, ticks[1:])} == {5}
     assert 5 <= ticks[-1] - ticks[0] <= 100
     if max(rates) >= 5:
         assert ticks[-1] - ticks[0] >= 10
@@ -69,6 +69,28 @@ def test_trend_win_rate_zoom_does_not_change_games_axis(tmp_path, monkeypatch):
                   for i, rate in enumerate(rates)]
         chart.make_trend_chart(points, "示例趋势", tmp_path / f"{index}.png")
     assert len(lines) == 4 and lines[:2] == lines[2:]
+
+
+def test_trend_labels_each_point_with_actual_percentage(tmp_path, monkeypatch):
+    from PIL import ImageDraw
+
+    labels = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def capture_text(draw, xy, text, *args, **kwargs):
+        if kwargs.get("anchor") == "ms":
+            labels.append((xy, text))
+        return original_text(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture_text)
+    points = [{"date": f"2026-10-{i + 1:02d}", "win_rate": rate, "total": 10 + i}
+              for i, rate in enumerate([55.0, 59.4, 100.0])]
+    chart.make_trend_chart(points, "示例趋势", tmp_path / "labels.png")
+    assert [text for _, text in labels] == ["55%", "59.4%", "100%"]
+    ticks = chart._win_rate_ticks([p["win_rate"] for p in points])
+    for ((x, y), _), point in zip(labels, points):
+        point_y = 50 + 375 * (1 - (point["win_rate"] - ticks[0]) / (ticks[-1] - ticks[0]))
+        assert y < point_y
 
 
 def _rows():
