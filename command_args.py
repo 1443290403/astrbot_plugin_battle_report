@@ -41,7 +41,7 @@ def parse_command_args(text: str, *, split_commas: bool = False,
                 parts.append(text[pos])
                 pos += 1
             if pos == len(text):
-                raise ValueError('引号没有闭合喵，请把完整 ID 放在一对引号中，例如 "ice boundary"。')
+                raise ValueError('引号没有闭合喵，请把完整 ID 放在一对引号中，例如 "示例 玩家"。')
             pos += 1
             value = ''.join(parts)
             if pos < len(text) and not text[pos].isspace() and not separator(text[pos]):
@@ -75,7 +75,7 @@ def parse_managed_ids(text: str) -> tuple[list[str], str]:
     """管理ID：最后一个参数是角色名，其余为逗号分隔 ID（兼容旧的裸空格 ID）。"""
     args = parse_command_args(text, split_commas=True)
     if len(args) < 2:
-        raise ValueError('用法喵：/管理ID "ice boundary",红莲 "角色名字"')
+        raise ValueError('用法喵：/管理ID "示例 玩家",云玩家 "角色名字"')
     username = args[-1].value
     id_text = text[:args[-1].start].rstrip(' \t\r\n' + _COMMAS)
     ids = parse_command_args(id_text, split_commas=True, split_whitespace=False)

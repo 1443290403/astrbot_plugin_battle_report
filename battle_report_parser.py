@@ -4,23 +4,23 @@
 
 **友谊赛**（`kind = "friendly"`）::
 
-    战队: KC VS DYG
+    战队: a队 VS b队
     时间: 2026.08.01
     规则: 2/3【KOF】
     地点: 435823386
     ------第一轮------
-    红莲 2:1 牌大
-    凯撒亮 2:1 蓝大
-    悠悠球 1:2 老千
+    云玩家 2:1 柠檬
+    萌新 2:1 鸽子
+    遗老 1:2 复读机
 
 **踢馆赛**（`kind = "raid"`，走 `parse_raid_report`）::
 
-    KC踢馆BAR
+    a队踢馆b队
     规则：OCG.2026.7.1.MATCH
     2026.8.30 21:00
     踢馆开始！
-    雨落 2:1 念心
-    雨落 2:1 云猫(馆主)
+    云玩家 2:1 复读机
+    云玩家 2:1 路人乙(馆主)
 
     左=踢馆方（team_a），右=守馆方（team_b）。与友谊赛的三点差异：
     时间行**没有 `时间:` 前缀**；没有轮次分隔；防守方名后可带 `(馆主)`。
@@ -44,7 +44,7 @@ except ImportError:
 KIND_FRIENDLY = "friendly"
 KIND_RAID = "raid"
 
-# 踢馆战报里「守馆方没人守」的空位占位 ID：`雨落 0:0 规则` 的右侧
+# 踢馆战报里「守馆方没人守」的空位占位 ID：`云玩家 0:0 规则` 的右侧
 RAID_PLACEHOLDER = "规则"
 
 
@@ -105,17 +105,17 @@ LOC_RE = re.compile(r"^\s*地点\s*[:：]\s*(.+)$", re.IGNORECASE)
 SCORE_RE = re.compile(r"(\d+)\s*[:：]\s*(\d+)")
 # 战队分隔符 "VS"（两侧有空格）
 VS_RE = re.compile(r"\s+VS\s+", re.IGNORECASE)
-# 踢馆战报首行："KC踢馆BAR"（左=踢馆方，右=守馆方）
+# 踢馆战报首行："a队踢馆b队"（左=踢馆方，右=守馆方）
 RAID_RE = re.compile(r"^\s*(.+?)\s*踢馆\s*(.+?)\s*$")
 # 踢馆战报的对局开始标记行："踢馆开始！"（不参与任何解析）
 _RAID_START_RE = re.compile(r"^\s*踢馆\s*开始\s*[！!]?\s*$")
 # 踢馆战报的裸时间行开头（无 `时间:` 前缀）："2026.8.30 21:00"
 _BARE_DATE_RE = re.compile(r"^\s*(\d{4}\s*[.\-/年]\s*\d{1,2}\s*[.\-/月]\s*\d{1,2})")
-# 替补标记（玩家名末尾）：红莲(替) / 红莲（替） / 红莲 （替） / 红莲(替补) / 红莲（ 替补 ）等
+# 替补标记（玩家名末尾）：云玩家(替) / 云玩家（替） / 云玩家 （替） / 云玩家(替补) / 云玩家（ 替补 ）等
 _SUB_RE = re.compile(r"[\s　]*[\(（][\s　]*替(?:补)?[\s　]*[\)）]$")
-# 判罚落败标记（玩家名末尾）：红莲(规则) / 红莲（规则）等
+# 判罚落败标记（玩家名末尾）：云玩家(规则) / 云玩家（规则）等
 _RULED_RE = re.compile(r"[\s　]*[\(（][\s　]*规则[\s　]*[\)）]$")
-# 馆主标记（踢馆战报的防守方名末尾）：云猫(馆主) / 云猫（馆主）等
+# 馆主标记（踢馆战报的防守方名末尾）：路人乙(馆主) / 路人乙（馆主）等
 _OWNER_RE = re.compile(r"[\s　]*[\(（][\s　]*馆主[\s　]*[\)）]$")
 # 小数点比分（如 2.1）。这是**错误**而非警告：静默丢行会让防守者人数少算一人、
 # 踢馆点数直接算错。见 parse_raid_report / parse_battle_report 的报错分支。
@@ -475,7 +475,7 @@ def parse_battle_report(text: str) -> ParseResult:
 
 
 def is_raid_header(line: str) -> bool:
-    """该行是否是踢馆战报的首行（如 `KC踢馆BAR`）。"""
+    """该行是否是踢馆战报的首行（如 `a队踢馆b队`）。"""
     ln = line.strip()
     if not ln or TEAM_RE.match(ln) or "规则" in ln:
         return False
@@ -503,12 +503,12 @@ def parse_raid_report(text: str) -> ParseResult:
 
     格式::
 
-        KC踢馆BAR
+        a队踢馆b队
         规则：OCG.2026.7.1.MATCH
         2026.8.30 21:00          ← 裸时间行，无 `时间:` 前缀
         踢馆开始！
-        雨落 2:1 念心
-        雨落 2:1 云猫(馆主)
+        云玩家 2:1 复读机
+        云玩家 2:1 路人乙(馆主)
 
     与友谊赛的三点差异：
 
@@ -598,7 +598,7 @@ def parse_raid_report(text: str) -> ParseResult:
         )
 
     if not report.team_a or not report.team_b:
-        errors.append("缺少战队信息，需以『KC踢馆BAR』开头。")
+        errors.append("缺少战队信息，需以『a队踢馆b队』开头。")
     elif report.team_a == report.team_b:
         errors.append("双方战队不能相同。")
     if not report.match_time:

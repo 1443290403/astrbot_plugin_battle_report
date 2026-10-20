@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.17.1`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
+> 对应版本：`1.17.2`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -414,6 +414,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 ### M-11 群属性、流程帮助与提交限制
 
 - 群名维持友谊群、战报群、主群；未设置时默认友谊群，不新增别名、不改写旧行。
+- v1.17.2：面向用户的固定示例统一使用虚构队名 a队/b队、云玩家/萌新/遗老与复读机/鸽子/柠檬；空格 ID 用“示例 玩家”。覆盖流程帮助、命令索引、排表错误、格式与参数错误提示、README 和帮助预览；不替换用户输入、数据库中的真实名称或生成战报的实际名单。
 - `help_guide.py` 的 `WORKFLOWS` 是三类流程的唯一文案源：友谊群排表/记分/追加/交接，战报群提交/回执/先删后改/删除，主群查ID/绑定/战绩/排行/趋势/导出。
 - `render_setup_guide` 只提示联系超管或本队战队管理员，展示缺少的绑定战队/群属性命令；不展示超管配置、授权管理员的命令或权限范围说明。
 - `database.get_group_chat_type_setting` 返回已设置的有效属性或 None；`get_group_chat_type` 返回默认友谊群但不自动写行。无需新增字段或变更 schema。
@@ -1192,7 +1193,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.2")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

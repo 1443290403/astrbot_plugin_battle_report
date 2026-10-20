@@ -72,13 +72,13 @@ class RoundCommandFilter(CustomFilter):
 
 _FORMAT_EXAMPLE = (
     "格式示例：\n"
-    "战队: KC VS DYG\n"
+    "战队: a队 VS b队\n"
     "时间: 2026.08.01\n"
     "规则: 2/3【KOF】\n"
     "地点: 群号\n"
     "------第一轮------\n"
-    "红莲  2:1  牌大\n"
-    "凯撒亮  2:1  蓝大"
+    "云玩家  2:1  复读机\n"
+    "萌新  2:1  鸽子"
 )
 
 
@@ -158,7 +158,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -457,7 +457,7 @@ class BattleReportPlugin(Star):
         if result.errors:
             yield event.plain_result(
                 "❌ 排表没成功喵：\n" + "\n".join(result.errors)
-                + "\n\n格式长这样喵：\nKC:红莲 凯撒亮 悠悠球\nDYG:老千 蓝大 红大"
+                + "\n\n格式长这样喵：\na队:云玩家 萌新 遗老\nb队:复读机 鸽子 柠檬"
                 + _HELP_HINT
             )
             return
