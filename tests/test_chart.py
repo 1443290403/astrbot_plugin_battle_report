@@ -10,11 +10,18 @@ from stats import build_ranking_cells, rank_aligns
 @pytest.mark.parametrize("rates", [
     [55, 57, 60], [55, 55.1, 55.2], [60], [60, 60],
     [0], [100], [0, 0], [100, 100], [0, 1], [99, 100], [0, 100],
+    [35.7, 60], [60.3, 60.3], [4.9], [94.9, 95.1], [64.9], [65],
 ])
 def test_win_rate_axis_covers_values_without_excessive_zoom(rates):
     ticks = chart._win_rate_ticks(rates)
     assert 0 <= ticks[0] <= min(rates) <= max(rates) <= ticks[-1] <= 100
-    assert 10 <= ticks[-1] - ticks[0] <= 100
+    assert ticks[-1] - max(rates) <= 5
+    assert ticks[-1] % 5 == 0
+    assert all(isinstance(tick, int) for tick in ticks)
+    assert len({b - a for a, b in zip(ticks, ticks[1:])}) == 1
+    assert 5 <= ticks[-1] - ticks[0] <= 100
+    if max(rates) >= 5:
+        assert ticks[-1] - ticks[0] >= 10
     assert ticks == sorted(set(ticks))
     if max(rates) - min(rates) <= 10:
         assert ticks[-1] - ticks[0] <= 20

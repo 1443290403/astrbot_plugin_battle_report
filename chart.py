@@ -5,7 +5,7 @@
 """
 
 import os
-from math import ceil, floor
+from math import floor
 from pathlib import Path
 
 # 中文字体候选（Windows / Linux）
@@ -86,15 +86,19 @@ def _short_date(date: str) -> str:
 
 
 def _win_rate_ticks(rates: list[float]) -> list[int]:
-    """在 0–100% 内选取整齐刻度，至少展示 10 个百分点并给曲线留白。"""
+    """上界取下一个 5 的整数倍，最多高于最高胜率 5 个百分点。"""
     low, high = min(rates), max(rates)
     span = min(100.0, max(10.0, (high - low) * 1.2))
     # 碰到 0/100 边界时整体平移窗口，保持单点、恒定胜率也有足够跨度。
     lower = max(0.0, min((low + high - span) / 2, 100.0 - span))
-    upper = lower + span
-    step = next(s for s in (2, 5, 10, 20) if s >= span / 5)
-    start = max(0, floor(lower / step) * step)
-    stop = min(100, ceil(upper / step) * step)
+    # 上界限制在最终取整后执行，避免 60% 的数据又被刻度扩到 70%。
+    stop = min(100, (floor(high / 5) + 1) * 5)
+    # 选择能整除上界的整齐步长，保证每段刻度间距一致。
+    target_step = next(s for s in (5, 10, 20) if s >= span / 5)
+    step = max(s for s in (5, 10, 20) if s <= target_step and stop % s == 0)
+    # 尽量维持 10 个百分点跨度；接近 0% 时优先满足上界限制。
+    lower = max(0, min(lower, stop - 10))
+    start = floor(lower / step) * step
     return list(range(start, stop + 1, step))
 
 
