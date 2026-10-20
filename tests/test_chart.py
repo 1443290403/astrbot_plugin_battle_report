@@ -1,10 +1,67 @@
-"""排行表格图片渲染单元测试。"""
+"""排行表格与胜率趋势图片渲染测试。"""
 
 from PIL import Image
 
 import chart
 import pytest
 from stats import build_ranking_cells, rank_aligns
+
+
+@pytest.mark.parametrize("rates", [
+    [55, 57, 60], [55, 55.1, 55.2], [60], [60, 60],
+    [0], [100], [0, 0], [100, 100], [0, 1], [99, 100], [0, 100],
+])
+def test_win_rate_axis_covers_values_without_excessive_zoom(rates):
+    ticks = chart._win_rate_ticks(rates)
+    assert 0 <= ticks[0] <= min(rates) <= max(rates) <= ticks[-1] <= 100
+    assert 10 <= ticks[-1] - ticks[0] <= 100
+    assert ticks == sorted(set(ticks))
+    if max(rates) - min(rates) <= 10:
+        assert ticks[-1] - ticks[0] <= 20
+
+
+def test_trend_small_changes_are_visible_in_rendered_curve(tmp_path):
+    """54%–56% 的变化应占足够像素，防止坐标仍按固定 0–100 绘制。"""
+    points = [
+        {"date": f"2026-10-{i + 1:02d}", "win_rate": rate, "total": 100 + i}
+        for i, rate in enumerate([54, 55, 56, 55.5])
+    ]
+    original = [p.copy() for p in points]
+    out = tmp_path / "nested" / "trend.png"
+    assert chart.make_trend_chart(points, "云玩家 胜率走势", out) == out.resolve()
+    with Image.open(out) as img:
+        assert img.format == "PNG" and img.size == (960, 480)
+        # 仅检查绘图区的胜率蓝线，避免图例或文字干扰。
+        ys = [y for y in range(50, 426) for x in range(80, 871)
+              if img.getpixel((x, y)) == (47, 111, 237)]
+    assert max(ys) - min(ys) >= 60
+    assert points == original
+
+
+@pytest.mark.parametrize("rates,totals", [
+    ([0], [0]), ([100], [1]), ([60, 60], [10, 20]),
+    ([0, 100], [1, 10]), ([100, 100], [10, 20]),
+])
+def test_trend_renders_single_flat_and_boundary_data(tmp_path, rates, totals):
+    points = [{"date": f"2026-10-{i + 1:02d}", "win_rate": rate, "total": total}
+              for i, (rate, total) in enumerate(zip(rates, totals))]
+    with Image.open(chart.make_trend_chart(points, "示例趋势", tmp_path / "trend.png")) as img:
+        assert img.size == (960, 480)
+
+
+def test_trend_empty_data_raises(tmp_path):
+    with pytest.raises(ValueError, match="无可绘制的数据点"):
+        chart.make_trend_chart([], "示例趋势", tmp_path / "empty.png")
+
+
+def test_trend_win_rate_zoom_does_not_change_games_axis(tmp_path, monkeypatch):
+    lines = []
+    monkeypatch.setattr(chart, "_dashed_line", lambda draw, start, end: lines.append((start, end)))
+    for index, rates in enumerate(([54, 55, 56], [0, 50, 100])):
+        points = [{"date": f"2026-10-{i + 1:02d}", "win_rate": rate, "total": 10 * (i + 1)}
+                  for i, rate in enumerate(rates)]
+        chart.make_trend_chart(points, "示例趋势", tmp_path / f"{index}.png")
+    assert len(lines) == 4 and lines[:2] == lines[2:]
 
 
 def _rows():

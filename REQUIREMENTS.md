@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.17.2`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
+> 对应版本：`1.17.3`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -368,9 +368,11 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 |---|---|---|
 | 文本表格 | `stats.format_player_ranking` / `_format_table`（按显示宽度对齐，CJK 算 2） | `ranking_image=false` 或图片生成失败 |
 | 排行图片 | `chart.make_ranking_image` | `ranking_image=true`（默认），失败自动回退文本 |
-| 趋势图 | `chart.make_trend_chart` | `/趋势` 恒为图片 |
+| 趋势图 | `chart.make_trend_chart` | `/趋势` 恒为图片；胜率左轴自动缩放，累计场次右轴独立 |
 | 合并转发 | `_send_responses`（≥2 条时封装 Node） | 提交结果、导出 |
 | 文件 | `File` 组件 + `data_dir/exports/` | `/导出 csv/json`、`/导出群成员` |
+
+**趋势图纵轴（v1.17.3）：** `_win_rate_ticks` 按全部累计胜率的最小/最大值选取窗口，跨度取 `max(10, 数据跨度 × 1.2)` 并限制在 100 内，窗口在 0%～100% 内平移后按整齐刻度向外取整。单点/恒定胜率仍有至少 10 个百分点跨度；0%/100% 均可显示。网格、左轴标签和蓝线共用同一映射，图底部标注范围和自动缩放，图例不遮曲线；累计场次虚线继续按独立右轴 0～最大场次绘制。只调整绘图，不修改累计胜率公式、查询或存储。
 
 **★ 文本表格与图片表格必须同源：** 两者共用 `stats.build_ranking_cells()`（表头 + 单元格值 + 并列名次规则全在这）。**新增排行列只能改这一个函数**，改 `format_player_ranking` 或 `make_ranking_image` 单独加列会导致两种输出不一致。
 
@@ -733,7 +735,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|---|
 | **F-05** | `/排行 [个人\|队伍\|全部] [X月]` | `ranking` | 见下方详解 |
 | **F-06** | `/战绩 [玩家名] [X月]` | `record` | 无名字 → **战队总战绩**（`get_home_team_record`，按 `winner`；另附踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮）；有名字 → `resolve_role` 命中则聚合该角色全部参赛ID，否则按单个参赛ID（同上一组字段，走 `get_player_record(with_raid=True)`）。三条次数与排行末三列同源，**多出一行**展示 |
-| **F-07** | `/趋势 <玩家名\|队伍> [最近N天\|X月]` | `trend` | 三级回退：角色聚合 → 单个参赛ID → **按队名查**。默认无参数时展示**本战队** |
+| **F-07** | `/趋势 <玩家名\|队伍> [最近N天\|X月]` | `trend` | 三级回退：角色聚合 → 单个参赛ID → **按队名查**。默认无参数时展示**本战队**；左轴胜率按数据自动缩放（M-09），右轴累计场次独立 |
 | **F-08** | `/导出 [玩家名] [胜场\|负场\|全部] [X月\|最近N天] [csv\|json]` | `export` | 见下方详解 |
 | **F-09** | `/我的战绩 [X月]` | `my_record` | 按自己绑定的全部参赛ID汇总；多ID时额外列每个ID明细（含踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮） |
 | **F-27** | `/踢馆 [玩家名] [X月]` | `raid` | 无名字 → 本战队踢馆卡（踢馆成功 / 守馆成功 / 守馆首轮 / 踢馆成功含馆主 + 徽章 + 积分明细 + 合计）；有名字 → 该选手的踢馆卡。alias `/踢馆`、`/战报踢馆`。入口 `_require_home` → `get_raid_team_stats` / `get_raid_stats_for_players` → `stats.format_raid_record` |
@@ -1175,7 +1177,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `test_export.py` | 文本还原（raw 头部保留、双空格、`(替)`/`(规则)`/`(馆主)`、`round_no == 0` 无轮次头）、导出过滤全分支 |
 | `test_help_guide.py` | 三类流程的步骤顺序、真实命令与排表示例、先删再重发、权限说明、简短缺项提示、普通帮助不夹带设置、预览无副作用 |
 | `test_stats.py` | 命令索引与渲染（`test_render_help_head_and_tail_are_catgirl`：抬头与末行含语气，而 **`▎排表` / `默认本月` / `群属性：/群聊属性` / `/帮助 全部` 等命令字面量逐字不变**，§5-M10）、**`build_team_panel` 的 8 行标签顺序 / ceil 取整回归 / 不套 10 分封顶 / 空 dict 兜底 / `:g` 与表格同格式 / 胜率 1 位小数** |
-| `test_chart.py` | 排行图片生成、行数缩放、长名、不截断、**`rank_aligns()` 与表头列数一致且全为 `center`**、**15 列（带奖金列）渲染冒烟**、**「战队战绩」面板**：面板比表格高时图变高（`body_h = max()` 的裁切回归）、表格更高时高度不变、`panel=None`/不传/`[]` 三者尺寸逐像素相同、`max_rows=1` 的省略行与面板共存 |
+| `test_chart.py` | 趋势图窄范围波动的像素跨度、轴范围包含全部数据且不超过 0～100、最小跨度、单点/恒定/边界/空数据、右轴不受胜率缩放影响；排行图片生成、行数缩放、长名、不截断、**`rank_aligns()` 与表头列数一致且全为 `center`**、**15 列（带奖金列）渲染冒烟**、**「战队战绩」面板**：面板比表格高时图变高（`body_h = max()` 的裁切回归）、表格更高时高度不变、`panel=None`/不传/`[]` 三者尺寸逐像素相同、`max_rows=1` 的省略行与面板共存 |
 | `test_database_stats.py` | **DB 集成**（排行/战绩/趋势/导出/迁移/用户绑定/群管理/**重复战报拒收**/**踢馆**/**结算**：写入后取回、重结算行数不翻倍、追加后回到前 4 名会删掉多余行、不同战队/月份互不干扰、`player_name` 与排行同源、小数往返、**`get_settlement_entries` 的明细与排序**（只读 `/结算` 的数据源）、**`clear_settlement` 的重置**（只删本队本月、返回行数、重复重置返回 0、重置后可重新结算且不残留旧行）、**`get_qq_ids_by_names`**（空名单不查库、只返回有 QQ 的、按 `users.name` 而非参赛ID、跨战队不串门）；**`get_home_team_record` 的 `attack_points` 与 `get_raid_team_stats` 等值**——面板「零额外查询」的护栏） |
 
 **数据库测试需显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1`**；独立使用
@@ -1193,7 +1195,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.2")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

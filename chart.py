@@ -1,10 +1,11 @@
 """Pillow 胜率走势图生成（含中文字体多路径兜底）。
 
-图表内容：y 轴固定 0-100（胜率%），主曲线为累计胜率，次曲线（虚线，右轴）为
+图表内容：左轴按胜率范围自动缩放，主曲线为累计胜率，次曲线（虚线，右轴）为
 累计场次，x 轴为日期（抽样显示 MM-DD）。
 """
 
 import os
+from math import ceil, floor
 from pathlib import Path
 
 # 中文字体候选（Windows / Linux）
@@ -84,6 +85,19 @@ def _short_date(date: str) -> str:
     return "-".join(parts[1:]) if len(parts) == 3 else str(date)
 
 
+def _win_rate_ticks(rates: list[float]) -> list[int]:
+    """在 0–100% 内选取整齐刻度，至少展示 10 个百分点并给曲线留白。"""
+    low, high = min(rates), max(rates)
+    span = min(100.0, max(10.0, (high - low) * 1.2))
+    # 碰到 0/100 边界时整体平移窗口，保持单点、恒定胜率也有足够跨度。
+    lower = max(0.0, min((low + high - span) / 2, 100.0 - span))
+    upper = lower + span
+    step = next(s for s in (2, 5, 10, 20) if s >= span / 5)
+    start = max(0, floor(lower / step) * step)
+    stop = min(100, ceil(upper / step) * step)
+    return list(range(start, stop + 1, step))
+
+
 def make_trend_chart(
     points: list[dict],
     title: str,
@@ -118,19 +132,21 @@ def make_trend_chart(
 
     draw.text((width / 2, 22), title, font=font_title, fill="black", anchor="mm")
 
-    # y 轴网格与刻度（胜率 0-100）
-    for v in (0, 25, 50, 75, 100):
-        y = margin_top + plot_h * (1 - v / 100)
-        draw.line([(margin_left, y), (width - margin_right, y)], fill="#DDDDDD", width=1)
-        draw.text((margin_left - 8, y), f"{v}%", font=font_small, fill="gray", anchor="rm")
-
     n = len(points)
+    ticks = _win_rate_ticks([p["win_rate"] for p in points])
+    y_min, y_max = ticks[0], ticks[-1]
 
     def px(i: int) -> float:
         return margin_left + (i / max(n - 1, 1)) * plot_w
 
     def py(v: float) -> float:
-        return margin_top + plot_h * (1 - v / 100)
+        return margin_top + plot_h * (1 - (v - y_min) / (y_max - y_min))
+
+    # 网格、刻度与曲线共用同一映射；累计场次仍使用独立右轴。
+    for v in ticks:
+        y = py(v)
+        draw.line([(margin_left, y), (width - margin_right, y)], fill="#DDDDDD", width=1)
+        draw.text((margin_left - 8, y), f"{v}%", font=font_small, fill="gray", anchor="rm")
 
     # 主曲线：累计胜率
     coords = [(px(i), py(p["win_rate"])) for i, p in enumerate(points)]
@@ -164,9 +180,13 @@ def make_trend_chart(
         draw.text((x, height - margin_bottom + 8), _short_date(points[i]["date"]),
                   font=font_small, fill="black", anchor="ma")
 
-    # 图例
-    draw.text((width - margin_right - 150, margin_top + 4),
-              "■ 胜率   -- 累计场次", font=font_small, fill="#2f6fed")
+    # 图例放在绘图区外，标明缩放范围，避免遮住放大后的曲线。
+    draw.text((margin_left, height - 14), f"胜率轴：{y_min}%–{y_max}%（自动缩放）",
+              font=font_small, fill="gray", anchor="lm")
+    draw.text((width - margin_right - 100, height - 14), "■ 累计胜率",
+              font=font_small, fill="#2f6fed", anchor="rm")
+    draw.text((width - margin_right, height - 14), "-- 累计场次",
+              font=font_small, fill="#999999", anchor="rm")
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
