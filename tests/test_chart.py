@@ -18,7 +18,7 @@ def test_win_rate_axis_covers_values_without_excessive_zoom(rates):
     assert ticks[-1] - max(rates) <= 5
     assert ticks[-1] % 5 == 0
     assert all(isinstance(tick, int) for tick in ticks)
-    assert {b - a for a, b in zip(ticks, ticks[1:])} == {5}
+    assert len({b - a for a, b in zip(ticks, ticks[1:])}) == 1
     assert 5 <= ticks[-1] - ticks[0] <= 100
     if max(rates) >= 5:
         assert ticks[-1] - ticks[0] >= 10

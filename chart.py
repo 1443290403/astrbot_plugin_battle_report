@@ -93,8 +93,9 @@ def _win_rate_ticks(rates: list[float]) -> list[int]:
     lower = max(0.0, min((low + high - span) / 2, 100.0 - span))
     # 上界限制在最终取整后执行，避免 60% 的数据又被刻度扩到 70%。
     stop = min(100, (floor(high / 5) + 1) * 5)
-    # 胜率刻度固定每格 5 个百分点，不再随范围放大间隔。
-    step = 5
+    # 根据范围选择步长，并让上界落在均匀刻度上。
+    target_step = next(s for s in (5, 10, 20) if s >= span / 5)
+    step = max(s for s in (5, 10, 20) if s <= target_step and stop % s == 0)
     # 尽量维持 10 个百分点跨度；接近 0% 时优先满足上界限制。
     lower = max(0, min(lower, stop - 10))
     start = floor(lower / step) * step
