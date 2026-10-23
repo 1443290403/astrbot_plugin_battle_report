@@ -184,6 +184,87 @@ def test_numbered_review_shows_platform_error_and_uses_astrbot_logger(plugin_mod
     assert obj._review_inbox.records[token]['status'] == 'pending'
 
 
+@pytest.mark.parametrize('approve', [True, False])
+def test_snowluma_11411_old_request_failure_then_native_reinvite_uses_card_sequence(plugin_module, tmp_path, qq_invite_card, approve):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj.db_ready, obj.db = False, None
+    bot = SimpleNamespace(call_action=AsyncMock())
+    async def action(name, **params):
+        if name == 'get_version_info':
+            return {'app_name': 'SnowLuma', 'app_version': '1.14.11-node'}
+        if name == 'send_private_msg':
+            return {'message_id': 90000 + len([c for c in bot.call_action.await_args_list if c.args[0] == name])}
+        if name == 'set_group_add_request':
+            if params['flag'] == 'invite:30003:u_example':
+                return {'status': 'failed', 'retcode': 100,
+                        'wording': 'OIDB error 120161001 on 0x10c8_1: handle async message fail'}
+            assert params == {'self_id': 12345, 'flag': 'slreq:1:765:30003:2:0',
+                              'sub_type': 'invite', 'approve': approve}
+        return {}
+    bot.call_action.side_effect = action
+    request = review_event(new_qq_request('group') | {'flag': 'invite:30003:u_example', 'time': 90})
+    request.bot = bot
+    asyncio.run(obj.review_request(request))
+    old = next(iter(obj._review_inbox.records))
+    failed = review_event({'post_type': 'message', 'message_type': 'private'}, f'同意 {old}')
+    failed.bot = bot
+    asyncio.run(obj.review_request(failed))
+    assert '120161001' in failed.send.await_args.args[0]
+    card = review_event(qq_invite_card())
+    card.bot = bot
+    assert plugin_module.RequestReviewFilter().filter(card, {})
+    asyncio.run(obj.review_request(card))
+    card.stop_event.assert_called_once()
+    token = next(t for t, r in obj._review_inbox.records.items() if r.get('source') == 'snowluma_invite_card')
+    assert obj._review_inbox.records[old]['status'] == 'superseded'
+    notices = [c for c in bot.call_action.await_args_list if c.args[0] == 'send_private_msg']
+    assert len(notices) == 2 and token in notices[-1].kwargs['message'][0]['data']['text']
+    assert all(c.kwargs['user_id'] == 10001 for c in notices)
+    assert len([c for c in bot.call_action.await_args_list if c.args[0].startswith('set_')]) == 1
+    # 重新加载记录后，用新通知的引用审批；仍只回传卡片中的准确序号。
+    obj._review_inbox = None
+    reply = review_event({'post_type': 'message', 'message_type': 'private'}, '同意' if approve else '拒绝')
+    reply.bot = bot
+    reply.get_messages = lambda: [plugin_module.Reply(id='90002')]
+    asyncio.run(obj.review_request(reply))
+    assert ('已同意' if approve else '已拒绝') in reply.send.await_args.args[0]
+    assert obj._review_inbox.records[token]['status'] == ('approved' if approve else 'rejected')
+
+
+@pytest.mark.parametrize('backend', ['NapCat', '', None])
+def test_native_card_is_not_converted_to_a_snowluma_handle_on_other_backends(plugin_module, tmp_path, qq_invite_card, backend):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    card = review_event(qq_invite_card())
+    card.bot.call_action.return_value = {'app_name': backend}
+    asyncio.run(obj.review_request(card))
+    assert obj._review_inbox.records == {}
+    card.stop_event.assert_not_called()
+    card.send.assert_not_awaited()
+    assert [c.args[0] for c in card.bot.call_action.await_args_list] == ['get_version_info']
+
+
+@pytest.mark.parametrize('approve', [True, False])
+def test_already_agreed_invite_is_not_reported_as_failure_or_rejection(plugin_module, tmp_path, monkeypatch, approve):
+    logger = Mock()
+    monkeypatch.setattr(plugin_module, 'logger', logger)
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    request = review_event(new_qq_request('group'))
+    asyncio.run(obj.review_request(request))
+    token = next(iter(obj._review_inbox.records))
+    reply = review_event({'post_type': 'message', 'message_type': 'private'},
+                         f'{"同意" if approve else "拒绝"} {token}')
+    reply.bot.call_action.return_value = {'status': 'failed', 'retcode': 100,
+        'wording': 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'}
+    asyncio.run(obj.review_request(reply))
+    assert '已被同意' in reply.send.await_args.args[0]
+    assert ('无法再拒绝' in reply.send.await_args.args[0]) == (not approve)
+    assert obj._review_inbox.records[token]['status'] == 'approved'
+    logger.exception.assert_not_called()
+
+
 @pytest.mark.parametrize('sender,group,message_type', [
     ('20002','','private'), ('10001','100','group'), ('10001','100','private'),
 ])

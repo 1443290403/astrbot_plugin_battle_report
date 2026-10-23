@@ -29,7 +29,7 @@ from astrbot.api.star import Star, StarTools, register
 
 from . import chart, help_guide, lineup, stats
 from .command_args import parse_command_args, parse_managed_ids, single_name
-from .request_review import ReviewInbox, parse_decision, request_payload
+from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
 from .battle_report_parser import (
     KIND_RAID,
@@ -89,7 +89,7 @@ class RequestReviewFilter(CustomFilter):
         if scope is None:
             return False
         raw = getattr(event.message_obj, "raw_message", None)
-        if request_payload(raw, scope[1]) is not None:
+        if request_payload(raw, scope[1]) is not None or invite_card_payload(raw, scope[1]) is not None:
             return True
         return (isinstance(raw, dict) and raw.get("post_type") == "message"
                 and raw.get("message_type") == "private"
@@ -183,7 +183,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -254,15 +254,23 @@ class BattleReportPlugin(Star):
             return
         raw = getattr(event.message_obj, "raw_message", None)
         payload = request_payload(raw, scope[1])
+        card = invite_card_payload(raw, scope[1]) if payload is None and not event.get_group_id() else None
+        if card is not None:
+            payload = card
         if payload is not None:
-            event.stop_event()
             admin = str(self.config.get("super_admin", "") or "").strip()
             if not admin.isascii() or not admin.isdigit() or int(admin) <= 0:
+                event.stop_event()
                 logger.warning("收到 QQ 申请，但未配置有效的 super_admin")
                 return
             try:
-                await self._get_review_inbox().receive(payload, scope, event.bot, admin)
+                inbox = self._get_review_inbox()
+                if card is not None and not await inbox.supports_invite_cards(scope, event.bot):
+                    return
+                event.stop_event()
+                await inbox.receive(payload, scope, event.bot, admin)
             except Exception:
+                event.stop_event()
                 logger.exception("保存或转发 QQ 申请失败")
             return
         if (not isinstance(raw, dict) or raw.get("post_type") != "message"

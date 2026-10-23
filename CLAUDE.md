@@ -61,11 +61,12 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 
 ## v1.18.0 QQ 申请审批
 
-- `RequestReviewFilter` 只匹配 OneBot 原始请求与明确的同意/拒绝短回复；不要注册会唤醒所有消息的监听。
+- `RequestReviewFilter` 只匹配 OneBot 原始请求、严格匹配的私聊 QQ 邀请卡与明确的同意/拒绝短回复；不要注册会唤醒所有消息的监听。
 - 好友与入群邀请通知私聊发送给 `super_admin`。审批及 `/申请列表` 仅允许该 QQ 私聊操作，不复用战队/群管理员权限，也不依赖 MySQL。
 - `request_review.py` 原样保存并回传 flag；使用平台 ID + 机器人 self_id 隔离申请，不能拿 QQ 号或申请编号替代 flag。
 - `request_reviews.json` 先持久化处理中状态再调用平台，处理完成后持久化结果；引用消息必须匹配已发送通知。处理超时/重启中断转为需核实，不自动重复执行。
-- v1.18.1：同时读取原始 reply 与 AstrBot Reply；ID 不匹配时核验机器人发给当前超管的原通知，不因组件丢失而退回唯一 pending。由 main 注入 AstrBot logger；aiocqhttp NetworkError 属于 OSError，需归类为结果未确认。SnowLuma v1.14.11 的 QQ `120161001` 错误仍需更新后端并实机验证，不猜测或改写 flag。
+- v1.18.1：同时读取原始 reply 与 AstrBot Reply；ID 不匹配时核验机器人发给当前超管的原通知，不因组件丢失而退回唯一 pending。由 main 注入 AstrBot logger；aiocqhttp NetworkError 属于 OSError，需归类为结果未确认。
+- v1.18.2：确认 SnowLuma 后才从实时原始邀请卡的 groupcode/msgseq 建立独立申请，格式参照上游 formatGroupRequestFlag；不改写原 flag、不扫历史、不自动重定向旧编号。新卡片替代同群同邀请人的旧 pending 为 superseded，保留已确认/未知结果。QQ 明确返回 120162004 + already agree msg by self 时同步 approved，即使用户点拒绝也不能记成 rejected；120161001 等其他错误仍需保留失败，兼容路径需实机验证。
 - 不自动同意申请，不处理群成员加群请求，不把群内“同意”当审批。
 
 ## 用户提示风格

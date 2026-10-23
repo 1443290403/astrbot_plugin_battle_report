@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from request_review import ReviewInbox, parse_decision, request_payload
+from request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 
 SCOPE = ('onebot-a', '12345')
 ADMIN = '10001'
@@ -89,7 +89,7 @@ def test_reply_approves_or_rejects_exact_original_request(tmp_path, kind, approv
         expected['sub_type'] = 'invite'
     assert len(calls) == 1 and calls[0].kwargs == expected
     again = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, not approve, token=token))
-    assert '已经处理' in again
+    assert ('已被同意' if approve else '已被拒绝') in again and '无法再' in again
     assert len(action_calls(bot, calls[0].args[0])) == 1
 
 
@@ -112,7 +112,7 @@ def test_restart_preserves_notification_mapping_and_handled_status(tmp_path):
     reply = inbox.records[token]['notification_id']
     restarted = ReviewInbox(path)
     assert '已拒绝' in asyncio.run(restarted.decide(SCOPE, bot, ADMIN, False, reply_id=reply))
-    assert '已经处理' in asyncio.run(ReviewInbox(path).decide(SCOPE, bot, ADMIN, True, token=token))
+    assert '已被拒绝' in asyncio.run(ReviewInbox(path).decide(SCOPE, bot, ADMIN, True, token=token))
     assert len(action_calls(bot, 'set_friend_add_request')) == 1
 
 
@@ -361,3 +361,206 @@ def test_real_aiocqhttp_group_action_response_and_network_timeout(tmp_path):
     count = len(calls)
     asyncio.run(inbox.decide(SCOPE, bot, ADMIN, False, token=second))
     assert len(calls) == count
+
+
+@pytest.mark.parametrize('approve', [True, False])
+@pytest.mark.parametrize('wrapped', [True, False])
+def test_qq_already_approved_is_saved_as_approved_even_when_user_rejects(tmp_path, approve, wrapped):
+    path, bot = tmp_path / 'requests.json', make_bot()
+    inbox = ReviewInbox(path)
+    token = receive(inbox, bot, 'group')
+    failure = {'status': 'failed', 'retcode': 100, 'data': None,
+               'wording': 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'}
+    bot.call_action.side_effect = None
+    if wrapped:
+        bot.call_action.return_value = failure
+    else:
+        errors = pytest.importorskip('aiocqhttp.exceptions')
+        bot.call_action.side_effect = errors.ActionFailed(failure)
+    result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, token=token))
+    assert '已被同意' in result and '处理失败' not in result and '已拒绝' not in result
+    assert ('无法再拒绝' in result) == (not approve)
+    assert inbox.records[token]['status'] == 'approved'
+    restarted = ReviewInbox(path)
+    assert token not in asyncio.run(restarted.list_requests(SCOPE))
+    count = bot.call_action.await_count
+    asyncio.run(restarted.decide(SCOPE, bot, ADMIN, False, token=token))
+    assert bot.call_action.await_count == count
+
+
+@pytest.mark.parametrize('kind,wording', [
+    ('group', 'OIDB error 120161001 on 0x10c8_1: handle async message fail'),
+    ('group', 'OIDB error 120162004 on 0x10c8_1: request invalid'),
+    ('group', 'OIDB error 120162004 on 0x9999_1: already agree msg by self'),
+    ('group', 'unknown flag: OIDB error 120162004 on 0x10c8_1: already agree msg by self'),
+    ('friend', 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'),
+])
+def test_other_errors_never_mark_a_request_approved(tmp_path, kind, wording):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    token = receive(inbox, bot, kind)
+    bot.call_action.side_effect = None
+    bot.call_action.return_value = {'status': 'failed', 'retcode': 100, 'wording': wording}
+    assert '处理失败' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, token=token))
+    assert inbox.records[token]['status'] == 'pending'
+
+
+@pytest.mark.parametrize('app', ['com.tencent.qun.invite', 'com.tencent.tuwen.lua'])
+def test_native_card_uses_approval_sequence_not_message_id(qq_invite_card, app):
+    payload = invite_card_payload(qq_invite_card(app=app, message_id=99999), SCOPE[1])
+    assert payload == {'kind': 'group', 'user_id': '20002', 'group_id': '30003',
+                       'flag': 'slreq:1:765:30003:2:0', 'comment': '',
+                       'source': 'snowluma_invite_card', 'request_time': 100}
+
+
+@pytest.mark.parametrize('patch', [
+    {'post_type': 'message_sent'}, {'message_type': 'group'}, {'sub_type': 'group'},
+    {'group_id': 30003}, {'self_id': 99999}, {'user_id': 12345}, {'user_id': 0},
+    {'time': 0}, {'time': True}, {'message': []}, {'message': '[CQ:json,data=fake]'},
+])
+def test_only_live_private_invite_cards_are_parsed(qq_invite_card, patch):
+    assert invite_card_payload(qq_invite_card(**patch), SCOPE[1]) is None
+
+
+@pytest.mark.parametrize('json_text', ['{bad', 'null', '[]', '123',
+    '{"app":"com.tencent.qun.invite"}', '{"app":"other","meta":{"news":{}}}',
+    '{"app":"com.tencent.qun.invite","meta":null}', '{"app":"com.tencent.qun.invite","meta":{"news":[]}}'])
+def test_malformed_and_unrelated_cards_are_ignored(qq_invite_card, json_text):
+    assert invite_card_payload(qq_invite_card(json_text=json_text), SCOPE[1]) is None
+
+
+@pytest.mark.parametrize('group,sequence', [('0', '1'), ('1', '-1'), ('1', '1.2'),
+    ('1', '9007199254740992'), ('1', '1&msgseq=2'), ('1', ''), ('bad', '1')])
+def test_invite_tuple_must_be_unambiguous_positive_safe_integers(qq_invite_card, group, sequence):
+    assert invite_card_payload(qq_invite_card(group=group, sequence=sequence), SCOPE[1]) is None
+
+
+def test_new_card_replaces_stale_legacy_request_without_reusing_its_flag(tmp_path, qq_invite_card):
+    path, bot = tmp_path / 'requests.json', make_bot()
+    inbox = ReviewInbox(path)
+    old = receive(inbox, bot, 'group', 'invite:30003:u_example')
+    friend = receive(inbox, bot, 'friend', 'unrelated')
+    payload = invite_card_payload(qq_invite_card(), SCOPE[1])
+    asyncio.run(inbox.receive(payload, SCOPE, bot, ADMIN))
+    current = next(t for t, r in inbox.records.items() if r['flag'] == payload['flag'])
+    assert inbox.records[old]['status'] == 'superseded'
+    assert inbox.records[old]['flag'] == 'invite:30003:u_example'
+    assert inbox.records[friend]['status'] == 'pending'
+    restarted = ReviewInbox(path)
+    listing = asyncio.run(restarted.list_requests(SCOPE))
+    assert current in listing and friend in listing and old not in listing
+    assert '最新通知' in asyncio.run(restarted.decide(SCOPE, bot, ADMIN, True, token=old))
+    assert not action_calls(bot, 'set_group_add_request')
+    assert '已同意' in asyncio.run(restarted.decide(SCOPE, bot, ADMIN, True, token=current))
+    assert action_calls(bot, 'set_group_add_request')[0].kwargs['flag'] == payload['flag']
+
+
+def test_same_group_new_sequence_notifies_once_and_delayed_duplicates_keep_latest(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    first = invite_card_payload(qq_invite_card(), SCOPE[1])
+    second = invite_card_payload(qq_invite_card(sequence=766), SCOPE[1])
+    async def scenario():
+        await inbox.receive(first, SCOPE, bot, ADMIN)
+        await inbox.receive(second, SCOPE, bot, ADMIN)
+        await asyncio.gather(inbox.receive(first, SCOPE, bot, ADMIN), inbox.receive(second, SCOPE, bot, ADMIN))
+    asyncio.run(scenario())
+    assert len(action_calls(bot, 'send_private_msg')) == 2
+    latest = next(t for t, r in inbox.records.items() if r['flag'] == second['flag'])
+    assert inbox.records[latest]['status'] == 'pending'
+    assert len([r for r in inbox.records.values() if r['status'] == 'pending']) == 1
+
+
+def test_older_card_cannot_supersede_a_newer_card_or_request(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    latest = invite_card_payload(qq_invite_card(sequence=766, when=102), SCOPE[1])
+    asyncio.run(inbox.receive(latest, SCOPE, bot, ADMIN))
+    asyncio.run(inbox.receive(invite_card_payload(qq_invite_card(when=101), SCOPE[1]), SCOPE, bot, ADMIN))
+    assert len(inbox.records) == 1 and next(iter(inbox.records.values()))['status'] == 'pending'
+    assert len(action_calls(bot, 'send_private_msg')) == 1
+
+
+def test_card_and_backend_request_with_same_handle_do_not_duplicate_notices(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    card = invite_card_payload(qq_invite_card(), SCOPE[1])
+    asyncio.run(inbox.receive(card, SCOPE, bot, ADMIN))
+    asyncio.run(inbox.receive(request_payload(raw_request('group', card['flag'], time=100), SCOPE[1]), SCOPE, bot, ADMIN))
+    asyncio.run(inbox.receive(request_payload(raw_request('group', 'invite:30003:u_example', time=100), SCOPE[1]), SCOPE, bot, ADMIN))
+    assert len(inbox.records) == 1 and len(action_calls(bot, 'send_private_msg')) == 1
+
+
+def test_card_refresh_is_isolated_from_other_bots_groups_and_inviters(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    for scope, group, actor in [(('other', '12345'), 30003, 20002), (SCOPE, 30004, 20002), (SCOPE, 30003, 20003)]:
+        payload = request_payload(raw_request('group', f'flag:{group}:{actor}:{scope[0]}', group_id=group, user_id=actor), SCOPE[1])
+        asyncio.run(inbox.receive(payload, scope, bot, ADMIN))
+    asyncio.run(inbox.receive(invite_card_payload(qq_invite_card(), SCOPE[1]), SCOPE, bot, ADMIN))
+    assert all(r['status'] == 'pending' for r in inbox.records.values())
+
+
+@pytest.mark.parametrize('jump', [
+    'https://group/invite_join?groupcode=30003&msgseq=765',
+    'mqqapi://other/invite_join?groupcode=30003&msgseq=765',
+    'mqqapi://group/other?groupcode=30003&msgseq=765',
+])
+def test_ordinary_share_links_do_not_trigger_request_forwarding(qq_invite_card, jump):
+    text = json.dumps({'app': 'com.tencent.qun.invite', 'meta': {'news': {'jumpUrl': jump}}})
+    assert invite_card_payload(qq_invite_card(json_text=text), SCOPE[1]) is None
+
+
+def test_first_native_card_refreshes_an_existing_pending_notice_only_once(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    payload = invite_card_payload(qq_invite_card(), SCOPE[1])
+    token = receive(inbox, bot, 'group', payload['flag'])
+    asyncio.run(inbox.receive(payload, SCOPE, bot, ADMIN))
+    asyncio.run(inbox.receive(payload, SCOPE, bot, ADMIN))
+    assert len(inbox.records) == 1 and inbox.records[token]['source'] == 'snowluma_invite_card'
+    assert len(action_calls(bot, 'send_private_msg')) == 2
+
+
+@pytest.mark.parametrize('status', ['approved', 'uncertain'])
+def test_reinvite_preserves_previously_confirmed_or_unknown_outcomes(tmp_path, qq_invite_card, status):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    old = receive(inbox, bot, 'group', 'older')
+    inbox._update(old, status=status)
+    asyncio.run(inbox.receive(invite_card_payload(qq_invite_card(), SCOPE[1]), SCOPE, bot, ADMIN))
+    assert inbox.records[old]['status'] == status
+    assert len([r for r in inbox.records.values() if r['status'] == 'pending']) == 1
+
+
+def test_already_approved_save_failure_cannot_repeat_the_platform_action(tmp_path, monkeypatch):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    token = receive(inbox, bot, 'group')
+    bot.call_action.side_effect = None
+    bot.call_action.return_value = {'status': 'failed', 'retcode': 100,
+        'wording': 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'}
+    original = inbox._commit
+    def fail_save(records):
+        if records[token]['status'] == 'approved':
+            raise OSError('disk full')
+        original(records)
+    monkeypatch.setattr(inbox, '_commit', fail_save)
+    assert '记录保存失败' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, False, token=token))
+    assert '正在处理' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, False, token=token))
+    assert len(action_calls(bot, 'set_group_add_request')) == 1
+
+
+def test_slow_profile_lookup_cannot_send_an_obsolete_notice_after_the_new_card(tmp_path, qq_invite_card):
+    async def scenario():
+        inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+        waiting, release = asyncio.Event(), asyncio.Event()
+        original = bot.call_action.side_effect
+        async def slow_first_lookup(name, **params):
+            if name == 'get_stranger_info' and not waiting.is_set():
+                waiting.set()
+                await release.wait()
+            return await original(name, **params)
+        bot.call_action.side_effect = slow_first_lookup
+        old = asyncio.create_task(inbox.receive(request_payload(raw_request('group', 'invite:30003:u_example'), SCOPE[1]), SCOPE, bot, ADMIN))
+        await waiting.wait()
+        card = invite_card_payload(qq_invite_card(), SCOPE[1])
+        await inbox.receive(card, SCOPE, bot, ADMIN)
+        release.set()
+        await old
+        token = next(t for t, r in inbox.records.items() if r['flag'] == card['flag'])
+        notices = action_calls(bot, 'send_private_msg')
+        assert len(notices) == 1 and token in notices[0].kwargs['message'][0]['data']['text']
+    asyncio.run(scenario())

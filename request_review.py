@@ -8,11 +8,14 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 _DECISION = re.compile(r"/?(同意|拒绝)(?:\s+([0-9a-fA-F]{8}))?")
-_STATUSES = {"pending", "processing", "approved", "rejected", "uncertain"}
+_STATUSES = {"pending", "processing", "approved", "rejected", "uncertain", "superseded"}
+_ALREADY_APPROVED = re.compile(
+    r"OIDB error 120162004 on 0x10c8_[12]:\s*already agree msg by self", re.IGNORECASE)
 
 
 class OneBotActionError(ValueError):
@@ -47,9 +50,55 @@ def request_payload(raw, self_id: str) -> dict | None:
         return None
     if not _qq(raw.get("user_id")) or not isinstance(raw.get("flag"), str) or not raw["flag"]:
         return None
-    return {"kind": kind, "user_id": _qq(raw["user_id"]),
-            "group_id": _qq(raw.get("group_id")) if kind == "group" else "",
-            "flag": raw["flag"], "comment": str(raw.get("comment") or "")[:500]}
+    payload = {"kind": kind, "user_id": _qq(raw["user_id"]),
+               "group_id": _qq(raw.get("group_id")) if kind == "group" else "",
+               "flag": raw["flag"], "comment": str(raw.get("comment") or "")[:500]}
+    if type(raw.get("time")) is int and raw["time"] > 0:
+        payload["request_time"] = raw["time"]
+    return payload
+
+
+def invite_card_payload(raw, self_id: str) -> dict | None:
+    """读取发给机器人的原始邀请卡；仅供已确认的 SnowLuma 连接使用。"""
+    if (not isinstance(raw, Mapping) or raw.get("post_type") != "message"
+            or raw.get("message_type") != "private" or raw.get("sub_type") != "friend"
+            or raw.get("group_id") or _qq(raw.get("self_id")) != self_id
+            or not _qq(self_id) or not _qq(raw.get("user_id"))
+            or _qq(raw["user_id"]) == self_id or type(raw.get("time")) is not int
+            or raw["time"] <= 0 or not isinstance(raw.get("message"), list)):
+        return None
+    for segment in raw["message"]:
+        if not isinstance(segment, Mapping) or segment.get("type") != "json":
+            continue
+        data = segment.get("data")
+        text = data.get("data") if isinstance(data, Mapping) else None
+        if not isinstance(text, str) or len(text) > 65536:
+            continue
+        try:
+            card = json.loads(text)
+            if (not isinstance(card, dict)
+                    or card.get("app") not in ("com.tencent.qun.invite", "com.tencent.tuwen.lua")):
+                continue
+            meta = card.get("meta")
+            news = meta.get("news") if isinstance(meta, dict) else None
+            jump = news.get("jumpUrl") if isinstance(news, dict) else None
+            if not isinstance(jump, str):
+                continue
+            url = urlsplit(jump)
+            if url.scheme != "mqqapi" or url.netloc != "group" or url.path != "/invite_join":
+                continue
+            query = parse_qs(url.query, keep_blank_values=True, max_num_fields=32)
+            values = [query.get(key, []) for key in ("groupcode", "msgseq")]
+            if any(len(v) != 1 or not _qq(v[0]) or int(v[0]) > 2**53 - 1 for v in values):
+                continue
+            group, sequence = (str(int(v[0])) for v in values)
+        except (ValueError, TypeError, RecursionError):
+            continue
+        # 与 SnowLuma 的 formatGroupRequestFlag / 私聊邀请卡协议一致。
+        return {"kind": "group", "user_id": _qq(raw["user_id"]), "group_id": group,
+                "flag": f"slreq:1:{sequence}:{group}:2:0", "comment": "",
+                "source": "snowluma_invite_card", "request_time": raw["time"]}
+    return None
 
 
 def _data(result):
@@ -85,6 +134,23 @@ def _failure_message(exc, flag):
     return f"处理失败喵：{detail}" if detail else "处理失败喵，请稍后重试。"
 
 
+def _already_approved(exc):
+    """QQ 对当前入群请求的明确结果；不把其他 OIDB 错误猜成成功。"""
+    result = getattr(exc, "result", None)
+    if not isinstance(result, Mapping) or result.get("status") != "failed":
+        return False
+    detail = result.get("wording") or result.get("message") or result.get("msg")
+    return isinstance(detail, str) and _ALREADY_APPROVED.fullmatch(detail.strip()) is not None
+
+
+def _handled_message(status, approve):
+    agreed = status == "approved"
+    result = f"这条申请已被{'同意' if agreed else '拒绝'}"
+    if agreed != approve:
+        result += f"，无法再{'同意' if approve else '拒绝'}"
+    return result + "喵。"
+
+
 class ReviewInbox:
     def __init__(self, path: Path, *, log=None):
         self.path = Path(path)
@@ -104,6 +170,11 @@ class ReviewInbox:
                         or not all(isinstance(record.get(k), str)
                                    for k in ("comment", "notified_to", "notification_id"))
                         or not isinstance(record.get("notification_text", ""), str)
+                        or record.get("source", "") not in ("", "snowluma_invite_card")
+                        or (record.get("source") == "snowluma_invite_card"
+                            and (record.get("kind") != "group" or "request_time" not in record))
+                        or ("request_time" in record and (type(record["request_time"]) is not int
+                                                          or record["request_time"] <= 0))
                         or not _qq(record.get("self_id"))
                         or request_payload({"post_type": "request", "self_id": record.get("self_id"),
                                             "request_type": record.get("kind"), "sub_type": "invite",
@@ -144,18 +215,54 @@ class ReviewInbox:
     def _in_scope(record, scope):
         return (record["platform_id"], record["self_id"]) == scope
 
+    async def supports_invite_cards(self, scope, bot):
+        try:
+            info = await asyncio.wait_for(self._action(bot, scope[1], "get_version_info"), timeout=3)
+        except Exception:
+            self.logger.warning("无法确认 OneBot 实现，跳过 SnowLuma 邀请卡兼容")
+            return False
+        return isinstance(info, Mapping) and info.get("app_name") == "SnowLuma"
+
     async def receive(self, payload: dict, scope: tuple[str, str], bot, admin: str):
         async with self.lock:
+            card = payload.get("source") == "snowluma_invite_card"
+            related = {t: r for t, r in self.records.items()
+                       if self._in_scope(r, scope) and r["kind"] == payload["kind"] == "group"
+                       and r["group_id"] == payload["group_id"] and r["user_id"] == payload["user_id"]}
+            if card and any(r.get("source") == "snowluma_invite_card"
+                            and r["request_time"] > payload["request_time"] for r in related.values()):
+                return
+            # 新版同时上报卡片与 request；旧版的 UID 型 flag 则可能反复复用。
+            # 已收到对应卡片时只保留其带 msgseq 的申请，不再发送一份旧推送通知。
+            if (not card and payload["flag"].startswith(f"invite:{payload['group_id']}:")
+                    and any(r.get("source") == "snowluma_invite_card"
+                            and 0 <= r["request_time"] - payload.get("request_time", 0) <= 30
+                            for r in related.values())):
+                return
             token = next((t for t, r in self.records.items()
                           if self._in_scope(r, scope) and r["kind"] == payload["kind"]
                           and r["flag"] == payload["flag"]), None)
+            if card and token is not None and self.records[token]["status"] not in ("pending", "uncertain"):
+                return
+            changes = {}
             if token is None:
                 token = uuid4().hex[:8].upper()
                 while token in self.records:
                     token = uuid4().hex[:8].upper()
-                self._commit({**self.records, token: {**payload, "platform_id": scope[0],
+                changes[token] = {**payload, "platform_id": scope[0],
                     "self_id": scope[1], "status": "pending", "created_at": time.time(),
-                    "notified_to": "", "notification_id": ""}})
+                    "notified_to": "", "notification_id": ""}
+            if card:
+                current = changes.get(token, self.records.get(token))
+                changes[token] = {**current, "source": payload["source"], "request_time": payload["request_time"]}
+                if current.get("source") != "snowluma_invite_card" and current["status"] == "pending":
+                    changes[token]["notified_to"] = ""
+                for old, record in related.items():
+                    if (old != token and record["status"] == "pending"
+                            and record.get("request_time", 0) <= payload["request_time"]):
+                        changes[old] = {**record, "status": "superseded"}
+            if changes:
+                self._commit({**self.records, **changes})
             record = self.records[token]
             if record["status"] != "pending" or record["notified_to"] == admin or token in self.notifying:
                 return
@@ -173,6 +280,9 @@ class ReviewInbox:
                 info("get_group_info", group_id=int(record["group_id"]))
                 if record["kind"] == "group" else asyncio.sleep(0, result={}),
             )
+            async with self.lock:
+                if self.records[token]["status"] != "pending":
+                    return
             title = "好友申请" if record["kind"] == "friend" else "入群邀请"
             lines = [f"📩 {title} {token}", f"机器人 QQ：{scope[1]}",
                      f"{'申请人' if record['kind'] == 'friend' else '邀请人'} QQ：{record['user_id']}"]
@@ -288,12 +398,16 @@ class ReviewInbox:
             if not record or not self._in_scope(record, scope):
                 return "找不到这条申请喵，请查看 /申请列表。"
             if record["status"] in ("approved", "rejected"):
-                return "这条申请已经处理过了喵。"
+                return _handled_message(record["status"], approve)
+            if record["status"] == "superseded":
+                return "这条邀请已更新，请处理最新通知喵。"
             if record["status"] == "processing":
                 return "这条申请正在处理喵。"
             if record["status"] == "uncertain":
                 return "上次处理结果未确认，请到 QQ 核实喵。"
             self._update(token, status="processing")
+        outcome = "approved" if approve else "rejected"
+        already_handled = False
         try:
             action = "set_friend_add_request" if record["kind"] == "friend" else "set_group_add_request"
             params = {"flag": record["flag"], "approve": approve}
@@ -310,14 +424,21 @@ class ReviewInbox:
             self.logger.exception("处理 QQ 申请时连接中断")
             return "处理结果暂未确认，请到 QQ 核实喵。"
         except Exception as exc:
-            async with self.lock:
-                self._update(token, status="pending")
-            self.logger.exception("QQ 申请处理失败")
-            return _failure_message(exc, record["flag"])
+            if record["kind"] == "group" and _already_approved(exc):
+                # 以 QQ 已确认的结果为准，不能因本次点击“拒绝”而记成 rejected。
+                outcome, already_handled = "approved", True
+                self.logger.info("QQ 已确认入群申请 %s 被同意，同步申请记录", token)
+            else:
+                async with self.lock:
+                    self._update(token, status="pending")
+                self.logger.exception("QQ 申请处理失败")
+                return _failure_message(exc, record["flag"])
         async with self.lock:
             try:
-                self._update(token, status="approved" if approve else "rejected")
+                self._update(token, status=outcome)
             except OSError:
                 self.logger.exception("QQ 已处理申请，但状态保存失败")
                 return "QQ 已处理申请，记录保存失败，请到 QQ 核实喵。"
+        if already_handled:
+            return _handled_message(outcome, approve)
         return f"✅ 已{'同意' if approve else '拒绝'}申请 {token} 喵。"
