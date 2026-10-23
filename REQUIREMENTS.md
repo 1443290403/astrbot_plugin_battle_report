@@ -1031,6 +1031,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|
 | `scripts/fix_ruled_legacy.py` | 修复历史判罚标记数据 |
 | `scripts/fix_team_label_legacy.py` | 修复历史脏队标（大小写/多余空格） |
+| `scripts/diagnose_qq_requests.py` | 独立只读 QQ 申请诊断：常见目录/Docker 自动定位，按编号/最近条目选择，输出来源/序号/类型与时间；白名单字段脱敏，不加载插件、不调用 QQ/MySQL、不改记录。`--container`/`--path` 指定位置，容器内 `--worker` 禁止递归 Docker 检查；只有 `docker ps` 与只读 `docker exec` |
 | `scripts/backups/` | 上述脚本运行前的数据备份 |
 
 ---
@@ -1199,6 +1200,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 |---|---|
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
 | `test_request_review.py` | 事件/卡片筛选、JSON/URL/序号边界、卡片 msgseq 审批、同群新邀请/重复/乱序隔离、旧标识保留、QQ 已同意同步与拒绝冲突；文本通知、四种审批、重启/并发/选单、跨连接隔离、引用兼容/核验、错误及存储失败；可选真实 aiocqhttp 响应/异常回归，不建立 QQ 连接 |
+| `test_qq_request_diagnostics.py` | 诊断报告脱敏、审批类型/序号保留、旧记录缺字段/错误 JSON/超大文件、精确编号和最新记录选择、只读校验、Docker 定位/失败输出隔离、worker 不递归枚举容器 |
 | `test_main.py` | 真实 handler + 框架桩；好友/群邀请监听、超管私聊审批与列表、原始引用/组件变化恢复、编号失败原因回执及 AstrBot 日志、越权/群内/其他事件拒绝、数据库不可用时审批；轮次命令补齐空闲存活选手且不入库；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；不代表真实 QQ 联调 |
 | `test_command_args.py` | 引号/转义/标点、裸空格兼容、查询关键字保护、导出顺序、排表→记录→轮次→重新解析完整链路 |
 | `test_database_lifecycle.py` | 唯一键并发冲突不得借第二条连接、初始化迁移失败释放池 |

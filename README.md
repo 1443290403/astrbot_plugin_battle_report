@@ -506,6 +506,25 @@ a队踢馆b队
 - v1.1.0 及之后 群战队绑定、用户与参赛ID绑定、批量提交与回复引用、替补标记
 - v1.0.0 初版：排表、战报提交与解析入库、排行与导出
 
+## QQ 申请诊断脚本
+
+审批失败时，在运行 AstrBot 的服务器执行：
+
+```bash
+python3 scripts/diagnose_qq_requests.py
+```
+
+自动检查宿主机常见数据目录和运行中的 AstrBot Docker 容器，输出最近 8 条申请的编号、状态、source、request_time、审批序号及 event_type。QQ、群号、昵称、验证消息、通知全文及原始不透明 flag 不会输出；同一个群或邀请人可用脱敏引用值关联。
+
+可指定容器、文件或申请编号：
+
+```bash
+python3 scripts/diagnose_qq_requests.py --container astrbot --token A1B2C3D4
+python3 scripts/diagnose_qq_requests.py --path /AstrBot/data/plugin_data/battle_report/request_reviews.json
+```
+
+工具只读取 `request_reviews.json`，Docker 检查只执行 `docker ps` 与容器内的同一只读脚本，不加载插件、不连接 MySQL/QQ、不修改申请状态。脚本须保存为文件运行，才能自动在容器内执行；无法定位时可使用 `--container` 或 `--path`。这次补充只涉及诊断工具，插件运行版本仍为 v1.18.2。
+
 ## 数据核对脚本
 
 用于排查「插件统计结果与实际对战结果不一致」：把线上战报系统（rep.ygobbs2.com）
