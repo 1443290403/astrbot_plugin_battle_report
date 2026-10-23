@@ -183,7 +183,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -243,7 +243,7 @@ class BattleReportPlugin(Star):
 
     def _get_review_inbox(self) -> ReviewInbox:
         if getattr(self, "_review_inbox", None) is None:
-            self._review_inbox = ReviewInbox(self.data_dir / "request_reviews.json")
+            self._review_inbox = ReviewInbox(self.data_dir / "request_reviews.json", log=logger)
         return self._review_inbox
 
     @filter.custom_filter(RequestReviewFilter, priority=100)
@@ -273,10 +273,21 @@ class BattleReportPlugin(Star):
         if decision is None:
             return
         event.stop_event()
-        reply_id = next((str(m.id) for m in event.get_messages() if isinstance(m, Reply)), None)
+        reply = next((m for m in event.get_messages() if isinstance(m, Reply)), None)
+        reply_ids = [str(reply.id)] if reply is not None else []
+        raw_messages = raw.get("message", [])
+        if isinstance(raw_messages, list):
+            for segment in raw_messages:
+                if isinstance(segment, dict) and segment.get("type") == "reply":
+                    data = segment.get("data")
+                    reply_ids.append(str(data.get("id", "")) if isinstance(data, dict) else "")
+        reply_message = ({"sender_id": getattr(reply, "sender_id", None),
+                          "message_str": getattr(reply, "message_str", "")}
+                         if reply is not None else None)
         try:
             result = await self._get_review_inbox().decide(
-                scope, event.bot, str(event.get_sender_id()), *decision, reply_id=reply_id,
+                scope, event.bot, str(event.get_sender_id()), *decision,
+                reply_ids=reply_ids, reply_message=reply_message,
             )
         except Exception:
             logger.exception("处理 QQ 申请记录失败")

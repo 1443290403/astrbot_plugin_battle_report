@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.18.0`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-24
+> 对应版本：`1.18.1`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-24
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -697,12 +697,14 @@ year = now.year - 1 if month > now.month else now.year
 - **通知：** QQ、昵称、验证消息；邀请附群号/群名。可选资料查询最多等待 3 秒，失败仍转发号码。通过原机器人连接 `send_private_msg` 发给有效 `super_admin`，使用文本消息段，flag 不出现在通知中。
 - **回执：** 消费申请/审批事件后用 `event.send` 直接私聊发送结果；不能在 stop_event 之后仅 yield 结果，否则 AstrBot 调度器会跳过回复阶段。
 - **授权：** 仅该超管在 QQ 私聊中可审批或查列表；AstrBot 管理员、战队管理员、群主/群管身份均不提供此权限。收到请求只转发，绝不自动同意。
-- **选单：** 优先使用已发送通知的 message_id 绑定引用；可发送 `同意/拒绝 八位编号`。无引用/编号时仅在当前连接恰好一条 pending 时处理。引用不认识、编号与引用冲突或跨平台/机器人时拒绝，不回退到其他申请。
+- **选单：** 优先使用已发送通知的 message_id 绑定引用，同时读取原始 OneBot reply 与 AstrBot Reply，避免组件被丢弃后误当无引用。ID 变化时优先核验 AstrBot 已取回的通知，否则通过原始 ID 调 get_msg；只接受原机器人发给当前超管的私聊通知，完整匹配已保存全文。v1.18.0 旧记录无全文时核验固定抬头、编号、机器人/申请人/群号。可发送 `同意/拒绝 八位编号`。无引用/编号时仅在当前连接恰好一条 pending 时处理。引用不认识、编号与引用冲突或跨平台/机器人时拒绝，不回退到其他申请。
 - **接口：** flag 原样交给 `set_friend_add_request`；群邀请交给 `set_group_add_request` 并带 `sub_type=invite`。所有动作携带原 `self_id` 路由，操作由当前事件对应的 bot 执行。
 - **存储：** `data_dir/request_reviews.json`，独立于 MySQL/schema v18；按平台 ID + self_id + kind + flag 去重。原子替换保存，磁盘写入失败不能提前执行审批；损坏/未知格式不覆盖原文件。
-- **状态：** pending → processing → approved/rejected。先持久化 processing 再调用平台；并发/重复回复不会再次调用接口。显式接口失败回 pending 允许重试；TimeoutError/ConnectionError、任务取消或恢复 processing 时转 uncertain，需到 QQ 核实。成功后写盘失败也不允许直接重复执行。
+- **状态：** pending → processing → approved/rejected。先持久化 processing 再调用平台；并发/重复回复不会再次调用接口。显式接口失败回 pending 允许重试；TimeoutError/OSError（包含 aiocqhttp 的 NetworkError）、任务取消或恢复 processing 时转 uncertain，需到 QQ 核实。成功后写盘失败也不允许直接重复执行。
+- **错误反馈（v1.18.1）：** 由入口注入 AstrBot 插件 logger，确保审批异常进入后台日志；失败回复只展示平台 wording/message/msg 或 retcode，去掉原 flag，不直接发送整段 API 响应。不改写 flag、不猜测其他请求重试；编号处理失败须结合平台实际报错定位。
 - **恢复：** 超管私聊 `/申请列表` 查看当前连接的 pending/processing/uncertain，支持编号回复；通知失败保留申请，重复上报可以重发通知。超管配置为空时不转发、不审批。
 - **兼容依据：** 参考 `AstrBot/astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py` 请求转换，以及 `SnowLuma/packages/onebot/src/event-converter/to-request.ts` 和 `actions/request.ts` 的事件/接口字段。
+- **已知后端限制（v1.18.1）：** 用户的 SnowLuma v1.14.11 在 `0x10c8_1` 返回 QQ 错误 `120161001 / handle async message fail`，不能据此断言过期或已处理。比对 v1.14.11 与 v2.0.3：旧版私聊引用仅按客户端序号查找，后续版本补充会话序号/时间等映射；旧版群邀请从推送补充 flag，新版从邀请卡生成机器人自邀事件并上报 invited_id。建议更新后重新邀请并实机验证，不能声称插件已修复 QQ 返回错误。旧版未提供 invited_id 时，插件无法仅凭事件识别邀请其他成员。平台 get_msg 无法取回引用且无有效 Reply 内容时，仍需按编号选单，不回退审批其他申请。
 
 ---
 
@@ -870,7 +872,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-30** | `/设置战队管理员 <战队> <QQ号[,QQ号...]>` | `set_team_admins` | 仅超管，覆盖该队名单，支持多 QQ、去重，其他队不变 |
 | **F-31** | `/移除战队管理员 <战队> <QQ号>` | `remove_team_admin` | 仅超管，撤销该 QQ 在该队的授权；原本无授权时正常提示 |
 | **F-32** | `/查看战队管理员 <战队>` | `view_team_admins` | 仅超管，只读查看该队管理员 |
-| **F-33** | OneBot 好友申请/群邀请 + 超管私聊同意/拒绝 | `review_request` | 收到后私聊通知超管；引用通知/编号选单，仅超管私聊审批。持久化与去重见 M-15，不依赖数据库 |
+| **F-33** | OneBot 好友申请/群邀请 + 超管私聊同意/拒绝 | `review_request` | 收到后私聊通知超管；引用通知/编号选单，仅超管私聊审批。v1.18.1 兼容引用 ID 变化/组件丢失，显示平台失败原因并接入 AstrBot 日志。持久化与去重见 M-15，不依赖数据库 |
 | **F-34** | `/申请列表` | `request_list` | 仅超管私聊查看当前机器人连接的待处理/处理中/需核实申请，可按编号回复 |
 
 ### 域 G：战报治理
@@ -994,7 +996,7 @@ year = now.year - 1 if month > now.month else now.year
 | [command_args.py](command_args.py) | ~90 | 引号边界、空格 ID、单名字与管理ID参数，共用于入口/导出/排表/记录/轮次 | 无 |
 | [lineup.py](lineup.py) | ~755 | 排表、追加轮次、记录比分、战报文本还原、导出过滤 | 无 |
 | [battle_report_parser.py](battle_report_parser.py) | ~735 | 战报解析（友谊 + 踢馆）、胜负判定、`is_kof`、内容指纹、月份/参数解析 | 无 |
-| [request_review.py](request_review.py) | ~250 | OneBot 申请转发、按引用/编号审批、本地持久化与并发去重 | 标准库 |
+| [request_review.py](request_review.py) | ~325 | OneBot 申请转发、按引用/编号审批、通知身份核验、本地持久化与并发去重 | 标准库 |
 | [help_guide.py](help_guide.py) | ~160 | 三类用途流程、开通步骤、配置状态与只读预览 | 无 |
 | [stats.py](stats.py) | ~700 | 积分/胜率/表格/帮助文案、`rank_aligns`、**踢馆判定与计分（踢馆侧唯一实现）**、**结算奖金公式与名次（`rank_bonus` / `ranks_for` / `attach_bonus`）**、**结算回执（写 `format_settlement` / 只读 `format_settlement_view`，行体共用 `_settlement_lines`）**、**结算公告（`settlement_awards_changed` 判要不要 @ / `settlement_announcement` 分段文案 / `format_settlement_repeat` 不 @ 时的提示）**、**排行图片左侧面板的 8 行（`build_team_panel`）** | 无 |
 | [chart.py](chart.py) | ~300 | Pillow 趋势图 + 排行表格图（`make_ranking_image` 的 `panel` 参数只负责画，不懂语义） | Pillow |
@@ -1193,8 +1195,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
-| `test_request_review.py` | 事件筛选、文本通知、四种审批、原始 flag、重启/并发/重复、多请求选单、跨连接隔离、超时/中断/存储/通知失败 |
-| `test_main.py` | 真实 handler + 框架桩；好友/群邀请监听、超管私聊审批与列表、越权/群内/其他事件拒绝、数据库不可用时审批；轮次命令补齐空闲存活选手且不入库；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；不代表真实 QQ 联调 |
+| `test_request_review.py` | 事件筛选、文本通知、四种审批、原始 flag、重启/并发/重复、多请求选单、跨连接隔离、引用 ID 变化及旧记录兼容、发送者/接收者/内容核验、错误反馈、超时/中断/存储/通知失败；可选真实 aiocqhttp 响应/NetworkError 回归，不建立 QQ 连接 |
+| `test_main.py` | 真实 handler + 框架桩；好友/群邀请监听、超管私聊审批与列表、原始引用/组件变化恢复、编号失败原因回执及 AstrBot 日志、越权/群内/其他事件拒绝、数据库不可用时审批；轮次命令补齐空闲存活选手且不入库；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；不代表真实 QQ 联调 |
 | `test_command_args.py` | 引号/转义/标点、裸空格兼容、查询关键字保护、导出顺序、排表→记录→轮次→重新解析完整链路 |
 | `test_database_lifecycle.py` | 唯一键并发冲突不得借第二条连接、初始化迁移失败释放池 |
 | `test_winner.py` | 人头赛 / KOF 胜负判定（含替补不扩容、同名首发与替补区分、TK 占位、判罚） |
@@ -1227,7 +1229,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.18.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.18.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

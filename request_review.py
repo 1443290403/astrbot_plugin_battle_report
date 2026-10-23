@@ -15,6 +15,12 @@ _DECISION = re.compile(r"/?(同意|拒绝)(?:\s+([0-9a-fA-F]{8}))?")
 _STATUSES = {"pending", "processing", "approved", "rejected", "uncertain"}
 
 
+class OneBotActionError(ValueError):
+    def __init__(self, result):
+        self.result = result
+        super().__init__("OneBot action failed")
+
+
 def parse_decision(text: str) -> tuple[bool, str | None] | None:
     match = _DECISION.fullmatch(text.strip())
     return (match[1] == "同意", match[2].upper() if match[2] else None) if match else None
@@ -50,14 +56,39 @@ def _data(result):
     """兼容 CQHttp 解包结果和 OneBot 原始响应，拒绝显式失败。"""
     if isinstance(result, Mapping):
         if result.get("status") == "failed" or result.get("retcode", 0) != 0:
-            raise ValueError("OneBot action failed")
+            raise OneBotActionError(result)
         return result.get("data", result)
     return result
 
 
+def _message_text(message):
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        return "".join(str(s.get("data", {}).get("text", "")) for s in message
+                       if isinstance(s, Mapping) and s.get("type") == "text"
+                       and isinstance(s.get("data"), Mapping))
+    return ""
+
+
+def _failure_message(exc, flag):
+    """只展示平台返回的错误说明，不把 flag 或整个 API 响应发进 QQ。"""
+    result = getattr(exc, "result", None)
+    if not isinstance(result, Mapping):
+        return "处理失败喵，请稍后重试。"
+    detail = result.get("wording") or result.get("message") or result.get("msg")
+    detail = str(detail or "").replace(flag, "[申请标识]")
+    detail = " ".join(detail.split())[:200]
+    code = result.get("retcode")
+    if not detail and code is not None:
+        detail = f"错误码 {code}"
+    return f"处理失败喵：{detail}" if detail else "处理失败喵，请稍后重试。"
+
+
 class ReviewInbox:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, log=None):
         self.path = Path(path)
+        self.logger = log if log is not None else logger
         self.lock = asyncio.Lock()
         self.notifying: set[str] = set()
         self.records: dict[str, dict] = {}
@@ -72,6 +103,7 @@ class ReviewInbox:
                         or not isinstance(record.get("platform_id"), str)
                         or not all(isinstance(record.get(k), str)
                                    for k in ("comment", "notified_to", "notification_id"))
+                        or not isinstance(record.get("notification_text", ""), str)
                         or not _qq(record.get("self_id"))
                         or request_payload({"post_type": "request", "self_id": record.get("self_id"),
                                             "request_type": record.get("kind"), "sub_type": "invite",
@@ -153,14 +185,16 @@ class ReviewInbox:
             if record["comment"]:
                 lines.append(f"验证消息：{record['comment']}")
             lines.append("引用本条回复“同意”或“拒绝”喵。")
+            notice = "\n".join(lines)
             sent = await self._action(bot, scope[1], "send_private_msg", user_id=int(admin),
-                                     message=[{"type": "text", "data": {"text": "\n".join(lines)}}])
+                                     message=[{"type": "text", "data": {"text": notice}}])
             mid = sent.get("message_id") if isinstance(sent, Mapping) else None
             message_id = str(mid) if mid is not None else ""
             async with self.lock:
-                self._update(token, notified_to=admin, notification_id=message_id)
+                self._update(token, notified_to=admin, notification_id=message_id,
+                             notification_text=notice)
         except Exception:
-            logger.exception("转发 QQ 申请失败，可通过申请列表查看")
+            self.logger.exception("转发 QQ 申请失败，可通过申请列表查看")
         finally:
             async with self.lock:
                 self.notifying.discard(token)
@@ -179,12 +213,66 @@ class ReviewInbox:
             lines.append("回复：同意 编号，或 拒绝 编号")
             return "\n".join(lines)
 
-    async def decide(self, scope, bot, admin, approve, token=None, reply_id=None):
+    def _match_notice(self, message, scope, admin):
+        if not isinstance(message, Mapping):
+            return None
+        sender = message.get("sender")
+        sender_id = sender.get("user_id") if isinstance(sender, Mapping) else message.get("sender_id")
+        if _qq(sender_id) != scope[1] or message.get("message_type", "private") != "private":
+            return None
+        if message.get("target_id") is not None and _qq(message["target_id"]) != admin:
+            return None
+        text = _message_text(message.get("message")) or str(message.get("message_str") or "")
+        for token, r in self.records.items():
+            if not self._in_scope(r, scope) or r["notified_to"] != admin:
+                continue
+            if r.get("notification_text"):
+                if text == r["notification_text"]:
+                    return token
+            else:
+                # v1.18.0 的记录没有通知全文，核验固定抬头及原申请号码。
+                title = "好友申请" if r["kind"] == "friend" else "入群邀请"
+                actor = "申请人" if r["kind"] == "friend" else "邀请人"
+                prefix = f"📩 {title} {token}\n机器人 QQ：{scope[1]}\n{actor} QQ：{r['user_id']}"
+                lines = text.splitlines()
+                if (text.startswith(prefix + "\n")
+                        and (r["kind"] != "group" or f"群号：{r['group_id']}" in lines)):
+                    return token
+        return None
+
+    async def _quoted_token(self, scope, bot, admin, ids, message):
         async with self.lock:
-            quoted = next((t for t, r in self.records.items() if self._in_scope(r, scope)
-                           and r["notified_to"] == admin and r["notification_id"] == reply_id), None) if reply_id else None
-            if reply_id and quoted is None:
-                return "引用的消息不是申请通知喵，请查看 /申请列表。"
+            matches = {t for t, r in self.records.items() if self._in_scope(r, scope)
+                       and r["notified_to"] == admin and r["notification_id"]
+                       and r["notification_id"] in ids}
+            if matches:
+                return next(iter(matches)) if len(matches) == 1 else None
+            token = self._match_notice(message, scope, admin)
+            if token:
+                return token
+        # AstrBot 可能改写 Reply.id，也可能在 get_msg 失败时丢掉 Reply 组件。
+        # 用原始 reply.id 重取消息，只接受机器人发给当前超管的原通知。
+        for mid in ids:
+            if not re.fullmatch(r"-?\d{1,20}", mid):
+                continue
+            try:
+                quoted = await asyncio.wait_for(
+                    self._action(bot, scope[1], "get_msg", message_id=int(mid)), timeout=3)
+            except Exception:
+                continue
+            async with self.lock:
+                token = self._match_notice(quoted, scope, admin)
+                if token:
+                    return token
+        return None
+
+    async def decide(self, scope, bot, admin, approve, token=None, reply_id=None,
+                     reply_ids=(), reply_message=None):
+        ids = list(dict.fromkeys([str(i) for i in (reply_id, *reply_ids) if i is not None]))
+        quoted = await self._quoted_token(scope, bot, admin, ids, reply_message) if ids else None
+        async with self.lock:
+            if ids and quoted is None:
+                return "无法识别引用通知，请用 /申请列表 中的编号处理喵。"
             if token and quoted and token != quoted:
                 return "编号与引用的申请不一致喵。"
             token = token or quoted
@@ -216,20 +304,20 @@ class ReviewInbox:
             async with self.lock:
                 self._update(token, status="uncertain")
             raise
-        except (TimeoutError, ConnectionError):
+        except (TimeoutError, OSError):
             async with self.lock:
                 self._update(token, status="uncertain")
-            logger.exception("处理 QQ 申请时连接中断")
+            self.logger.exception("处理 QQ 申请时连接中断")
             return "处理结果暂未确认，请到 QQ 核实喵。"
-        except Exception:
+        except Exception as exc:
             async with self.lock:
                 self._update(token, status="pending")
-            logger.exception("QQ 申请处理失败")
-            return "处理失败喵，请稍后重试。"
+            self.logger.exception("QQ 申请处理失败")
+            return _failure_message(exc, record["flag"])
         async with self.lock:
             try:
                 self._update(token, status="approved" if approve else "rejected")
             except OSError:
-                logger.exception("QQ 已处理申请，但状态保存失败")
+                self.logger.exception("QQ 已处理申请，但状态保存失败")
                 return "QQ 已处理申请，记录保存失败，请到 QQ 核实喵。"
         return f"✅ 已{'同意' if approve else '拒绝'}申请 {token} 喵。"

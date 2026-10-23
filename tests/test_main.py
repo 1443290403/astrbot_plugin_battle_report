@@ -132,6 +132,58 @@ def test_qq_request_handler_notifies_super_admin_without_database(plugin_module,
     assert approvals[0].kwargs['flag'] == 'opaque-original' and approvals[0].kwargs['self_id'] == 12345
 
 
+@pytest.mark.parametrize('component_id', [None, 'changed-id'])
+@pytest.mark.parametrize('approve', [True, False])
+def test_review_uses_raw_quote_if_framework_drops_or_changes_reply(plugin_module, tmp_path, component_id, approve):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    request = review_event(new_qq_request('group'))
+    request.bot.call_action.return_value = {'message_id': 90001}
+    asyncio.run(obj.review_request(request))
+    reply = review_event({'post_type': 'message', 'message_type': 'private',
+                          'message': [{'type': 'reply', 'data': {'id': '90001'}}]},
+                         text='同意' if approve else '拒绝')
+    reply.bot = request.bot
+    if component_id is not None:
+        reply.get_messages = lambda: [plugin_module.Reply(id=component_id)]
+    asyncio.run(obj.review_request(reply))
+    assert ('已同意' if approve else '已拒绝') in reply.send.await_args.args[0]
+    approvals = [c for c in request.bot.call_action.await_args_list if c.args[0].startswith('set_')]
+    assert len(approvals) == 1 and approvals[0].kwargs['approve'] == approve
+
+
+def test_unresolved_raw_quote_cannot_approve_the_only_pending_request(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    request = review_event(new_qq_request('group'))
+    request.bot.call_action.return_value = {'message_id': 90001}
+    asyncio.run(obj.review_request(request))
+    reply = review_event({'post_type': 'message', 'message_type': 'private',
+                          'message': [{'type': 'reply', 'data': {'id': 'unknown'}}]}, text='同意')
+    reply.bot = request.bot
+    asyncio.run(obj.review_request(reply))
+    assert '无法识别引用' in reply.send.await_args.args[0]
+    assert not any(c.args[0].startswith('set_') for c in request.bot.call_action.await_args_list)
+
+
+@pytest.mark.parametrize('decision', ['同意', '拒绝'])
+def test_numbered_review_shows_platform_error_and_uses_astrbot_logger(plugin_module, tmp_path, monkeypatch, decision):
+    logger = Mock()
+    monkeypatch.setattr(plugin_module, 'logger', logger)
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    request = review_event(new_qq_request('group'))
+    asyncio.run(obj.review_request(request))
+    token = next(iter(obj._review_inbox.records))
+    reply = review_event({'post_type': 'message', 'message_type': 'private'}, text=f'{decision} {token}')
+    reply.bot.call_action.return_value = {'status': 'failed', 'retcode': 1200,
+                                          'wording': 'group request not found'}
+    asyncio.run(obj.review_request(reply))
+    assert 'group request not found' in reply.send.await_args.args[0]
+    logger.exception.assert_called_once_with('QQ 申请处理失败')
+    assert obj._review_inbox.records[token]['status'] == 'pending'
+
+
 @pytest.mark.parametrize('sender,group,message_type', [
     ('20002','','private'), ('10001','100','group'), ('10001','100','private'),
 ])

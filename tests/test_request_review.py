@@ -136,7 +136,7 @@ def test_single_request_can_be_handled_without_quote(tmp_path):
 def test_unknown_quote_or_foreign_bot_never_falls_back_to_single_request(tmp_path):
     inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
     token = receive(inbox, bot)
-    assert '不是申请通知' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, reply_id='forged'))
+    assert '无法识别引用' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, reply_id='forged'))
     for foreign in [('onebot-b', '12345'), ('onebot-a', '54321')]:
         assert '找不到' in asyncio.run(inbox.decide(foreign, bot, ADMIN, True, token=token))
     assert not action_calls(bot, 'set_friend_add_request')
@@ -259,3 +259,105 @@ def test_cancelled_approval_is_not_retried_as_a_pending_request(tmp_path):
         assert '核实' in await inbox.decide(SCOPE, bot, ADMIN, True, token=token)
         assert bot.call_action.await_count == count
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('approve', [True, False])
+@pytest.mark.parametrize('legacy', [True, False])
+def test_changed_quote_id_resolves_exact_bot_notice_after_restart(tmp_path, approve, legacy):
+    path, bot = tmp_path / 'requests.json', make_bot()
+    inbox = ReviewInbox(path)
+    first = receive(inbox, bot, 'group', flag='slreq:1:765:30003:2:0')
+    other = receive(inbox, bot, 'group', flag='slreq:1:766:30003:2:0')
+    notice = action_calls(bot, 'send_private_msg')[0].kwargs['message']
+    if legacy:
+        inbox.records[first].pop('notification_text')
+        inbox._commit(inbox.records)
+    inbox = ReviewInbox(path)
+    original = bot.call_action.side_effect
+    async def resolve_quote(name, **kwargs):
+        if name == 'get_msg':
+            assert kwargs['message_id'] == -456 and kwargs['self_id'] == 12345
+            return {'status': 'ok', 'retcode': 0, 'data': {
+                'message_id': -456, 'sender': {'user_id': 12345},
+                'message_type': 'private', 'target_id': int(ADMIN), 'message': notice}}
+        return await original(name, **kwargs)
+    bot.call_action.side_effect = resolve_quote
+    result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, reply_id='-456'))
+    assert ('已同意' if approve else '已拒绝') in result
+    assert inbox.records[first]['status'] == ('approved' if approve else 'rejected')
+    assert inbox.records[other]['status'] == 'pending'
+    assert action_calls(bot, 'set_group_add_request')[0].kwargs['flag'] == 'slreq:1:765:30003:2:0'
+
+
+def test_framework_quote_body_can_resolve_without_get_msg(tmp_path):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    token = receive(inbox, bot, 'group')
+    message = {'sender_id': SCOPE[1], 'message_str': inbox.records[token]['notification_text']}
+    result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, reply_id='123', reply_message=message))
+    assert '已同意' in result
+    assert not action_calls(bot, 'get_msg')
+
+
+@pytest.mark.parametrize('patch', [
+    {'sender': {'user_id': int(ADMIN)}}, {'target_id': 99999}, {'message_type': 'group'},
+    {'message': [{'type': 'text', 'data': {'text': '📩 入群邀请 FAKE1234'}}]},
+])
+def test_quote_fallback_rejects_wrong_sender_recipient_group_or_content(tmp_path, patch):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    token = receive(inbox, bot, 'group')
+    notice = action_calls(bot, 'send_private_msg')[0].kwargs['message']
+    bot.call_action.side_effect = None
+    bot.call_action.return_value = {'sender': {'user_id': 12345}, 'target_id': int(ADMIN),
+                                    'message_type': 'private', 'message': notice, **patch}
+    result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, reply_id='123'))
+    assert '无法识别引用' in result
+    assert inbox.records[token]['status'] == 'pending'
+    assert not action_calls(bot, 'set_group_add_request')
+
+
+@pytest.mark.parametrize('wrapped', [True, False])
+def test_platform_error_detail_is_visible_without_leaking_request_flag(tmp_path, wrapped):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    flag = 'slreq:1:765:30003:2:0'
+    token = receive(inbox, bot, 'group', flag)
+    result = {'status': 'failed', 'retcode': 1200,
+              'wording': f'group request {flag} not found'}
+    bot.call_action.side_effect = None
+    if wrapped:
+        bot.call_action.return_value = result
+    else:
+        class PlatformError(Exception):
+            def __init__(self):
+                self.result = result
+        bot.call_action.side_effect = PlatformError()
+    message = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, False, token=token))
+    assert '处理失败' in message and 'not found' in message and flag not in message
+    assert inbox.records[token]['status'] == 'pending'
+
+
+def test_real_aiocqhttp_group_action_response_and_network_timeout(tmp_path):
+    # 使用 aiocqhttp 的真实响应解包和异常；不建立 QQ 连接。
+    cq = pytest.importorskip('aiocqhttp')
+    impl = pytest.importorskip('aiocqhttp.api_impl')
+    errors = pytest.importorskip('aiocqhttp.exceptions')
+    bot = cq.CQHttp(__name__)
+    calls = []
+    async def action(action, **params):
+        calls.append((action, params))
+        if action == 'send_private_msg':
+            return impl._handle_api_result({'status': 'ok', 'retcode': 0, 'data': {'message_id': 456}})
+        if action.startswith('set_'):
+            if params['approve']:
+                return impl._handle_api_result({'status': 'ok', 'retcode': 0, 'data': None})
+            raise errors.NetworkError('WebSocket API call timeout')
+        return {}
+    bot._api = SimpleNamespace(call_action=action)
+    inbox = ReviewInbox(tmp_path / 'requests.json')
+    first = receive(inbox, bot, 'group', 'slreq:1:765:30003:2:0')
+    assert '已同意' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, token=first))
+    second = receive(inbox, bot, 'group', 'slreq:1:766:30003:2:0')
+    assert '核实' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, False, token=second))
+    assert inbox.records[second]['status'] == 'uncertain'
+    count = len(calls)
+    asyncio.run(inbox.decide(SCOPE, bot, ADMIN, False, token=second))
+    assert len(calls) == count
