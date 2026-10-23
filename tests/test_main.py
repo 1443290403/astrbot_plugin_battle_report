@@ -9,7 +9,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -89,6 +89,92 @@ def plugin(mod, tmp_path):
 
 async def collect(generator):
     return [value async for value in generator]
+
+
+def review_event(raw, text='', sender='10001', group=''):
+    ev = event(text, group=group, admin=True)
+    ev.get_sender_id = lambda: sender
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    ev.get_platform_id = lambda: 'onebot-a'
+    ev.get_self_id = lambda: '12345'
+    ev.message_obj = SimpleNamespace(raw_message=raw)
+    ev.stop_event = Mock()
+    ev.send = AsyncMock()
+    return ev
+
+
+def new_qq_request(kind='friend'):
+    return {'post_type':'request', 'request_type':kind, 'self_id':12345,
+            'user_id':20002, 'flag':'opaque-original', 'comment':'你好',
+            **({'sub_type':'invite','group_id':30003,'invited_id':12345} if kind=='group' else {})}
+
+
+@pytest.mark.parametrize('kind', ['friend', 'group'])
+def test_qq_request_handler_notifies_super_admin_without_database(plugin_module, tmp_path, kind):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj.db_ready, obj.db = False, None
+    ev = review_event(new_qq_request(kind), group='30003' if kind=='group' else '')
+    ev.bot.call_action.return_value = {'message_id':90001}
+    assert plugin_module.RequestReviewFilter().filter(ev, {})
+    assert asyncio.run(obj.review_request(ev)) is None
+    sent = [c for c in ev.bot.call_action.await_args_list if c.args[0]=='send_private_msg']
+    assert len(sent) == 1 and sent[0].kwargs['user_id'] == 10001
+    ev.stop_event.assert_called_once()
+    reply = review_event({'post_type':'message','message_type':'private'}, text='同意')
+    reply.bot = ev.bot
+    reply.get_messages = lambda: [plugin_module.Reply(id='90001')]
+    asyncio.run(obj.review_request(reply))
+    assert '已同意' in reply.send.await_args.args[0]
+    reply.stop_event.assert_called_once()
+    approvals = [c for c in ev.bot.call_action.await_args_list if c.args[0].startswith('set_')]
+    assert len(approvals) == 1
+    assert approvals[0].kwargs['flag'] == 'opaque-original' and approvals[0].kwargs['self_id'] == 12345
+
+
+@pytest.mark.parametrize('sender,group,message_type', [
+    ('20002','','private'), ('10001','100','group'), ('10001','100','private'),
+])
+def test_only_super_admin_private_messages_can_review(plugin_module,tmp_path,sender,group,message_type):
+    obj = plugin(plugin_module,tmp_path)
+    obj.config['super_admin'] = '10001'
+    ev = review_event({'post_type':'message','message_type':message_type}, '同意', sender, group)
+    obj._get_review_inbox = Mock(side_effect=AssertionError('must not open inbox'))
+    assert asyncio.run(obj.review_request(ev)) is None
+    obj._get_review_inbox.assert_not_called()
+    ev.bot.call_action.assert_not_awaited()
+    ev.stop_event.assert_not_called()
+
+
+def test_unconfigured_admin_and_unrelated_events_do_not_trigger_actions(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    ev = review_event(new_qq_request())
+    assert asyncio.run(obj.review_request(ev)) is None
+    ev.bot.call_action.assert_not_awaited()
+    ordinary = review_event({'post_type':'message','message_type':'private'}, '我同意这个看法')
+    assert not plugin_module.RequestReviewFilter().filter(ordinary,{})
+    for raw in [new_qq_request('group') | {'sub_type':'add'},
+                new_qq_request('group') | {'invited_id':54321},
+                new_qq_request() | {'post_type':'notice'}]:
+        ignored = review_event(raw)
+        assert not plugin_module.RequestReviewFilter().filter(ignored,{})
+        assert asyncio.run(obj.review_request(ignored)) is None
+        ignored.bot.call_action.assert_not_awaited()
+
+
+def test_private_request_list_works_after_restart_without_database(plugin_module,tmp_path):
+    obj = plugin(plugin_module,tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj.db_ready = False
+    request = review_event(new_qq_request())
+    asyncio.run(obj.review_request(request))
+    obj._review_inbox = None
+    ev = review_event({'post_type':'message','message_type':'private'}, '/申请列表')
+    asyncio.run(obj.request_list(ev))
+    response = ev.send.await_args.args[0]
+    assert '20002' in response and '同意 编号' in response
+    ev.get_sender_id = lambda: '20002'
+    assert asyncio.run(obj.request_list(ev)) is None
 
 
 def test_round_command_fills_only_available_survivors(plugin_module, tmp_path):

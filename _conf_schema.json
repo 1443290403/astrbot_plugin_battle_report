@@ -53,7 +53,7 @@
     "description": "超级管理员 QQ",
     "type": "string",
     "default": "",
-    "hint": "留空则不开启超管命令"
+    "hint": "好友申请和入群邀请会私聊发给此 QQ；留空不开启超管功能"
   },
   "pairing_seed": {
     "description": "排表随机种子",

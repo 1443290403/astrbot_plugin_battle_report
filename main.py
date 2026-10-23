@@ -29,6 +29,7 @@ from astrbot.api.star import Star, StarTools, register
 
 from . import chart, help_guide, lineup, stats
 from .command_args import parse_command_args, parse_managed_ids, single_name
+from .request_review import ReviewInbox, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
 from .battle_report_parser import (
     KIND_RAID,
@@ -69,6 +70,30 @@ class RoundCommandFilter(CustomFilter):
 
     def filter(self, event: AstrMessageEvent, cfg) -> bool:
         return bool(_ROUND_CMD_RE.match(event.get_message_str().strip()))
+
+
+def _review_scope(event) -> tuple[str, str] | None:
+    """审批仅使用原 OneBot 平台及机器人连接。"""
+    if not callable(getattr(event, "get_platform_name", None)) or event.get_platform_name() != "aiocqhttp":
+        return None
+    platform_id = str(event.get_platform_id() or "")
+    self_id = str(event.get_self_id() or "")
+    if not platform_id or not self_id.isascii() or not self_id.isdigit() or int(self_id) <= 0:
+        return None
+    return platform_id, self_id
+
+
+class RequestReviewFilter(CustomFilter):
+    def filter(self, event: AstrMessageEvent, cfg) -> bool:
+        scope = _review_scope(event)
+        if scope is None:
+            return False
+        raw = getattr(event.message_obj, "raw_message", None)
+        if request_payload(raw, scope[1]) is not None:
+            return True
+        return (isinstance(raw, dict) and raw.get("post_type") == "message"
+                and raw.get("message_type") == "private"
+                and parse_decision(event.get_message_str()) is not None)
 
 _FORMAT_EXAMPLE = (
     "格式示例：\n"
@@ -158,13 +183,14 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.17.8")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
         self.db: Database | None = None
         self.db_ready = False
+        self._review_inbox: ReviewInbox | None = None
         try:
             self.data_dir = StarTools.get_data_dir()
         except Exception as e:
@@ -214,6 +240,64 @@ class BattleReportPlugin(Star):
             await self.db.close()
 
     # ---------- 内部工具 ----------
+
+    def _get_review_inbox(self) -> ReviewInbox:
+        if getattr(self, "_review_inbox", None) is None:
+            self._review_inbox = ReviewInbox(self.data_dir / "request_reviews.json")
+        return self._review_inbox
+
+    @filter.custom_filter(RequestReviewFilter, priority=100)
+    async def review_request(self, event: AstrMessageEvent):
+        """接收申请或超管私聊审批，不依赖 MySQL、群绑定或群权限。"""
+        scope = _review_scope(event)
+        if scope is None:
+            return
+        raw = getattr(event.message_obj, "raw_message", None)
+        payload = request_payload(raw, scope[1])
+        if payload is not None:
+            event.stop_event()
+            admin = str(self.config.get("super_admin", "") or "").strip()
+            if not admin.isascii() or not admin.isdigit() or int(admin) <= 0:
+                logger.warning("收到 QQ 申请，但未配置有效的 super_admin")
+                return
+            try:
+                await self._get_review_inbox().receive(payload, scope, event.bot, admin)
+            except Exception:
+                logger.exception("保存或转发 QQ 申请失败")
+            return
+        if (not isinstance(raw, dict) or raw.get("post_type") != "message"
+                or raw.get("message_type") != "private" or event.get_group_id()
+                or not self._is_super_admin(event)):
+            return
+        decision = parse_decision(event.get_message_str())
+        if decision is None:
+            return
+        event.stop_event()
+        reply_id = next((str(m.id) for m in event.get_messages() if isinstance(m, Reply)), None)
+        try:
+            result = await self._get_review_inbox().decide(
+                scope, event.bot, str(event.get_sender_id()), *decision, reply_id=reply_id,
+            )
+        except Exception:
+            logger.exception("处理 QQ 申请记录失败")
+            result = "❌ 申请记录暂不可用，请联系维护者检查喵。"
+        await event.send(event.plain_result(result))
+
+    @filter.command("申请列表", alias={"/申请列表"})
+    async def request_list(self, event: AstrMessageEvent):
+        if event.get_group_id() or not self._is_super_admin(event):
+            return
+        event.stop_event()
+        scope = _review_scope(event)
+        if scope is None:
+            await event.send(event.plain_result("请在 QQ 私聊中查看申请喵。"))
+            return
+        try:
+            result = await self._get_review_inbox().list_requests(scope)
+        except Exception:
+            logger.exception("读取 QQ 申请列表失败")
+            result = "❌ 申请记录暂不可用，请联系维护者检查喵。"
+        await event.send(event.plain_result(result))
 
     def _check_db(self) -> str | None:
         """数据库未就绪时返回提示文案。"""

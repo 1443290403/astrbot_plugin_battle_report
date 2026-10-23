@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.17.8`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-20
+> 对应版本：`1.18.0`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-24
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -30,13 +30,14 @@
 
 面向 QQ 群聊的**战队对战战报**插件（AstrBot 插件），把线下/群内约战的排表、比分、战报统一到线上 MySQL，并提供个人与战队的统计分析。
 
-- **运行形态**：AstrBot 插件（`Star` 子类），单文件入口 [main.py](main.py)，全部命令由 QQ 群消息触发
+- **运行形态**：AstrBot 插件（`Star` 子类），单文件入口 [main.py](main.py)，战报命令由 QQ 群消息触发，申请审批由 OneBot 请求与超管私聊触发
 - **存储**：线上 MySQL（`aiomysql` 异步连接池，`autocommit`），插件启动时自动建库建表并执行迁移
 - **渲染产出**：文本表格（[stats.py](stats.py)）+ Pillow 图片（[chart.py](chart.py)）+ CSV/JSON 文件导出 + 合并转发（QQ 富消息）
 - **代码分层**（刻意做的解耦，纯逻辑层零框架依赖、可单测）：
 
 ```
 main.py                    命令入口 / 权限 / 平台消息收发 / 编排
+  ├── request_review.py     QQ 申请转发、审批与本地持久化 ← 不依赖 MySQL
   ├── help_guide.py         三类用途流程帮助 + 未完成配置的开通引导 ← 纯 Python
   ├── command_args.py       引号/空格/批量 ID 的命令参数解析        ← 纯 Python
   ├── lineup.py            排表、追加轮次、记录比分、战报文本还原  ← 纯 Python
@@ -101,7 +102,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 | 身份 | 判定函数 | 能力 |
 |---|---|---|
-| **超级管理员** | `_is_super_admin()`（配置 `super_admin` 的 QQ） | 任意群战队/属性设置、战队管理员授权/撤销/查看、禁用/启用群、群列表、通告、导出群成员及插件管理操作 |
+| **超级管理员** | `_is_super_admin()`（配置 `super_admin` 的 QQ） | 任意群战队/属性设置、战队管理员授权/撤销/查看、禁用/启用群、群列表、通告、导出群成员、QQ 好友/入群邀请审批及插件管理操作 |
 | **战队管理员** | `db.is_team_admin(home_team, QQ)` | 仅对应战队的绑定/群属性设置；在本队已绑定群内兼具插件中的群管理权限 |
 | **管理 / 群主** | `_is_manager()` = 超管 ∨ AstrBot 管理员 ∨ 本队战队管理员 ∨ 群主 ∨ 群管理 | 删除战报、管理ID、解绑他人ID、结算/重置；战队绑定与群属性另用严格的战队授权检查 |
 | **提交者本人** | `get_last_match_by_submitter()` | 撤销自己最近一条战报 |
@@ -120,6 +121,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | `_require_home()` | `_group_check()` + 群号 + **本群已绑定战队及明确群属性**，缺项返回开通流程 | 用户与身份类命令（见 §5-M02） |
 
 **特例（改动时注意）：**
+
+- QQ 请求监听、超管私聊审批和 `/申请列表` 不使用数据库/群绑定/群禁用前置检查，只使用平台、机器人连接及 `super_admin` 身份检查（M-15）。
 
 - `/帮助` **只做 `_check_enabled()`** —— 群被超管禁用时不回复（v1.13.0 补上，此前完全不校验）；但**不**检查数据库就绪、**不**要求绑定战队（有意为之：它是"命令怎么不灵"的自助排查入口，被未绑定拦住会自相矛盾）
 - `/导出群成员` 只检查超管身份，**不检查**数据库（它只用 QQ 接口）
@@ -184,7 +187,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ## 5. 全局口径（横切机制）★核心章节
 
-以下 14 条被多个功能共用。**改动其中任何一条，都必须按 §7 矩阵检查全部使用方。**
+以下 15 条被多个功能共用。**改动其中任何一条，都必须按 §7 矩阵检查全部使用方。**
 
 ---
 
@@ -688,6 +691,21 @@ year = now.year - 1 if month > now.month else now.year
 
 ---
 
+### M-15 QQ 申请审批 ★v1.18.0
+
+- **平台入口：** AstrBot `aiocqhttp` 将 OneBot request 转为 `AstrMessageEvent.message_obj.raw_message`；高优先级 `RequestReviewFilter` 接收 `friend` 及 `group/invite`。忽略 `group/add`、邀请其他人、notice、不完整请求和其他平台。
+- **通知：** QQ、昵称、验证消息；邀请附群号/群名。可选资料查询最多等待 3 秒，失败仍转发号码。通过原机器人连接 `send_private_msg` 发给有效 `super_admin`，使用文本消息段，flag 不出现在通知中。
+- **回执：** 消费申请/审批事件后用 `event.send` 直接私聊发送结果；不能在 stop_event 之后仅 yield 结果，否则 AstrBot 调度器会跳过回复阶段。
+- **授权：** 仅该超管在 QQ 私聊中可审批或查列表；AstrBot 管理员、战队管理员、群主/群管身份均不提供此权限。收到请求只转发，绝不自动同意。
+- **选单：** 优先使用已发送通知的 message_id 绑定引用；可发送 `同意/拒绝 八位编号`。无引用/编号时仅在当前连接恰好一条 pending 时处理。引用不认识、编号与引用冲突或跨平台/机器人时拒绝，不回退到其他申请。
+- **接口：** flag 原样交给 `set_friend_add_request`；群邀请交给 `set_group_add_request` 并带 `sub_type=invite`。所有动作携带原 `self_id` 路由，操作由当前事件对应的 bot 执行。
+- **存储：** `data_dir/request_reviews.json`，独立于 MySQL/schema v18；按平台 ID + self_id + kind + flag 去重。原子替换保存，磁盘写入失败不能提前执行审批；损坏/未知格式不覆盖原文件。
+- **状态：** pending → processing → approved/rejected。先持久化 processing 再调用平台；并发/重复回复不会再次调用接口。显式接口失败回 pending 允许重试；TimeoutError/ConnectionError、任务取消或恢复 processing 时转 uncertain，需到 QQ 核实。成功后写盘失败也不允许直接重复执行。
+- **恢复：** 超管私聊 `/申请列表` 查看当前连接的 pending/processing/uncertain，支持编号回复；通知失败保留申请，重复上报可以重发通知。超管配置为空时不转发、不审批。
+- **兼容依据：** 参考 `AstrBot/astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py` 请求转换，以及 `SnowLuma/packages/onebot/src/event-converter/to-request.ts` 和 `actions/request.ts` 的事件/接口字段。
+
+---
+
 ## 6. 功能清单
 
 > 表格中「依赖口径」列指向 §5 的横切机制 —— **改动该功能前必须先读那些口径。**
@@ -852,6 +870,8 @@ year = now.year - 1 if month > now.month else now.year
 | **F-30** | `/设置战队管理员 <战队> <QQ号[,QQ号...]>` | `set_team_admins` | 仅超管，覆盖该队名单，支持多 QQ、去重，其他队不变 |
 | **F-31** | `/移除战队管理员 <战队> <QQ号>` | `remove_team_admin` | 仅超管，撤销该 QQ 在该队的授权；原本无授权时正常提示 |
 | **F-32** | `/查看战队管理员 <战队>` | `view_team_admins` | 仅超管，只读查看该队管理员 |
+| **F-33** | OneBot 好友申请/群邀请 + 超管私聊同意/拒绝 | `review_request` | 收到后私聊通知超管；引用通知/编号选单，仅超管私聊审批。持久化与去重见 M-15，不依赖数据库 |
+| **F-34** | `/申请列表` | `request_list` | 仅超管私聊查看当前机器人连接的待处理/处理中/需核实申请，可按编号回复 |
 
 ### 域 G：战报治理
 
@@ -874,6 +894,7 @@ year = now.year - 1 if month > now.month else now.year
 
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
+| **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
 | **对局加一个属性**（如 出场序号/时长） | ① `Duel` dataclass ② `parse_battle_report` ③ `duels` 表 + 迁移 ④ `insert_report` ⑤ **所有读出 duels 的 SELECT**：`get_export_rows`、`get_reports_for_export`、`get_player_match_stats` ⑥ dict 组装处（`get_reports_for_export` 逐字段手写）⑦ `format_duels_block` 还原 ⑧ CSV 列 | ⑤⑥ 是"逐字段罗列"的写法，**漏一个字段就是静默丢数据** |
@@ -973,6 +994,7 @@ year = now.year - 1 if month > now.month else now.year
 | [command_args.py](command_args.py) | ~90 | 引号边界、空格 ID、单名字与管理ID参数，共用于入口/导出/排表/记录/轮次 | 无 |
 | [lineup.py](lineup.py) | ~755 | 排表、追加轮次、记录比分、战报文本还原、导出过滤 | 无 |
 | [battle_report_parser.py](battle_report_parser.py) | ~735 | 战报解析（友谊 + 踢馆）、胜负判定、`is_kof`、内容指纹、月份/参数解析 | 无 |
+| [request_review.py](request_review.py) | ~250 | OneBot 申请转发、按引用/编号审批、本地持久化与并发去重 | 标准库 |
 | [help_guide.py](help_guide.py) | ~160 | 三类用途流程、开通步骤、配置状态与只读预览 | 无 |
 | [stats.py](stats.py) | ~700 | 积分/胜率/表格/帮助文案、`rank_aligns`、**踢馆判定与计分（踢馆侧唯一实现）**、**结算奖金公式与名次（`rank_bonus` / `ranks_for` / `attach_bonus`）**、**结算回执（写 `format_settlement` / 只读 `format_settlement_view`，行体共用 `_settlement_lines`）**、**结算公告（`settlement_awards_changed` 判要不要 @ / `settlement_announcement` 分段文案 / `format_settlement_repeat` 不 @ 时的提示）**、**排行图片左侧面板的 8 行（`build_team_panel`）** | 无 |
 | [chart.py](chart.py) | ~300 | Pillow 趋势图 + 排行表格图（`make_ranking_image` 的 `panel` 参数只负责画，不懂语义） | Pillow |
@@ -1171,7 +1193,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
-| `test_main.py` | 真实 handler + 框架桩；轮次命令补齐空闲存活选手且不入库；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；不代表真实 QQ 联调 |
+| `test_request_review.py` | 事件筛选、文本通知、四种审批、原始 flag、重启/并发/重复、多请求选单、跨连接隔离、超时/中断/存储/通知失败 |
+| `test_main.py` | 真实 handler + 框架桩；好友/群邀请监听、超管私聊审批与列表、越权/群内/其他事件拒绝、数据库不可用时审批；轮次命令补齐空闲存活选手且不入库；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；不代表真实 QQ 联调 |
 | `test_command_args.py` | 引号/转义/标点、裸空格兼容、查询关键字保护、导出顺序、排表→记录→轮次→重新解析完整链路 |
 | `test_database_lifecycle.py` | 唯一键并发冲突不得借第二条连接、初始化迁移失败释放池 |
 | `test_winner.py` | 人头赛 / KOF 胜负判定（含替补不扩容、同名首发与替补区分、TK 占位、判罚） |
@@ -1204,7 +1227,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.17.8")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.18.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
