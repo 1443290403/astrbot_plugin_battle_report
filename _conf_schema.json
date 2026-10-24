@@ -26,14 +26,14 @@
     "description": "排行后自动点评",
     "type": "bool",
     "default": true,
-    "hint": "排行后让 AI 使用插件统一人格自由点评"
+    "hint": "配置插件 AI 人格后，排行会附上一段简短点评"
   },
   "ai_persona_id": {
     "description": "插件 AI 人格",
     "type": "string",
     "default": "",
     "_special": "select_persona",
-    "hint": "插件内所有 AI 功能共用；选择 AstrBot 已配置的人格，留空使用 AstrBot 全局默认人格"
+    "hint": "插件内所有 AI 功能共用；留空不生成点评，也不发送相关提示"
   },
   "min_games": {
     "description": "进入个人排行所需最少对局数",

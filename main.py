@@ -183,7 +183,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1586,15 +1586,12 @@ class BattleReportPlugin(Star):
     # ---------- 查询 ----------
 
     def _ai_persona_prompt(self) -> str:
-        """插件内 AI 功能共用的人格；留空读取 AstrBot 全局默认人格。"""
+        """插件内 AI 功能共用的人格；未配置或禁用时不启用 AI。"""
+        persona_id = str(self.config.get("ai_persona_id", "") or "").strip()
+        if not persona_id or persona_id == "[%None]":
+            return ""
         manager = getattr(self.context, "persona_manager", None)
         if not callable(getattr(manager, "get_persona_v3_by_id", None)):
-            return ""
-        persona_id = str(self.config.get("ai_persona_id", "") or "").strip()
-        if not persona_id:
-            settings = self.context.get_config().get("provider_settings", {})
-            persona_id = settings.get("default_personality") or "default"
-        if persona_id == "[%None]":
             return ""
         persona = manager.get_persona_v3_by_id(persona_id)
         if persona is None:
@@ -1604,6 +1601,13 @@ class BattleReportPlugin(Star):
     async def _ranking_commentary(self, event: AstrMessageEvent, home_team: str, scope: str,
                                   date_from: str, date_to: str, rows: list[dict], panel=None) -> str | None:
         if not rows or not self.config.get("ranking_ai_comment", True):
+            return None
+        try:
+            persona = self._ai_persona_prompt()
+        except Exception:
+            logger.exception("读取插件 AI 人格失败")
+            return None
+        if not isinstance(persona, str) or not persona.strip():
             return None
 
         async def generate():
@@ -1617,15 +1621,23 @@ class BattleReportPlugin(Star):
                 "战队战绩面板": panel,
             }
             provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
-            persona = self._ai_persona_prompt()
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id, system_prompt=persona or None, contexts=[],
-                prompt="请自由点评以下排行：\n" + json.dumps(data, ensure_ascii=False),
+                prompt="请自由点评以下排行，100字以内，用一段话表达，不加标题、不分段：\n"
+                       + json.dumps(data, ensure_ascii=False),
             )
             text = response.completion_text
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("排行点评返回空文本")
-            return "💬 排行点评\n" + text.strip()
+            text = re.sub(r"^(?:💬\s*)?排行点评(?:[：:]|\s|$)\s*", "", text.strip(), count=1)
+            text = " ".join(text.split())
+            if not text:
+                raise ValueError("排行点评返回空文本")
+            if len(text) > 160:
+                prefix = text[:159].rstrip()
+                end = max(prefix.rfind(mark) for mark in "。！？!?")
+                text = prefix[:end + 1] if end >= 60 else prefix + "…"
+            return text
 
         try:
             return await asyncio.wait_for(generate(), timeout=30)

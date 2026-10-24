@@ -95,6 +95,7 @@ async def collect(generator):
 def ranking_with_llm(mod, tmp_path, text='/排行 七月'):
     obj = plugin(mod, tmp_path)
     obj.config['ranking_image'] = False
+    obj.config['ai_persona_id'] = 'plugin-persona'
     obj.db.get_group_home.return_value = 'a队'
     obj.db.get_player_ranking = AsyncMock(return_value=[{
         'player': '云玩家', 'wins': 8, 'losses': 2, 'draws': 1, 'total': 11,
@@ -140,7 +141,7 @@ def test_ranking_sends_primary_result_before_commentary_using_same_scope_and_mon
         assert '云玩家' in first if query == 'player' else 'b队' in first
         obj.context.llm_generate.assert_not_awaited()
         second = await anext(handler)
-        assert second == '💬 排行点评\n云玩家表现稳健，继续积累对局喵。'
+        assert second == '云玩家表现稳健，继续积累对局喵。'
         with pytest.raises(StopAsyncIteration):
             await anext(handler)
     asyncio.run(scenario())
@@ -151,10 +152,10 @@ def test_ranking_sends_primary_result_before_commentary_using_same_scope_and_mon
     assert call['chat_provider_id'] == 'chat-selected' and call['contexts'] == []
     assert 'tools' not in call and 'PRIVATE_' not in str(call)
     assert call['system_prompt'] == '你是插件统一的解说员。'
-    assert call['prompt'].split('\n', 1)[0] == '请自由点评以下排行：'
+    assert call['prompt'].split('\n', 1)[0] == '请自由点评以下排行，100字以内，用一段话表达，不加标题、不分段：'
     obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
-    obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with('persona-default')
-    obj.context.get_config.assert_called_once_with()
+    obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with('plugin-persona')
+    obj.context.get_config.assert_not_called()
     obj.context.persona_manager.resolve_selected_persona.assert_not_awaited()
     obj.context.conversation_manager.get_curr_conversation_id.assert_not_awaited()
     if scope == '本队个人榜':
@@ -179,7 +180,7 @@ def test_image_ranking_and_text_fallback_each_append_one_commentary(plugin_modul
     render = Mock(return_value=tmp_path / 'rank.png', side_effect=None if image_works else OSError('render failed'))
     monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', render)
     results = asyncio.run(collect(obj.ranking(ev)))
-    assert len(results) == 2 and results[1].startswith('💬 排行点评')
+    assert len(results) == 2 and results[1] == '云玩家表现稳健，继续积累对局喵。'
     assert isinstance(results[0], list) == image_works
     if image_works:
         assert isinstance(results[0][1], plugin_module.Image)
@@ -262,25 +263,25 @@ def test_llm_errors_do_not_turn_successful_ranking_into_query_failure(plugin_mod
     assert obj.context.llm_generate.await_count <= 1
 
 
-def test_plugin_uses_global_default_persona_without_session_overrides(plugin_module, tmp_path):
+def test_plugin_persona_does_not_read_global_or_session_overrides(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
     obj.context.conversation_manager.get_curr_conversation_id.return_value = None
     obj.context.persona_manager.get_persona_v3_by_id.return_value = {'prompt': '你是默认解说员。'}
     asyncio.run(collect(obj.ranking(ev)))
     obj.context.conversation_manager.get_conversation.assert_not_awaited()
     obj.context.persona_manager.resolve_selected_persona.assert_not_awaited()
-    obj.context.get_config.assert_called_once_with()
+    obj.context.get_config.assert_not_called()
     obj.context.conversation_manager.get_curr_conversation_id.assert_not_awaited()
     assert '你是默认解说员。' in obj.context.llm_generate.await_args.kwargs['system_prompt']
 
 
-def test_empty_persona_and_long_response_do_not_add_style_or_truncate_text(plugin_module, tmp_path):
+def test_empty_persona_prompt_silently_skips_commentary(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
     obj.context.persona_manager.get_persona_v3_by_id.return_value = {'prompt': ''}
-    obj.context.llm_generate.return_value.completion_text = '稳' * 1000
     results = asyncio.run(collect(obj.ranking(ev)))
-    assert results[1] == '💬 排行点评\n' + '稳' * 1000
-    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] is None
+    assert len(results) == 1 and '云玩家' in results[0]
+    obj.context.llm_generate.assert_not_awaited()
+    obj.context.get_current_chat_provider_id.assert_not_awaited()
 
 
 def test_cancelled_commentary_does_not_retry_or_repeat_ranking(plugin_module, tmp_path):
@@ -322,12 +323,13 @@ def test_commentary_deadline_cancels_slow_model_after_ranking_is_already_availab
     assert cancelled.is_set()
 
 
-def test_commentary_without_persona_api_does_not_inject_style(plugin_module, tmp_path):
+def test_commentary_without_persona_api_silently_skips(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
     del obj.context.persona_manager
     results = asyncio.run(collect(obj.ranking(ev)))
-    assert results[1].startswith('💬 排行点评')
-    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] is None
+    assert len(results) == 1 and '云玩家' in results[0]
+    obj.context.llm_generate.assert_not_awaited()
+    obj.context.get_current_chat_provider_id.assert_not_awaited()
 
 
 @pytest.mark.parametrize('configured', ['plugin-persona', '  plugin-persona  ', 'default'])
@@ -336,7 +338,7 @@ def test_commentary_uses_plugin_persona_and_current_chat_model(plugin_module, tm
     obj.config['ai_persona_id'] = configured
     obj.context.get_config.side_effect = AssertionError('must use configured persona')
     results = asyncio.run(collect(obj.ranking(ev)))
-    assert results[1].startswith('💬 排行点评')
+    assert results[1] == '云玩家表现稳健，继续积累对局喵。'
     assert obj.context.llm_generate.await_args.kwargs['chat_provider_id'] == 'chat-selected'
     obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
     obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with(configured.strip())
@@ -344,14 +346,15 @@ def test_commentary_uses_plugin_persona_and_current_chat_model(plugin_module, tm
 
 
 @pytest.mark.parametrize('configured', ['', '  ', None])
-def test_empty_plugin_persona_uses_global_default(plugin_module, tmp_path, configured):
+def test_empty_plugin_persona_only_displays_ranking_without_any_ai_prompt(plugin_module, tmp_path, configured):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
     obj.config['ai_persona_id'] = configured
-    asyncio.run(collect(obj.ranking(ev)))
-    obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
-    assert obj.context.llm_generate.await_args.kwargs['chat_provider_id'] == 'chat-selected'
-    obj.context.get_config.assert_called_once_with()
-    obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with('persona-default')
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 1 and '云玩家' in results[0]
+    obj.context.get_current_chat_provider_id.assert_not_awaited()
+    obj.context.llm_generate.assert_not_awaited()
+    obj.context.get_config.assert_not_called()
+    obj.context.persona_manager.get_persona_v3_by_id.assert_not_called()
 
 
 def test_invalid_plugin_persona_preserves_ranking_without_switching_personas(plugin_module, tmp_path):
@@ -359,7 +362,7 @@ def test_invalid_plugin_persona_preserves_ranking_without_switching_personas(plu
     obj.config['ai_persona_id'] = 'removed-persona'
     obj.context.persona_manager.get_persona_v3_by_id.return_value = None
     results = asyncio.run(collect(obj.ranking(ev)))
-    assert '云玩家' in results[0] and '点评暂时没生成出来' in results[1]
+    assert len(results) == 1 and '云玩家' in results[0]
     obj.context.get_config.assert_not_called()
     obj.context.llm_generate.assert_not_awaited()
 
@@ -373,25 +376,61 @@ def test_plugin_persona_is_shared_across_groups(plugin_module, tmp_path, configu
     second.get_platform_name = lambda: 'aiocqhttp'
     obj.context.conversation_manager.get_curr_conversation_id.side_effect = AssertionError('no per-group persona')
     obj.context.persona_manager.resolve_selected_persona.side_effect = AssertionError('no per-group persona')
-    asyncio.run(collect(obj.ranking(first)))
-    asyncio.run(collect(obj.ranking(second)))
+    first_result = asyncio.run(collect(obj.ranking(first)))
+    second_result = asyncio.run(collect(obj.ranking(second)))
     calls = obj.context.llm_generate.await_args_list
+    if not configured:
+        assert len(first_result) == len(second_result) == 1
+        assert not calls
+        obj.context.get_current_chat_provider_id.assert_not_awaited()
+        return
     assert len(calls) == 2
     assert calls[0].kwargs['system_prompt'] == calls[1].kwargs['system_prompt'] == '你是插件统一的解说员。'
     assert [c.kwargs['umo'] for c in obj.context.get_current_chat_provider_id.await_args_list] == [
         first.unified_msg_origin, second.unified_msg_origin]
 
 
-@pytest.mark.parametrize('configured', [True, False])
-def test_disabled_persona_does_not_force_plugin_style(plugin_module, tmp_path, configured):
+def test_disabled_persona_silently_skips_commentary(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    if configured:
-        obj.config['ai_persona_id'] = '[%None]'
-    else:
-        obj.context.get_config.return_value = {'provider_settings': {'default_personality': '[%None]'}}
-    asyncio.run(collect(obj.ranking(ev)))
-    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] is None
+    obj.config['ai_persona_id'] = '[%None]'
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 1 and '云玩家' in results[0]
+    obj.context.llm_generate.assert_not_awaited()
     obj.context.persona_manager.get_persona_v3_by_id.assert_not_called()
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('第一句。\n\n第二句。\r\n第三句。', '第一句。 第二句。 第三句。'),
+    ('💬 排行点评\n\n云玩家发挥稳健。', '云玩家发挥稳健。'),
+    ('排行点评：\n云玩家发挥稳健。', '云玩家发挥稳健。'),
+    ('云玩家发挥稳健。', '云玩家发挥稳健。')])
+def test_commentary_has_no_title_or_paragraph_breaks(plugin_module, tmp_path, text, expected):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.context.llm_generate.return_value.completion_text = text
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert results[1] == expected
+    assert '\n' not in results[1] and '\r' not in results[1]
+
+
+@pytest.mark.parametrize('text', ['稳' * 1000, '稳' * 90 + '。' + '继续积累对局。' * 50])
+def test_long_commentary_stays_short_and_single_paragraph(plugin_module, tmp_path, text):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.context.llm_generate.return_value.completion_text = text
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert 0 < len(results[1]) <= 160
+    assert results[1].endswith(('。', '…'))
+    assert '\n' not in results[1]
+
+
+def test_missing_persona_needs_no_llm_context_and_sends_no_hint(plugin_module, tmp_path, monkeypatch):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.config.pop('ai_persona_id')
+    del obj.context
+    log = Mock()
+    monkeypatch.setattr(plugin_module, 'logger', log)
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 1 and '云玩家' in results[0]
+    log.exception.assert_not_called()
 
 
 def review_event(raw, text='', sender='10001', group=''):
