@@ -22,6 +22,12 @@
     "default": 30,
     "hint": "仅影响 /排行 全部；本队排行显示全部队员"
   },
+  "ranking_ai_comment": {
+    "description": "排行后自动点评",
+    "type": "bool",
+    "default": true,
+    "hint": "使用 AstrBot 当前会话的聊天模型和人格追加简短点评；需先在 AstrBot 配置聊天模型"
+  },
   "min_games": {
     "description": "进入个人排行所需最少对局数",
     "type": "int",

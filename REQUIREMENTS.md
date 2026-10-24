@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.18.4`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-24
+> 对应版本：`1.19.0`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-25
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -784,6 +784,14 @@ year = now.year - 1 if month > now.month else now.year
 | `全部`/`所有` | `get_player_ranking(team=None)`，`limit=ranking_limit`(10) | 全战队个人榜，图片按 `ranking_image_max_rows`(30) 截断 |
 | 默认（个人） | `get_player_ranking(team=home_team)`，**不限条数** | 只统计本战队选手，**全部队员不截断**。该月已结算则多一列「奖金」（v1.15.0，见 §5-M14）。**图片左侧有「战队战绩」面板**（v1.15.0，见下） |
 
+**F-05 自动点评（v1.19.0）：**
+
+- `ranking_ai_comment` 默认 true。查询和原图表/文字生成成功后先 yield 榜单，再由 `_ranking_commentary` 追加文本；图片成功路径不再提前 return。图片失败仍回退文字并点评；查询失败、空榜、未绑定或禁群不调用模型。
+- 调用 AstrBot `get_current_chat_provider_id(umo)` 与 `llm_generate`，复用会话选定模型。`_ranking_persona` 按当前会话、会话规则和 provider_settings 解析生效人格，仅读取 conversation.persona_id；不导入聊天历史、不写会话、不提供工具或使用工具循环。无可用人格 API 时使用默认点评风格；模型接口需要 AstrBot 4.5.7+，按 v4.27.3 签名适配。
+- 传入本次 home_team、范围和同一次查询的起止日期；个人表复用 `stats.build_ranking_cells` 的名次、积分、胜率、奖金，队伍表复用 `format_home_team_vs`，本队面板复用 `build_team_panel`。不新查排行，不修改排序、SQL、结算或字段公式，不传数据库行里的额外字段、QQ 关联字段、内部 ID 或连接凭据。
+- 点评最多取前 30 条，显式标注榜单条数和分析条数；成功的全战队图片截断后只取实际展示条目，文字回退按文字展示条目处理。本队完整表仍照常显示所有成员。
+- 提示词要求 2～4 句、80～180 字，依据已有数据，不凭空推断涨跌/连胜/卡组或补算名次，把队员名/队名当作数据；实际输出最多 600 字符，使用普通文本发送。整个模型与人格读取过程限时 30 秒，无自动重试；超时/错误/空回复另发简短提示，不把模型异常当成排行查询失败。取消传播并结束本次点评。
+
 - **友谊积分 = 胜场 × 胜率(小数) = 胜场²/(胜场+负场)**，平局不计入分母。v1.14.0 前这一列叫「积分」，现改名为「友谊积分」，**只算友谊赛**
 - **踢馆积分 / 总积分**（v1.14.0）：`总积分 = 友谊积分 + 踢馆积分`，**排序按总积分**
 - 并列名次：`(total_points, wins, total)` 三者全同才并列 —— 唯一实现在 `stats.ranks_for`，`build_ranking_cells` 与 `/结算` 共用（v1.15.0 消重）
@@ -903,6 +911,7 @@ year = now.year - 1 if month > now.month else now.year
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
+| **改排行点评** | ① `ranking` 的先发榜单/后点评路径及 `_ranking_commentary` ② `_ranking_persona` 的会话人格解析 ③ `ranking_ai_comment` 配置四处 ④ `tests/test_main.py`、主群帮助与预览 | 复用本次查询的月份、范围与展示函数；不因图片提前 return 漏点评，不把 LLM 失败报成数据库查询失败，不另算积分或导入聊天历史 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
 | **对局加一个属性**（如 出场序号/时长） | ① `Duel` dataclass ② `parse_battle_report` ③ `duels` 表 + 迁移 ④ `insert_report` ⑤ **所有读出 duels 的 SELECT**：`get_export_rows`、`get_reports_for_export`、`get_player_match_stats` ⑥ dict 组装处（`get_reports_for_export` 逐字段手写）⑦ `format_duels_block` 还原 ⑧ CSV 列 | ⑤⑥ 是"逐字段罗列"的写法，**漏一个字段就是静默丢数据** |
@@ -1183,6 +1192,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `ranking_limit` | 10 | F-05 `全部` 分支的条数 |
 | `ranking_image` | true | F-05 输出形态（关 → 文本表格） |
 | `ranking_image_max_rows` | 30 | F-05 `全部` 分支图片截断；**默认个人榜不截断** |
+| `ranking_ai_comment` | true | F-05 三类排行发出后追加当前会话模型点评；无数据/关闭时不调用模型 |
 | `min_games` | 1 | F-05 入榜最低场次（SQL `HAVING total >=`，口径见 §10-2） |
 | `min_duels` | 3 | F-04 单份战报最少对局数，低于即拒收。**与 `min_games` 是两件事**：一个是提交前置条件，一个是排名门槛 |
 | `trend_chart_width` / `height` | 960 / 480 | F-07 图片尺寸 |
@@ -1228,6 +1238,8 @@ v1.18.3 验证：**601 项通过、1 项跳过**。补充旧类型 1 记录→�
 
 v1.18.4 验证：**626 项通过、1 项跳过**。新增邀请人同意/拒绝文本通知、审批结果先落盘、QQ 已同意时通知真实结果、正确收件人与原机器人连接、重复/并发/重启不重发、审批失败/结果未知/写盘失败不通知、通知异常和取消不改变审批结果、真实 handler 通知失败回执；未启用数据库测试，未进行真实 QQ 联调。
 
+v1.19.0 验证：**654 项通过、1 项跳过**。新增 `/排行` 各分支和旧别名先展示后点评、按当前会话选择模型/人格、当前月/指定月范围、并列与奖金数据、图片/文字回退、展示行与 30 条上限、配置开关/无数据/前置检查不调用、LLM 错误及空回复、限时取消、响应长度、上下文与额外字段隔离。模型使用模拟接口，未建立真实 LLM 连接；数据库测试未启用。
+
 **数据库测试需显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1`**；独立使用
 `ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`，默认本机，不读取插件配置。
 建删库名为 `astrbot_battle_report_test_<进程号>`，应指向隔离测试服务。
@@ -1243,7 +1255,7 @@ v1.18.4 验证：**626 项通过、1 项跳过**。新增邀请人同意/拒绝�
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.18.4")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.19.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

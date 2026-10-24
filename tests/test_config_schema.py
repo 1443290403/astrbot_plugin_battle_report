@@ -70,3 +70,8 @@ def test_new_install_does_not_assign_author_super_admin():
 
 def test_private_submission_switch_is_removed():
     assert 'allow_private_chat' not in _schema()
+
+
+def test_ranking_commentary_is_enabled_by_default():
+    item = _schema()['ranking_ai_comment']
+    assert item['type'] == 'bool' and item['default'] is True

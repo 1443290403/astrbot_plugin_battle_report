@@ -4,6 +4,7 @@
 """
 import asyncio
 import importlib
+import json
 import logging
 import sys
 import types
@@ -89,6 +90,239 @@ def plugin(mod, tmp_path):
 
 async def collect(generator):
     return [value async for value in generator]
+
+
+def ranking_with_llm(mod, tmp_path, text='/排行 七月'):
+    obj = plugin(mod, tmp_path)
+    obj.config['ranking_image'] = False
+    obj.db.get_group_home.return_value = 'a队'
+    obj.db.get_player_ranking = AsyncMock(return_value=[{
+        'player': '云玩家', 'wins': 8, 'losses': 2, 'draws': 1, 'total': 11,
+        'points': 6.4, 'raid_points': 4, 'total_points': 10.4,
+        'friendship': 3, 'wushuang': 1, 'hold': 3, 'first_round': 0, 'raid_success': 1,
+        'qq_id': 'PRIVATE_QQ', 'internal_id': 'PRIVATE_ROW',
+    }])
+    obj.db.get_settlement = AsyncMock(return_value={})
+    obj.db.get_home_team_record = AsyncMock(return_value={
+        'wins': 8, 'losses': 2, 'total': 11, 'win_rate': 80, 'total_points': 10.4})
+    obj.db.get_home_team_vs_opponents = AsyncMock(return_value=[{
+        'opponent': 'b队', 'wins': 3, 'losses': 1, 'total': 4, 'win_rate': 75,
+        'raid_points': 1, 'internal_id': 'PRIVATE_ROW'}])
+    obj.context = SimpleNamespace(
+        get_current_chat_provider_id=AsyncMock(return_value='chat-selected'),
+        llm_generate=AsyncMock(return_value=SimpleNamespace(completion_text='云玩家表现稳健，继续积累对局喵。')),
+        conversation_manager=SimpleNamespace(
+            get_curr_conversation_id=AsyncMock(return_value='conversation-a'),
+            get_conversation=AsyncMock(return_value=SimpleNamespace(
+                persona_id='persona-a', history='PRIVATE_HISTORY'))),
+        persona_manager=SimpleNamespace(resolve_selected_persona=AsyncMock(
+            return_value=('persona-a', {'prompt': '你是本群的战术解说员。'}, None, False))),
+        get_config=Mock(return_value={'provider_settings': {'default_personality': 'persona-default'}}),
+    )
+    ev = event(text)
+    ev.unified_msg_origin = 'onebot-a:GroupMessage:100'
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    return obj, ev
+
+
+@pytest.mark.parametrize('text,scope,query', [
+    ('/排行 七月', '本队个人榜', 'player'), ('/战报排行 七月', '本队个人榜', 'player'),
+    ('/排行 全部 七月', '全战队个人榜', 'player'), ('/排行 所有 七月', '全战队个人榜', 'player'),
+    ('/排行 队伍 七月', '队伍对战记录', 'team'), ('/排行 战队 七月', '队伍对战记录', 'team'),
+    ('/排行 队 七月', '队伍对战记录', 'team')])
+def test_ranking_sends_primary_result_before_commentary_using_same_scope_and_month(plugin_module, tmp_path, text, scope, query):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path, text)
+    async def scenario():
+        handler = obj.ranking(ev)
+        first = await anext(handler)
+        assert '排行点评' not in first
+        assert '云玩家' in first if query == 'player' else 'b队' in first
+        obj.context.llm_generate.assert_not_awaited()
+        second = await anext(handler)
+        assert second == '💬 排行点评\n云玩家表现稳健，继续积累对局喵。'
+        with pytest.raises(StopAsyncIteration):
+            await anext(handler)
+    asyncio.run(scenario())
+    call = obj.context.llm_generate.await_args.kwargs
+    data = json.loads(call['prompt'].split('\n', 1)[1])
+    assert data['范围'] == scope and data['战队'] == 'a队'
+    assert (data['统计开始日期'], data['统计结束日期']) == ('2026-07-01', '2026-07-31')
+    assert call['chat_provider_id'] == 'chat-selected' and call['contexts'] == []
+    assert 'tools' not in call and 'PRIVATE_' not in str(call)
+    assert '你是本群的战术解说员。' in call['system_prompt']
+    obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
+    obj.context.persona_manager.resolve_selected_persona.assert_awaited_once_with(
+        umo=ev.unified_msg_origin, conversation_persona_id='persona-a', platform_name='aiocqhttp',
+        provider_settings={'default_personality': 'persona-default'})
+    if scope == '本队个人榜':
+        assert data['榜单'] == plugin_module.stats.build_ranking_cells(obj.db.get_player_ranking.return_value)
+        assert data['战队战绩面板'] == [list(item) for item in
+            plugin_module.stats.build_team_panel(obj.db.get_home_team_record.return_value)]
+        obj.db.get_player_ranking.assert_awaited_once_with('a队', '2026-07-01', '2026-07-31', 1, None, team='a队')
+    elif scope == '全战队个人榜':
+        assert data['战队战绩面板'] is None
+        obj.db.get_settlement.assert_not_awaited()
+        obj.db.get_player_ranking.assert_awaited_once_with('a队', '2026-07-01', '2026-07-31', 1, 10, team=None)
+    else:
+        assert data['榜单'] == plugin_module.stats.format_home_team_vs('a队', obj.db.get_home_team_vs_opponents.return_value)
+        obj.db.get_player_ranking.assert_not_awaited()
+        obj.db.get_home_team_vs_opponents.assert_awaited_once_with('a队', '2026-07-01', '2026-07-31')
+
+
+@pytest.mark.parametrize('image_works', [True, False])
+def test_image_ranking_and_text_fallback_each_append_one_commentary(plugin_module, tmp_path, monkeypatch, image_works):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.config['ranking_image'] = True
+    render = Mock(return_value=tmp_path / 'rank.png', side_effect=None if image_works else OSError('render failed'))
+    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', render)
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 2 and results[1].startswith('💬 排行点评')
+    assert isinstance(results[0], list) == image_works
+    if image_works:
+        assert isinstance(results[0][1], plugin_module.Image)
+    else:
+        assert '云玩家' in results[0]
+    obj.context.llm_generate.assert_awaited_once()
+    obj.db.get_player_ranking.assert_awaited_once()
+
+
+def test_commentary_covers_only_visible_image_rows_and_caps_long_lists(plugin_module, tmp_path, monkeypatch):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path, '/排行 全部')
+    base = obj.db.get_player_ranking.return_value[0]
+    rows = [dict(base, player=f'示例选手{i}') for i in range(50)]
+    obj.db.get_player_ranking.return_value = rows
+    obj.config.update(ranking_image=True, ranking_limit=50, ranking_image_max_rows=2)
+    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
+    asyncio.run(collect(obj.ranking(ev)))
+    data = json.loads(obj.context.llm_generate.await_args.kwargs['prompt'].split('\n', 1)[1])
+    assert data['本次榜单条目数'] == 2 and data['本次点评数据条目数'] == 2
+    assert len(data['榜单']) == 3 and '示例选手2' not in str(data)
+    obj.config['ranking_image'] = False
+    obj.context.llm_generate.reset_mock()
+    results = asyncio.run(collect(obj.ranking(ev)))
+    data = json.loads(obj.context.llm_generate.await_args.kwargs['prompt'].split('\n', 1)[1])
+    assert '示例选手49' in results[0]
+    assert data['本次榜单条目数'] == 50 and data['本次点评数据条目数'] == 30
+    assert len(data['榜单']) == 31 and '示例选手30' not in str(data)
+
+
+def test_commentary_uses_displayed_ties_points_and_settlement_bonus(plugin_module, tmp_path):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    first = obj.db.get_player_ranking.return_value[0]
+    obj.db.get_player_ranking.return_value.append(dict(first, player='萌新'))
+    obj.db.get_settlement.return_value = {'云玩家': 30, '萌新': 30}
+    results = asyncio.run(collect(obj.ranking(ev)))
+    data = json.loads(obj.context.llm_generate.await_args.kwargs['prompt'].split('\n', 1)[1])
+    cells = data['榜单']
+    assert cells[0][-1] == '奖金' and cells[1][0] == cells[2][0] == 1
+    assert cells[1][2:4] == ['10.4', '6.4'] and cells[1][-1] == '30'
+    assert '奖金' in results[0]
+
+
+@pytest.mark.parametrize('reason', ['disabled', 'empty_players', 'empty_opponents', 'query_error', 'unbound', 'banned'])
+def test_unavailable_or_disabled_rankings_do_not_call_llm(plugin_module, tmp_path, reason):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    if reason == 'disabled':
+        obj.config['ranking_ai_comment'] = False
+    elif reason == 'empty_players':
+        obj.db.get_player_ranking.return_value = []
+    elif reason == 'empty_opponents':
+        ev.get_message_str = lambda: '/排行 队伍'
+        obj.db.get_home_team_vs_opponents.return_value = []
+    elif reason == 'query_error':
+        obj.db.get_player_ranking.side_effect = OSError('db unavailable')
+    elif reason == 'unbound':
+        obj.db.get_group_home.return_value = None
+    else:
+        obj.db.get_group_ban.return_value = True
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 1
+    obj.context.get_current_chat_provider_id.assert_not_awaited()
+    obj.context.llm_generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize('failure', ['provider', 'timeout', 'generate', 'blank', 'none'])
+def test_llm_errors_do_not_turn_successful_ranking_into_query_failure(plugin_module, tmp_path, failure):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    if failure == 'provider':
+        obj.context.get_current_chat_provider_id.side_effect = ValueError('Provider not found')
+    elif failure == 'timeout':
+        obj.context.llm_generate.side_effect = TimeoutError()
+    elif failure == 'generate':
+        obj.context.llm_generate.side_effect = RuntimeError('generation failed')
+    else:
+        obj.context.llm_generate.return_value.completion_text = '  ' if failure == 'blank' else None
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 2 and '云玩家' in results[0]
+    assert '点评' in results[1] and all('查询出错' not in part for part in results)
+    obj.db.get_player_ranking.assert_awaited_once()
+    assert obj.context.llm_generate.await_count <= 1
+
+
+def test_default_persona_resolution_does_not_create_or_modify_conversation(plugin_module, tmp_path):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.context.conversation_manager.get_curr_conversation_id.return_value = None
+    obj.context.persona_manager.resolve_selected_persona.return_value = (
+        'persona-default', {'prompt': '你是默认解说员。'}, None, False)
+    asyncio.run(collect(obj.ranking(ev)))
+    obj.context.conversation_manager.get_conversation.assert_not_awaited()
+    assert obj.context.persona_manager.resolve_selected_persona.await_args.kwargs['conversation_persona_id'] is None
+    assert '你是默认解说员。' in obj.context.llm_generate.await_args.kwargs['system_prompt']
+
+
+def test_empty_persona_and_long_response_still_produce_bounded_plain_commentary(plugin_module, tmp_path):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.context.persona_manager.resolve_selected_persona.return_value = (None, None, None, False)
+    obj.context.llm_generate.return_value.completion_text = '稳' * 1000
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results[1].split('\n', 1)[1]) == 600 and results[1].endswith('…')
+
+
+def test_cancelled_commentary_does_not_retry_or_repeat_ranking(plugin_module, tmp_path):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    started = asyncio.Event()
+    async def pending(**kwargs):
+        started.set()
+        await asyncio.Future()
+    obj.context.llm_generate.side_effect = pending
+    async def scenario():
+        handler = obj.ranking(ev)
+        assert '云玩家' in await anext(handler)
+        task = asyncio.create_task(anext(handler))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        obj.context.llm_generate.assert_awaited_once()
+        obj.db.get_player_ranking.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_commentary_deadline_cancels_slow_model_after_ranking_is_already_available(plugin_module, tmp_path, monkeypatch):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    cancelled = asyncio.Event()
+    async def pending(**kwargs):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+    obj.context.llm_generate.side_effect = pending
+    real_wait_for = asyncio.wait_for
+    async def quick_deadline(awaitable, timeout):
+        assert timeout == 30
+        return await real_wait_for(awaitable, 0.01)
+    monkeypatch.setattr(plugin_module.asyncio, 'wait_for', quick_deadline)
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert '云玩家' in results[0] and '点评这次没赶上' in results[1]
+    assert cancelled.is_set()
+
+
+def test_commentary_without_persona_api_uses_default_style(plugin_module, tmp_path):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    del obj.context.persona_manager
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert results[1].startswith('💬 排行点评')
+    assert '你是本群的战术解说员。' not in obj.context.llm_generate.await_args.kwargs['system_prompt']
 
 
 def review_event(raw, text='', sender='10001', group=''):
