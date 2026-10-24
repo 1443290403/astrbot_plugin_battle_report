@@ -310,6 +310,69 @@ def test_private_request_list_works_after_restart_without_database(plugin_module
     assert asyncio.run(obj.request_list(ev)) is None
 
 
+@pytest.mark.parametrize('approve', [True, False])
+def test_super_admin_refreshes_saved_invite_then_reviews_new_notice_without_database(plugin_module, tmp_path, qq_invite_card, approve):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj.db_ready, obj.db = False, None
+    bot = SimpleNamespace(call_action=AsyncMock())
+    async def action(name, **params):
+        if name == 'get_version_info':
+            return {'app_name': 'SnowLuma', 'app_version': '1.14.11-node'}
+        if name == 'get_friend_msg_history':
+            return {'messages': [{k: v for k, v in qq_invite_card().items()
+                                  if k not in ('post_type', 'self_id')}]}
+        if name == 'send_private_msg':
+            return {'message_id': 90000 + len([c for c in bot.call_action.await_args_list if c.args[0] == name])}
+        return {}
+    bot.call_action.side_effect = action
+    request = review_event(new_qq_request('group') | {'flag': 'slreq:1:1790000000000010:30003:1:0'})
+    request.bot = bot
+    asyncio.run(obj.review_request(request))
+    old = next(iter(obj._review_inbox.records))
+    obj._review_inbox = None
+    refresh = review_event({'post_type': 'message', 'message_type': 'private'}, f'/刷新申请 {old}')
+    refresh.bot = bot
+    asyncio.run(obj.request_refresh(refresh))
+    refresh.stop_event.assert_called_once()
+    assert '已刷新 1 条' in refresh.send.await_args.args[0]
+    assert obj.request_refresh.command_name == '刷新申请'
+    assert not any(c.args[0].startswith('set_') for c in bot.call_action.await_args_list)
+    obj._review_inbox = None
+    reply = review_event({'post_type': 'message', 'message_type': 'private',
+                          'message': [{'type': 'reply', 'data': {'id': '90002'}}]}, '同意' if approve else '拒绝')
+    reply.bot = bot
+    asyncio.run(obj.review_request(reply))
+    assert ('已同意' if approve else '已拒绝') in reply.send.await_args.args[0]
+    calls = [c for c in bot.call_action.await_args_list if c.args[0] == 'set_group_add_request']
+    assert len(calls) == 1 and calls[0].kwargs == {
+        'self_id': 12345, 'flag': 'slreq:1:765:30003:2:0', 'sub_type': 'invite', 'approve': approve}
+
+
+@pytest.mark.parametrize('sender,group,backend', [
+    ('20002', '', 'aiocqhttp'), ('10001', '30003', 'aiocqhttp'), ('10001', '', 'other')])
+def test_refresh_rejects_non_super_admin_group_and_other_platform(plugin_module, tmp_path, sender, group, backend):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj._get_review_inbox = Mock(side_effect=AssertionError('must not open inbox'))
+    ev = review_event({'post_type': 'message', 'message_type': 'private'}, '/刷新申请', sender, group)
+    ev.get_platform_name = lambda: backend
+    asyncio.run(obj.request_refresh(ev))
+    obj._get_review_inbox.assert_not_called()
+    ev.bot.call_action.assert_not_awaited()
+
+
+@pytest.mark.parametrize('argument', ['bad', 'ABCDEF01 extra', 'ABCDEF01\n同意'])
+def test_refresh_invalid_arguments_do_not_read_history(plugin_module, tmp_path, argument):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    obj._get_review_inbox = Mock(side_effect=AssertionError('must not open inbox'))
+    ev = review_event({'post_type': 'message', 'message_type': 'private'}, '/刷新申请 ' + argument)
+    asyncio.run(obj.request_refresh(ev))
+    assert '用法' in ev.send.await_args.args[0]
+    obj._get_review_inbox.assert_not_called()
+
+
 def test_round_command_fills_only_available_survivors(plugin_module, tmp_path):
     obj = plugin(plugin_module, tmp_path)
     draft = """战队: a队 VS b队

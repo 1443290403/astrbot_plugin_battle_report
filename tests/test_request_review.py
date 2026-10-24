@@ -564,3 +564,200 @@ def test_slow_profile_lookup_cannot_send_an_obsolete_notice_after_the_new_card(t
         notices = action_calls(bot, 'send_private_msg')
         assert len(notices) == 1 and token in notices[0].kwargs['message'][0]['data']['text']
     asyncio.run(scenario())
+
+
+def history_bot(messages):
+    bot = make_bot()
+    original = bot.call_action.side_effect
+    async def action(name, **params):
+        if name == 'get_version_info':
+            return {'app_name': 'SnowLuma', 'app_version': '1.14.11-node'}
+        if name == 'get_friend_msg_history':
+            return {'messages': messages}
+        return await original(name, **params)
+    bot.call_action.side_effect = action
+    return bot
+
+
+@pytest.mark.parametrize('approve', [True, False])
+def test_refresh_restores_real_card_for_old_type_one_request_then_requires_new_approval(tmp_path, qq_invite_card, approve):
+    path = tmp_path / 'requests.json'
+    # SnowLuma 的真实历史接口会省去 post_type 和 self_id。
+    card = {k: v for k, v in qq_invite_card().items() if k not in ('post_type', 'self_id')}
+    inbox, bot = ReviewInbox(path), history_bot([card])
+    old_flag = 'slreq:1:1790000000000010:30003:1:0'
+    old = receive(inbox, bot, 'group', old_flag)
+    inbox = ReviewInbox(path)  # 旧版记录没有 source/request_time，重启后仍可恢复。
+    assert '已刷新 1 条' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN, token=old))
+    new = next(t for t, r in inbox.records.items() if r.get('source') == 'snowluma_invite_card')
+    assert old != new and inbox.records[old]['flag'] == old_flag
+    assert inbox.records[old]['status'] == 'superseded'
+    assert inbox.records[new]['flag'] == 'slreq:1:765:30003:2:0'
+    assert inbox.records[new]['status'] == 'pending'
+    assert not action_calls(bot, 'set_group_add_request')
+    history = action_calls(bot, 'get_friend_msg_history')[0]
+    assert history.kwargs == {'self_id': 12345, 'user_id': 20002, 'message_id': 0, 'count': 100}
+    assert '最新通知' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, token=old))
+    inbox = ReviewInbox(path)
+    assert ('已同意' if approve else '已拒绝') in asyncio.run(inbox.decide(
+        SCOPE, bot, ADMIN, approve, reply_id=inbox.records[new]['notification_id']))
+    calls = action_calls(bot, 'set_group_add_request')
+    assert len(calls) == 1 and calls[0].kwargs['flag'] == 'slreq:1:765:30003:2:0'
+
+
+def test_refresh_only_uses_latest_card_from_same_bot_sender_and_pending_group(tmp_path, qq_invite_card):
+    messages = [qq_invite_card(sequence=700, when=90), qq_invite_card(sequence=766, when=101),
+                qq_invite_card(sequence=765, when=100), qq_invite_card(group=30004, when=102),
+                qq_invite_card(user_id=20003, when=103), qq_invite_card(self_id=99999, when=104),
+                qq_invite_card(post_type='message_sent', when=105),
+                {k: v for k, v in qq_invite_card(user_id=12345, when=106).items()
+                 if k not in ('post_type', 'self_id')},
+                {'message': [{'type': 'node', 'data': {'content': qq_invite_card()}}]}]
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot(messages)
+    receive(inbox, bot, 'group', 'old')
+    assert '已刷新 1 条' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    cards = [r for r in inbox.records.values() if r.get('source') == 'snowluma_invite_card']
+    assert len(cards) == 1 and cards[0]['flag'] == 'slreq:1:766:30003:2:0'
+    assert len(action_calls(bot, 'send_private_msg')) == 2
+    assert not action_calls(bot, 'set_group_add_request')
+
+
+@pytest.mark.parametrize('newer', [False, True])
+def test_refresh_does_not_guess_between_distinct_cards_with_equal_timestamps(tmp_path, qq_invite_card, newer):
+    cards = [qq_invite_card(sequence=765), qq_invite_card(sequence=766)]
+    if newer:
+        cards.append(qq_invite_card(sequence=767, when=101))
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot(cards)
+    receive(inbox, bot, 'group', 'old')
+    response = asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    assert ('已刷新' in response) == newer
+    restored = [r for r in inbox.records.values() if r.get('source') == 'snowluma_invite_card']
+    assert len(restored) == int(newer)
+    if newer:
+        assert restored[0]['flag'] == 'slreq:1:767:30003:2:0'
+
+
+@pytest.mark.parametrize('scope', [SCOPE, ('other', '12345'), ('onebot-a', '99999')])
+def test_refresh_exact_token_never_scans_unrelated_requests(tmp_path, qq_invite_card, scope):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+    first = receive(inbox, bot, 'group', 'first')
+    second_payload = request_payload(raw_request('group', 'second', user_id=20003), SCOPE[1])
+    asyncio.run(inbox.receive(second_payload, SCOPE, bot, ADMIN))
+    asyncio.run(inbox.refresh_requests(scope, bot, ADMIN, token=first))
+    calls = action_calls(bot, 'get_friend_msg_history')
+    assert [c.kwargs['user_id'] for c in calls] == ([20002] if scope == SCOPE else [])
+
+
+@pytest.mark.parametrize('status', ['approved', 'rejected', 'uncertain', 'processing', 'superseded'])
+def test_refresh_leaves_handled_or_unknown_outcomes_unchanged(tmp_path, qq_invite_card, status):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+    old = receive(inbox, bot, 'group', 'old')
+    inbox._update(old, status=status)
+    bot.call_action.reset_mock()
+    assert '没有待刷新' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    bot.call_action.assert_not_awaited()
+    assert inbox.records[old]['status'] == status and len(inbox.records) == 1
+
+
+def test_refresh_never_converts_friend_requests_or_uses_another_backend(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+    receive(inbox, bot)
+    bot.call_action.reset_mock()
+    assert '没有待刷新' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    bot.call_action.assert_not_awaited()
+    old = receive(inbox, bot, 'group', 'old')
+    bot.call_action.side_effect = None
+    bot.call_action.return_value = {'app_name': 'Other'}
+    assert '不支持' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    assert not action_calls(bot, 'get_friend_msg_history')
+    assert inbox.records[old]['status'] == 'pending'
+
+
+@pytest.mark.parametrize('response', [{}, {'messages': None}, {'messages': 'bad'},
+    {'status': 'failed', 'retcode': 100}, TimeoutError()])
+def test_refresh_read_failure_keeps_original_request_and_never_approves(tmp_path, response):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([])
+    old = receive(inbox, bot, 'group', 'old')
+    original = bot.call_action.side_effect
+    async def action(name, **params):
+        if name == 'get_friend_msg_history':
+            if isinstance(response, Exception):
+                raise response
+            return response
+        return await original(name, **params)
+    bot.call_action.side_effect = action
+    assert '刷新邀请失败' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    assert inbox.records[old]['status'] == 'pending' and len(inbox.records) == 1
+    assert not action_calls(bot, 'set_group_add_request')
+
+
+def test_refresh_resends_existing_pending_card_but_does_not_duplicate_records(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+    asyncio.run(inbox.receive(invite_card_payload(qq_invite_card(), SCOPE[1]), SCOPE, bot, ADMIN))
+    assert '已刷新 1 条' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    assert len(inbox.records) == 1 and len(action_calls(bot, 'send_private_msg')) == 2
+    assert not action_calls(bot, 'set_group_add_request')
+
+
+@pytest.mark.parametrize('status', ['approved', 'rejected', 'uncertain', 'processing', 'superseded'])
+def test_refresh_cannot_replace_pending_record_with_card_already_having_an_outcome(tmp_path, qq_invite_card, status):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+    asyncio.run(inbox.receive(invite_card_payload(qq_invite_card(), SCOPE[1]), SCOPE, bot, ADMIN))
+    card = next(iter(inbox.records))
+    inbox._update(card, status=status)
+    old = receive(inbox, bot, 'group', 'old')
+    count = len(action_calls(bot, 'send_private_msg'))
+    asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN, token=old))
+    assert len(inbox.records) == 2 and inbox.records[old]['status'] == 'pending'
+    assert inbox.records[card]['status'] == status
+    assert len(action_calls(bot, 'send_private_msg')) == count
+    assert not action_calls(bot, 'set_group_add_request')
+
+
+def test_refresh_reports_missing_card_without_inventing_a_flag(tmp_path):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([])
+    old = receive(inbox, bot, 'group', 'slreq:1:123:30003:1:0')
+    assert '未找到' in asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    assert len(inbox.records) == 1 and inbox.records[old]['status'] == 'pending'
+
+
+def test_request_handled_during_history_lookup_cannot_be_restored(tmp_path, qq_invite_card):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+    old = receive(inbox, bot, 'group', 'old')
+    original = bot.call_action.side_effect
+    async def action(name, **params):
+        if name == 'get_friend_msg_history':
+            inbox._update(old, status='approved')
+        return await original(name, **params)
+    bot.call_action.side_effect = action
+    asyncio.run(inbox.refresh_requests(SCOPE, bot, ADMIN))
+    assert len(inbox.records) == 1 and inbox.records[old]['status'] == 'approved'
+    assert len(action_calls(bot, 'send_private_msg')) == 1
+
+
+def test_concurrent_refresh_shares_guard_and_notification_failure_remains_recoverable(tmp_path, qq_invite_card):
+    async def scenario():
+        inbox, bot = ReviewInbox(tmp_path / 'requests.json'), history_bot([qq_invite_card()])
+        receive_payload = request_payload(raw_request('group', 'old'), SCOPE[1])
+        await inbox.receive(receive_payload, SCOPE, bot, ADMIN)
+        waiting, release = asyncio.Event(), asyncio.Event()
+        original = bot.call_action.side_effect
+        async def action(name, **params):
+            if name == 'get_friend_msg_history':
+                waiting.set()
+                await release.wait()
+            if name == 'send_private_msg':
+                raise OSError('send unavailable')
+            return await original(name, **params)
+        bot.call_action.side_effect = action
+        refresh = asyncio.create_task(inbox.refresh_requests(SCOPE, bot, ADMIN))
+        await waiting.wait()
+        assert '正在刷新' in await inbox.refresh_requests(SCOPE, bot, ADMIN)
+        release.set()
+        assert '刷新邀请失败' in await refresh
+        assert len(action_calls(bot, 'get_friend_msg_history')) == 1
+        card = next(r for r in inbox.records.values() if r.get('source') == 'snowluma_invite_card')
+        assert card['status'] == 'pending' and card['notified_to'] == ''
+        assert '待处理' in await inbox.list_requests(SCOPE)
+        assert not action_calls(bot, 'set_group_add_request')
+    asyncio.run(scenario())

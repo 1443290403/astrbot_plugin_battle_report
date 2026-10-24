@@ -183,7 +183,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.2")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.18.3")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -316,6 +316,29 @@ class BattleReportPlugin(Star):
         except Exception:
             logger.exception("读取 QQ 申请列表失败")
             result = "❌ 申请记录暂不可用，请联系维护者检查喵。"
+        await event.send(event.plain_result(result))
+
+    @filter.command("刷新申请", alias={"/刷新申请"})
+    async def request_refresh(self, event: AstrMessageEvent):
+        if event.get_group_id() or not self._is_super_admin(event):
+            return
+        event.stop_event()
+        scope = _review_scope(event)
+        raw = getattr(event.message_obj, "raw_message", None)
+        if (scope is None or not isinstance(raw, dict) or raw.get("post_type") != "message"
+                or raw.get("message_type") != "private"):
+            await event.send(event.plain_result("请在 QQ 私聊中刷新申请喵。"))
+            return
+        token = _strip_command(event.get_message_str(), ("/刷新申请", "刷新申请")).strip().upper()
+        if token and not re.fullmatch(r"[0-9A-F]{8}", token):
+            await event.send(event.plain_result("用法：/刷新申请，或 /刷新申请 编号"))
+            return
+        try:
+            result = await self._get_review_inbox().refresh_requests(
+                scope, event.bot, str(event.get_sender_id()), token=token or None)
+        except Exception:
+            logger.exception("刷新 QQ 申请失败")
+            result = "❌ 刷新申请失败，请查看日志喵。"
         await event.send(event.plain_result(result))
 
     def _check_db(self) -> str | None:

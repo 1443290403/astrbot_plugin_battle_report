@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.18.2`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-24
+> 对应版本：`1.18.3`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-24
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -696,18 +696,19 @@ year = now.year - 1 if month > now.month else now.year
 - **平台入口：** AstrBot `aiocqhttp` 将 OneBot request 转为 `AstrMessageEvent.message_obj.raw_message`；高优先级 `RequestReviewFilter` 接收 `friend`、`group/invite`，以及严格匹配的原始私聊 QQ 邀请卡。卡片须经 get_version_info 确认为 SnowLuma 后才能建立申请；忽略 `group/add`、已注明邀请其他人的事件、notice、不完整请求和其他平台。
 - **通知：** QQ、昵称、验证消息；邀请附群号/群名。可选资料查询最多等待 3 秒，失败仍转发号码。通过原机器人连接 `send_private_msg` 发给有效 `super_admin`，使用文本消息段，flag 不出现在通知中。
 - **回执：** 消费申请/审批事件后用 `event.send` 直接私聊发送结果；不能在 stop_event 之后仅 yield 结果，否则 AstrBot 调度器会跳过回复阶段。
-- **授权：** 仅该超管在 QQ 私聊中可审批或查列表；AstrBot 管理员、战队管理员、群主/群管身份均不提供此权限。收到请求只转发，绝不自动同意。
+- **授权：** 仅该超管在 QQ 私聊中可审批、查列表或刷新申请；AstrBot 管理员、战队管理员、群主/群管身份均不提供此权限。收到请求只转发，绝不自动同意。
 - **选单：** 优先使用已发送通知的 message_id 绑定引用，同时读取原始 OneBot reply 与 AstrBot Reply，避免组件被丢弃后误当无引用。ID 变化时优先核验 AstrBot 已取回的通知，否则通过原始 ID 调 get_msg；只接受原机器人发给当前超管的私聊通知，完整匹配已保存全文。v1.18.0 旧记录无全文时核验固定抬头、编号、机器人/申请人/群号。可发送 `同意/拒绝 八位编号`。无引用/编号时仅在当前连接恰好一条 pending 时处理。引用不认识、编号与引用冲突或跨平台/机器人时拒绝，不回退到其他申请。
 - **接口：** 原 request 的 flag 原样交给 `set_friend_add_request` 或 `set_group_add_request`，群邀请带 `sub_type=invite`。SnowLuma 邀请卡作为独立来源，从经过 JSON/URL 校验的 groupcode/msgseq 按其 formatGroupRequestFlag 生成 `slreq:1:msgseq:groupcode:2:0`，不修改旧记录 flag，不将旧编号自动转向新申请。所有动作携带原 `self_id` 路由，操作由当前事件对应的 bot 执行。
 - **存储：** `data_dir/request_reviews.json`，独立于 MySQL/schema v18；按平台 ID + self_id + kind + flag 去重。原子替换保存，磁盘写入失败不能提前执行审批；损坏/未知格式不覆盖原文件。
 - **状态：** pending → processing → approved/rejected。先持久化 processing 再调用平台；并发/重复回复不会再次调用接口。显式接口失败回 pending 允许重试；TimeoutError/OSError（包含 aiocqhttp 的 NetworkError）、任务取消或恢复 processing 时转 uncertain，需到 QQ 核实。成功后写盘失败也不允许直接重复执行。
 - **QQ 已处理结果（v1.18.2）：** 仅入群请求在明确匹配 `OIDB error 120162004 on 0x10c8_1/2: already agree msg by self` 时同步 approved，并以 INFO 记录。即使本次点“拒绝”也按 QQ 的实际已同意结果保存并告知无法再拒绝；不将其他错误/好友错误当成功。已处理记录的重复回复显示实际结果，不再次调用 API。
-- **原始邀请卡（v1.18.2）：** 只读取实时 `message/private/friend` 顶层 json 段，sender 非机器人，self_id 匹配，有正整数 time；app 为 com.tencent.qun.invite 或 com.tencent.tuwen.lua，meta.news.jumpUrl 必须是 `mqqapi://group/invite_join`，groupcode/msgseq 唯一、为正且不超过 JS 安全整数。拒绝群聊/临时会话/自发/转发节点/普通分享/错误 JSON 或 URL；不扫描历史创建申请，不自动审批。
+- **原始邀请卡（v1.18.2）：** 自动入口只读取实时 `message/private/friend` 顶层 json 段，sender 非机器人，self_id 匹配，有正整数 time；app 为 com.tencent.qun.invite 或 com.tencent.tuwen.lua，meta.news.jumpUrl 必须是 `mqqapi://group/invite_join`，groupcode/msgseq 唯一、为正且不超过 JS 安全整数。拒绝群聊/临时会话/自发/转发节点/普通分享/错误 JSON 或 URL；历史恢复仅由下述超管命令触发，不自动审批。
 - **重新邀请（v1.18.2）：** 新卡片序号产生新编号；同连接+机器人+群+邀请人的较旧 pending 标为 superseded，保留原 flag 和记录，旧编号只提示处理新通知。已确认/结果未知/处理中状态不被新卡片覆盖。重复卡片及同 flag 的 request 不重复通知；较旧卡片不覆盖新卡片。已有相同 flag 的 pending 首次收到原始卡片时刷新一次通知。source/request_time 为可选新字段，旧存档可直接加载。
 - **错误反馈（v1.18.1）：** 由入口注入 AstrBot 插件 logger，确保审批异常进入后台日志；失败回复只展示平台 wording/message/msg 或 retcode，去掉原 flag，不直接发送整段 API 响应。不改写 flag、不猜测其他请求重试；编号处理失败须结合平台实际报错定位。
 - **恢复：** 超管私聊 `/申请列表` 查看当前连接的 pending/processing/uncertain，支持编号回复；通知失败保留申请，重复上报可以重发通知。超管配置为空时不转发、不审批。
+- **手动找回（v1.18.3）：** 超管私聊 `/刷新申请 [八位编号]`；仅当前连接 pending 群邀请可触发，先确认 SnowLuma，再按最近顺序读取最多 10 位已知邀请人的最近 100 条 `get_friend_msg_history`，每次读取超时 10 秒。兼容 v1.14.11 `sanitizeMessageEventForApi` 删除 post_type/self_id 的返回形式，只在当前连接的历史响应中补齐缺失值，显式冲突仍拒绝。复用原始卡片校验，并严格匹配邀请人和待处理群；每群只取时间最新的卡片，同秒不同序号无法确认先后时不猜测。找回后独立生成通知/编号并保留旧 flag；相同卡片可重发通知但不新增记录。查询期间旧申请已被处理时不恢复；processing/uncertain/approved/rejected 不作为恢复入口。刷新并发互斥，不调用审批接口；查询失败保留旧状态，通知失败保留找回记录供列表核对。
 - **兼容依据：** 参考 `AstrBot/astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py` 请求转换，以及 `SnowLuma/packages/onebot/src/event-converter/to-request.ts` 和 `actions/request.ts` 的事件/接口字段。
-- **已知后端限制：** QQ `120161001 / handle async message fail` 仍属实际失败，不能直接猜为过期或已处理。v1.18.2 参考 SnowLuma v1.14.11 `msg-push/decoders/friend-message.ts` 的邀请卡审批序号说明及 `modules/request-actions.ts` 的 canonical handle 契约，补上实时卡片独立入口，用户需更新插件后重新发送邀请；不自动用其他卡片/其他请求重试旧编号。模拟接口验证不能替代真实 QQ 验证。旧版未提供 invited_id 时，普通 group/invite 事件本身无法识别邀请其他成员。平台 get_msg 无法取回引用且无有效 Reply 内容时仍需按编号选单。
+- **已知后端限制：** QQ `120161001 / handle async message fail` 仍属实际失败，不能直接猜为过期或已处理。v1.18.2 参考 SnowLuma v1.14.11 `msg-push/decoders/friend-message.ts` 的邀请卡审批序号说明及 `modules/request-actions.ts` 的 canonical handle 契约，补上实时卡片独立入口；v1.18.3 增加超管手动找回。历史中没有对应邀请卡、超出最近消息窗口或 QQ 已不接受该请求时仍需重新邀请；不自动用其他卡片/其他请求重试旧编号。模拟接口验证不能替代真实 QQ 验证。旧版未提供 invited_id 时，普通 group/invite 事件本身无法识别邀请其他成员。平台 get_msg 无法取回引用且无有效 Reply 内容时仍需按编号选单。
 
 ---
 
@@ -877,6 +878,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-32** | `/查看战队管理员 <战队>` | `view_team_admins` | 仅超管，只读查看该队管理员 |
 | **F-33** | OneBot 好友申请/群邀请/原始邀请卡 + 超管私聊同意/拒绝 | `review_request` | 收到后私聊通知超管；引用通知/编号选单，仅超管私聊审批。兼容引用变化和旧版 SnowLuma 邀请卡，同群新邀请刷新通知、保留旧记录；QQ 明确已同意时同步实际状态。持久化与去重见 M-15，不依赖数据库 |
 | **F-34** | `/申请列表` | `request_list` | 仅超管私聊查看当前机器人连接的待处理/处理中/需核实申请，可按编号回复 |
+| **F-35** | `/刷新申请 [编号]` | `request_refresh` | 仅超管私聊，从待处理群邀请人的最近好友历史找回原始邀请卡并发送审批通知，兼容 v1.14.11 历史响应；不自动审批，详见 M-15 |
 
 ### 域 G：战报治理
 
@@ -899,7 +901,7 @@ year = now.year - 1 if month > now.month else now.year
 
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
-| **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
+| **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
 | **对局加一个属性**（如 出场序号/时长） | ① `Duel` dataclass ② `parse_battle_report` ③ `duels` 表 + 迁移 ④ `insert_report` ⑤ **所有读出 duels 的 SELECT**：`get_export_rows`、`get_reports_for_export`、`get_player_match_stats` ⑥ dict 组装处（`get_reports_for_export` 逐字段手写）⑦ `format_duels_block` 还原 ⑧ CSV 列 | ⑤⑥ 是"逐字段罗列"的写法，**漏一个字段就是静默丢数据** |
@@ -999,7 +1001,7 @@ year = now.year - 1 if month > now.month else now.year
 | [command_args.py](command_args.py) | ~90 | 引号边界、空格 ID、单名字与管理ID参数，共用于入口/导出/排表/记录/轮次 | 无 |
 | [lineup.py](lineup.py) | ~755 | 排表、追加轮次、记录比分、战报文本还原、导出过滤 | 无 |
 | [battle_report_parser.py](battle_report_parser.py) | ~735 | 战报解析（友谊 + 踢馆）、胜负判定、`is_kof`、内容指纹、月份/参数解析 | 无 |
-| [request_review.py](request_review.py) | ~440 | OneBot 申请转发、SnowLuma 原始邀请卡、按引用/编号审批、QQ 已处理结果同步、通知核验与本地持久化 | 标准库 |
+| [request_review.py](request_review.py) | ~520 | OneBot 申请转发、SnowLuma 原始邀请卡与手动历史找回、按引用/编号审批、QQ 已处理结果同步、通知核验与本地持久化 | 标准库 |
 | [help_guide.py](help_guide.py) | ~160 | 三类用途流程、开通步骤、配置状态与只读预览 | 无 |
 | [stats.py](stats.py) | ~700 | 积分/胜率/表格/帮助文案、`rank_aligns`、**踢馆判定与计分（踢馆侧唯一实现）**、**结算奖金公式与名次（`rank_bonus` / `ranks_for` / `attach_bonus`）**、**结算回执（写 `format_settlement` / 只读 `format_settlement_view`，行体共用 `_settlement_lines`）**、**结算公告（`settlement_awards_changed` 判要不要 @ / `settlement_announcement` 分段文案 / `format_settlement_repeat` 不 @ 时的提示）**、**排行图片左侧面板的 8 行（`build_team_panel`）** | 无 |
 | [chart.py](chart.py) | ~300 | Pillow 趋势图 + 排行表格图（`make_ranking_image` 的 `panel` 参数只负责画，不懂语义） | Pillow |
@@ -1221,6 +1223,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 v1.18.2 的 `test_main.py` 另覆盖 v1.14.11 旧标识失败→原始卡片通知→重启后引用同意/拒绝、其他 OneBot 实现不使用 SnowLuma 标识、QQ 已同意时的准确回执和日志。
 
+v1.18.3 验证：**601 项通过、1 项跳过**。补充旧类型 1 记录→历史邀请卡→重启后引用审批、v1.14.11 历史响应缺 post_type/self_id、最新与同秒歧义选择、同群同邀请人限制、跨连接/非超管/群聊拒绝、处理中/已处理/结果未知保护、并发刷新及读取/通知失败恢复；未启用数据库测试，未进行真实 QQ 联调。
+
 **数据库测试需显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1`**；独立使用
 `ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`，默认本机，不读取插件配置。
 建删库名为 `astrbot_battle_report_test_<进程号>`，应指向隔离测试服务。
@@ -1236,7 +1240,7 @@ v1.18.2 的 `test_main.py` 另覆盖 v1.14.11 旧标识失败→原始卡片通�
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.18.2")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.18.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

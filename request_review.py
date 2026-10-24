@@ -156,6 +156,7 @@ class ReviewInbox:
         self.path = Path(path)
         self.logger = log if log is not None else logger
         self.lock = asyncio.Lock()
+        self.refresh_lock = asyncio.Lock()
         self.notifying: set[str] = set()
         self.records: dict[str, dict] = {}
         if self.path.exists():
@@ -223,12 +224,16 @@ class ReviewInbox:
             return False
         return isinstance(info, Mapping) and info.get("app_name") == "SnowLuma"
 
-    async def receive(self, payload: dict, scope: tuple[str, str], bot, admin: str):
+    async def receive(self, payload: dict, scope: tuple[str, str], bot, admin: str, *, refresh_tokens=()):
         async with self.lock:
             card = payload.get("source") == "snowluma_invite_card"
             related = {t: r for t, r in self.records.items()
                        if self._in_scope(r, scope) and r["kind"] == payload["kind"] == "group"
                        and r["group_id"] == payload["group_id"] and r["user_id"] == payload["user_id"]}
+            # 历史查询期间申请可能已被处理，只恢复仍待处理且属于同一邀请人的群。
+            if refresh_tokens and not any(t in related and related[t]["status"] == "pending"
+                                          for t in refresh_tokens):
+                return False
             if card and any(r.get("source") == "snowluma_invite_card"
                             and r["request_time"] > payload["request_time"] for r in related.values()):
                 return
@@ -242,6 +247,8 @@ class ReviewInbox:
             token = next((t for t, r in self.records.items()
                           if self._in_scope(r, scope) and r["kind"] == payload["kind"]
                           and r["flag"] == payload["flag"]), None)
+            if refresh_tokens and token is not None and self.records[token]["status"] != "pending":
+                return False
             if card and token is not None and self.records[token]["status"] not in ("pending", "uncertain"):
                 return
             changes = {}
@@ -256,6 +263,8 @@ class ReviewInbox:
                 current = changes.get(token, self.records.get(token))
                 changes[token] = {**current, "source": payload["source"], "request_time": payload["request_time"]}
                 if current.get("source") != "snowluma_invite_card" and current["status"] == "pending":
+                    changes[token]["notified_to"] = ""
+                if refresh_tokens and current["status"] == "pending":
                     changes[token]["notified_to"] = ""
                 for old, record in related.items():
                     if (old != token and record["status"] == "pending"
@@ -303,11 +312,77 @@ class ReviewInbox:
             async with self.lock:
                 self._update(token, notified_to=admin, notification_id=message_id,
                              notification_text=notice)
+            return True
         except Exception:
             self.logger.exception("转发 QQ 申请失败，可通过申请列表查看")
+            if refresh_tokens:
+                raise
         finally:
             async with self.lock:
                 self.notifying.discard(token)
+
+    async def refresh_requests(self, scope, bot, admin, token=None):
+        """超管手动找回待处理群的原始邀请卡；只发通知，不执行审批。"""
+        if self.refresh_lock.locked():
+            return "正在刷新申请喵，请稍候。"
+        async with self.refresh_lock:
+            async with self.lock:
+                pending = [(t, r) for t, r in self.records.items()
+                           if self._in_scope(r, scope) and r["kind"] == "group"
+                           and r["status"] == "pending" and (not token or token == t)]
+                pending.sort(key=lambda item: item[1].get("created_at", 0), reverse=True)
+                peers = list(dict.fromkeys(r["user_id"] for _, r in pending))
+            if not pending:
+                return "没有待刷新的入群邀请喵，请查看 /申请列表。"
+            if not await self.supports_invite_cards(scope, bot):
+                return "当前连接不支持找回邀请卡喵。"
+            refreshed, failures = 0, 0
+            # 只读已知邀请人的最近消息，不扫描陌生会话或从其他群创建申请。
+            for peer in peers[:10]:
+                anchors = {t: r for t, r in pending if r["user_id"] == peer}
+                groups = {r["group_id"] for r in anchors.values()}
+                try:
+                    history = await asyncio.wait_for(self._action(
+                        bot, scope[1], "get_friend_msg_history", user_id=int(peer),
+                        message_id=0, count=100), timeout=10)
+                    if not isinstance(history, Mapping) or not isinstance(history.get("messages"), list):
+                        raise ValueError("无效的好友历史响应")
+                    cards, ambiguous = {}, set()
+                    for raw in history["messages"][:100]:
+                        if not isinstance(raw, Mapping):
+                            continue
+                        # v1.14.11 sanitizeMessageEventForApi 会删除 post_type/self_id；
+                        # 仅在已确认的当前连接历史响应中补齐，显式冲突的字段仍须拒绝。
+                        payload = invite_card_payload({"post_type": "message", "self_id": scope[1], **raw}, scope[1])
+                        if not payload or payload["user_id"] != peer or payload["group_id"] not in groups:
+                            continue
+                        group = payload["group_id"]
+                        # 同群只保留最近的原始卡片，不把多次历史邀请逐一重新通知。
+                        if group not in cards or payload["request_time"] > cards[group]["request_time"]:
+                            cards[group] = payload
+                            ambiguous.discard(group)
+                        elif (payload["request_time"] == cards[group]["request_time"]
+                              and payload["flag"] != cards[group]["flag"]):
+                            ambiguous.add(group)
+                    for group, payload in cards.items():
+                        if group in ambiguous:
+                            continue
+                        if await self.receive(payload, scope, bot, admin, refresh_tokens=tuple(anchors)):
+                            refreshed += 1
+                except Exception:
+                    failures += 1
+                    self.logger.exception("刷新 QQ 申请失败")
+            if refreshed:
+                result = f"已刷新 {refreshed} 条邀请，请处理最新通知喵。"
+                if failures:
+                    result += "\n部分邀请刷新失败，可稍后重试。"
+            elif failures:
+                result = "刷新邀请失败喵，请查看日志。"
+            else:
+                result = "未找到可恢复的邀请卡喵，请让邀请人重新发送入群邀请。"
+            if len(peers) > 10:
+                result += "\n还有邀请未检查，可发送 /刷新申请 编号。"
+            return result
 
     async def list_requests(self, scope):
         async with self.lock:
