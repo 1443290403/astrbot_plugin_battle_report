@@ -223,10 +223,11 @@ def test_optional_profile_lookup_failure_still_sends_qq_notice(tmp_path):
     assert '20002' in text and '30003' in text
 
 
-def test_failure_to_save_success_does_not_allow_a_second_action(tmp_path, monkeypatch):
+@pytest.mark.parametrize('kind', ['friend', 'group'])
+def test_failure_to_save_success_does_not_allow_a_second_action(tmp_path, monkeypatch, kind):
     path, bot = tmp_path / 'requests.json', make_bot()
     inbox = ReviewInbox(path)
-    token = receive(inbox, bot)
+    token = receive(inbox, bot, kind)
     original = inbox._commit
     def fail_after_processing(records):
         if records[token]['status'] == 'approved':
@@ -235,7 +236,8 @@ def test_failure_to_save_success_does_not_allow_a_second_action(tmp_path, monkey
     monkeypatch.setattr(inbox, '_commit', fail_after_processing)
     assert 'QQ 已处理' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, token=token))
     assert '正在处理' in asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, token=token))
-    assert len(action_calls(bot, 'set_friend_add_request')) == 1
+    assert len(action_calls(bot, 'set_friend_add_request' if kind == 'friend' else 'set_group_add_request')) == 1
+    assert len(action_calls(bot, 'send_private_msg')) == 1
     assert ReviewInbox(path).records[token]['status'] == 'uncertain'
 
 
@@ -371,16 +373,23 @@ def test_qq_already_approved_is_saved_as_approved_even_when_user_rejects(tmp_pat
     token = receive(inbox, bot, 'group')
     failure = {'status': 'failed', 'retcode': 100, 'data': None,
                'wording': 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'}
-    bot.call_action.side_effect = None
-    if wrapped:
-        bot.call_action.return_value = failure
-    else:
+    original = bot.call_action.side_effect
+    if not wrapped:
         errors = pytest.importorskip('aiocqhttp.exceptions')
-        bot.call_action.side_effect = errors.ActionFailed(failure)
+    async def action(name, **params):
+        if name == 'set_group_add_request':
+            if wrapped:
+                return failure
+            raise errors.ActionFailed(failure)
+        return await original(name, **params)
+    bot.call_action.side_effect = action
     result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, token=token))
     assert '已被同意' in result and '处理失败' not in result and '已拒绝' not in result
     assert ('无法再拒绝' in result) == (not approve)
     assert inbox.records[token]['status'] == 'approved'
+    notice = action_calls(bot, 'send_private_msg')[-1].kwargs
+    assert notice['user_id'] == 20002 and notice['self_id'] == 12345
+    assert notice['message'] == [{'type': 'text', 'data': {'text': '你的入群邀请已被同意喵。\n群号：30003'}}]
     restarted = ReviewInbox(path)
     assert token not in asyncio.run(restarted.list_requests(SCOPE))
     count = bot.call_action.await_count
@@ -761,3 +770,167 @@ def test_concurrent_refresh_shares_guard_and_notification_failure_remains_recove
         assert '待处理' in await inbox.list_requests(SCOPE)
         assert not action_calls(bot, 'set_group_add_request')
     asyncio.run(scenario())
+
+
+def result_notices(bot):
+    return [call for call in action_calls(bot, 'send_private_msg')
+            if call.kwargs['message'][0]['data']['text'].startswith('你的入群邀请')]
+
+
+@pytest.mark.parametrize('approve', [True, False])
+@pytest.mark.parametrize('native_card', [True, False])
+def test_inviter_receives_result_only_after_confirmed_outcome_is_saved(tmp_path, qq_invite_card, approve, native_card):
+    path, bot = tmp_path / 'requests.json', make_bot()
+    inbox = ReviewInbox(path)
+    payload = (invite_card_payload(qq_invite_card(), SCOPE[1]) if native_card else
+               request_payload(raw_request('group'), SCOPE[1]))
+    asyncio.run(inbox.receive(payload, SCOPE, bot, ADMIN))
+    token = next(iter(inbox.records))
+    outcome = 'approved' if approve else 'rejected'
+    original = bot.call_action.side_effect
+    order = []
+    async def action(name, **params):
+        stored = json.loads(path.read_text())['requests'][token]
+        if name == 'set_group_add_request':
+            assert stored['status'] == 'processing'
+            order.append('approval')
+        if name == 'send_private_msg':
+            assert stored['status'] == outcome
+            order.append('notice')
+        return await original(name, **params)
+    bot.call_action.side_effect = action
+    result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, token=token))
+    assert ('已同意' if approve else '已拒绝') in result and '通知未确认' not in result
+    assert order == ['approval', 'notice']
+    notice = result_notices(bot)[0].kwargs
+    assert notice == {'self_id': 12345, 'user_id': 20002, 'message': [
+        {'type': 'text', 'data': {'text': f"你的入群邀请已被{'同意' if approve else '拒绝'}喵。\n群号：30003"}}]}
+    assert payload['flag'] not in str(notice['message'])
+    asyncio.run(inbox.decide(SCOPE, bot, ADMIN, not approve, token=token))
+    asyncio.run(ReviewInbox(path).decide(SCOPE, bot, ADMIN, approve, token=token))
+    assert len(action_calls(bot, 'set_group_add_request')) == 1 and len(result_notices(bot)) == 1
+
+
+@pytest.mark.parametrize('approve', [True, False])
+def test_friend_reviews_do_not_send_group_invite_results(tmp_path, approve):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    token = receive(inbox, bot)
+    asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, token=token))
+    assert not result_notices(bot) and len(action_calls(bot, 'send_private_msg')) == 1
+
+
+@pytest.mark.parametrize('failure', [{'status': 'failed', 'retcode': 100}, TimeoutError(), OSError('disconnected')])
+def test_failed_or_unknown_approval_does_not_notify_inviter_with_a_result(tmp_path, failure):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    token = receive(inbox, bot, 'group')
+    original = bot.call_action.side_effect
+    async def action(name, **params):
+        if name == 'set_group_add_request':
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        return await original(name, **params)
+    bot.call_action.side_effect = action
+    asyncio.run(inbox.decide(SCOPE, bot, ADMIN, True, token=token))
+    assert inbox.records[token]['status'] in ('pending', 'uncertain')
+    assert not result_notices(bot) and len(action_calls(bot, 'send_private_msg')) == 1
+
+
+@pytest.mark.parametrize('approve', [True, False])
+@pytest.mark.parametrize('failure', [{'status': 'failed', 'retcode': 100},
+    TimeoutError(), OSError('disconnected'), ValueError('unavailable')])
+def test_failed_result_notice_preserves_approval_and_warns_admin_without_retrying(tmp_path, approve, failure):
+    path, bot = tmp_path / 'requests.json', make_bot()
+    inbox = ReviewInbox(path)
+    token = receive(inbox, bot, 'group')
+    original = bot.call_action.side_effect
+    async def action(name, **params):
+        if name == 'send_private_msg':
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        return await original(name, **params)
+    bot.call_action.side_effect = action
+    result = asyncio.run(inbox.decide(SCOPE, bot, ADMIN, approve, token=token))
+    assert ('已同意' if approve else '已拒绝') in result
+    assert '邀请人通知未确认' in result
+    restarted = ReviewInbox(path)
+    assert restarted.records[token]['status'] == ('approved' if approve else 'rejected')
+    count = bot.call_action.await_count
+    asyncio.run(restarted.decide(SCOPE, bot, ADMIN, approve, token=token))
+    assert bot.call_action.await_count == count
+
+
+@pytest.mark.parametrize('approve', [True, False])
+def test_concurrent_decisions_during_result_notice_cannot_repeat_action_or_notice(tmp_path, approve):
+    async def scenario():
+        inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+        await inbox.receive(request_payload(raw_request('group'), SCOPE[1]), SCOPE, bot, ADMIN)
+        token = next(iter(inbox.records))
+        waiting, release = asyncio.Event(), asyncio.Event()
+        original = bot.call_action.side_effect
+        async def action(name, **params):
+            if name == 'send_private_msg':
+                waiting.set()
+                await release.wait()
+            return await original(name, **params)
+        bot.call_action.side_effect = action
+        first = asyncio.create_task(inbox.decide(SCOPE, bot, ADMIN, approve, token=token))
+        await waiting.wait()
+        second = await inbox.decide(SCOPE, bot, ADMIN, not approve, token=token)
+        assert ('已被同意' if approve else '已被拒绝') in second
+        release.set()
+        await first
+        assert len(action_calls(bot, 'set_group_add_request')) == 1 and len(result_notices(bot)) == 1
+    asyncio.run(scenario())
+
+
+def test_cancelled_result_notice_keeps_confirmed_approval_after_restart(tmp_path):
+    async def scenario():
+        path, bot = tmp_path / 'requests.json', make_bot()
+        inbox = ReviewInbox(path)
+        await inbox.receive(request_payload(raw_request('group'), SCOPE[1]), SCOPE, bot, ADMIN)
+        token = next(iter(inbox.records))
+        waiting = asyncio.Event()
+        original = bot.call_action.side_effect
+        async def action(name, **params):
+            if name == 'send_private_msg':
+                waiting.set()
+                await asyncio.Future()
+            return await original(name, **params)
+        bot.call_action.side_effect = action
+        task = asyncio.create_task(inbox.decide(SCOPE, bot, ADMIN, True, token=token))
+        await waiting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        restarted = ReviewInbox(path)
+        assert restarted.records[token]['status'] == 'approved'
+        count = bot.call_action.await_count
+        assert '已被同意' in await restarted.decide(SCOPE, bot, ADMIN, True, token=token)
+        assert bot.call_action.await_count == count
+    asyncio.run(scenario())
+
+
+def test_result_targets_selected_inviter_and_bot_even_with_other_pending_invites(tmp_path):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    other = receive(inbox, bot, 'group', 'other')
+    scope = ('onebot-b', '99999')
+    payload = request_payload(raw_request('group', 'selected', self_id=99999,
+                                         user_id=20003, group_id=30004), scope[1])
+    asyncio.run(inbox.receive(payload, scope, bot, ADMIN))
+    selected = next(t for t, r in inbox.records.items() if r['flag'] == 'selected')
+    asyncio.run(inbox.decide(scope, bot, ADMIN, False, token=selected))
+    notice = result_notices(bot)[0].kwargs
+    assert notice['self_id'] == 99999 and notice['user_id'] == 20003
+    assert '30004' in str(notice['message']) and '30003' not in str(notice['message'])
+    assert inbox.records[other]['status'] == 'pending'
+
+
+def test_inviter_who_is_super_admin_also_gets_one_result_notice(tmp_path):
+    inbox, bot = ReviewInbox(tmp_path / 'requests.json'), make_bot()
+    asyncio.run(inbox.receive(request_payload(raw_request('group'), SCOPE[1]), SCOPE, bot, '20002'))
+    token = next(iter(inbox.records))
+    asyncio.run(inbox.decide(SCOPE, bot, '20002', True, token=token))
+    assert len(result_notices(bot)) == 1
+    assert result_notices(bot)[0].kwargs['user_id'] == 20002

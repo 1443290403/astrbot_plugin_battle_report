@@ -514,6 +514,16 @@ class ReviewInbox:
             except OSError:
                 self.logger.exception("QQ 已处理申请，但状态保存失败")
                 return "QQ 已处理申请，记录保存失败，请到 QQ 核实喵。"
-        if already_handled:
-            return _handled_message(outcome, approve)
-        return f"✅ 已{'同意' if approve else '拒绝'}申请 {token} 喵。"
+        result = (_handled_message(outcome, approve) if already_handled
+                  else f"✅ 已{'同意' if approve else '拒绝'}申请 {token} 喵。")
+        if record["kind"] == "group":
+            # 先保存实际审批结果，再通知原邀请人；通知失败不能重新执行审批。
+            notice = f"你的入群邀请已被{'同意' if outcome == 'approved' else '拒绝'}喵。\n群号：{record['group_id']}"
+            try:
+                await asyncio.wait_for(self._action(
+                    bot, scope[1], "send_private_msg", user_id=int(record["user_id"]),
+                    message=[{"type": "text", "data": {"text": notice}}]), timeout=10)
+            except Exception:
+                self.logger.exception("发送入群邀请结果通知失败")
+                result += "\n邀请人通知未确认，请手动告知喵。"
+        return result

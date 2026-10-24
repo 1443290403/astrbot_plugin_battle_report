@@ -130,6 +130,12 @@ def test_qq_request_handler_notifies_super_admin_without_database(plugin_module,
     approvals = [c for c in ev.bot.call_action.await_args_list if c.args[0].startswith('set_')]
     assert len(approvals) == 1
     assert approvals[0].kwargs['flag'] == 'opaque-original' and approvals[0].kwargs['self_id'] == 12345
+    results = [c for c in ev.bot.call_action.await_args_list
+               if c.args[0] == 'send_private_msg' and c.kwargs['user_id'] == 20002]
+    assert len(results) == int(kind == 'group')
+    if results:
+        assert results[0].kwargs['message'] == [
+            {'type': 'text', 'data': {'text': '你的入群邀请已被同意喵。\n群号：30003'}}]
 
 
 @pytest.mark.parametrize('component_id', [None, 'changed-id'])
@@ -256,13 +262,44 @@ def test_already_agreed_invite_is_not_reported_as_failure_or_rejection(plugin_mo
     token = next(iter(obj._review_inbox.records))
     reply = review_event({'post_type': 'message', 'message_type': 'private'},
                          f'{"同意" if approve else "拒绝"} {token}')
-    reply.bot.call_action.return_value = {'status': 'failed', 'retcode': 100,
-        'wording': 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'}
+    async def action(name, **params):
+        if name == 'set_group_add_request':
+            return {'status': 'failed', 'retcode': 100,
+                    'wording': 'OIDB error 120162004 on 0x10c8_1: already agree msg by self'}
+        return {'message_id': 90002}
+    reply.bot.call_action.side_effect = action
     asyncio.run(obj.review_request(reply))
     assert '已被同意' in reply.send.await_args.args[0]
     assert ('无法再拒绝' in reply.send.await_args.args[0]) == (not approve)
     assert obj._review_inbox.records[token]['status'] == 'approved'
     logger.exception.assert_not_called()
+    sent = [c for c in reply.bot.call_action.await_args_list if c.args[0] == 'send_private_msg']
+    assert len(sent) == 1 and sent[0].kwargs['user_id'] == 20002
+    assert '已被同意' in str(sent[0].kwargs['message']) and '拒绝' not in str(sent[0].kwargs['message'])
+
+
+@pytest.mark.parametrize('approve', [True, False])
+def test_inviter_notification_failure_returns_real_approval_result_to_admin(plugin_module, tmp_path, monkeypatch, approve):
+    logger = Mock()
+    monkeypatch.setattr(plugin_module, 'logger', logger)
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['super_admin'] = '10001'
+    request = review_event(new_qq_request('group'))
+    asyncio.run(obj.review_request(request))
+    token = next(iter(obj._review_inbox.records))
+    reply = review_event({'post_type': 'message', 'message_type': 'private'},
+                         f'{"同意" if approve else "拒绝"} {token}')
+    async def action(name, **params):
+        if name == 'send_private_msg':
+            assert params['user_id'] == 20002
+            return {'status': 'failed', 'retcode': 100, 'wording': 'message unavailable'}
+        return {}
+    reply.bot.call_action.side_effect = action
+    asyncio.run(obj.review_request(reply))
+    text = reply.send.await_args.args[0]
+    assert ('已同意' if approve else '已拒绝') in text and '邀请人通知未确认' in text
+    assert obj._review_inbox.records[token]['status'] == ('approved' if approve else 'rejected')
+    logger.exception.assert_called_once_with('发送入群邀请结果通知失败')
 
 
 @pytest.mark.parametrize('sender,group,message_type', [

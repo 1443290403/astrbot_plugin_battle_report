@@ -68,6 +68,12 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 - v1.18.1：同时读取原始 reply 与 AstrBot Reply；ID 不匹配时核验机器人发给当前超管的原通知，不因组件丢失而退回唯一 pending。由 main 注入 AstrBot logger；aiocqhttp NetworkError 属于 OSError，需归类为结果未确认。
 - v1.18.2：确认 SnowLuma 后才从实时原始邀请卡的 groupcode/msgseq 建立独立申请，格式参照上游 formatGroupRequestFlag；不改写原 flag、不扫历史、不自动重定向旧编号。新卡片替代同群同邀请人的旧 pending 为 superseded，保留已确认/未知结果。QQ 明确返回 120162004 + already agree msg by self 时同步 approved，即使用户点拒绝也不能记成 rejected；120161001 等其他错误仍需保留失败，兼容路径需实机验证。
 - 不自动同意申请，不处理群成员加群请求，不把群内“同意”当审批。
+- v1.18.4：群邀请实际结果落盘后，使用原连接私聊原邀请人，通知实际同意/拒绝及群号。通知异常只提示超管手动告知，不改变审批状态；重复处理不重发。不要把通知异常当审批失败或向好友申请人发送入群结果。
+
+## 安装包交付
+
+- 更新时同时交付 ZIP。安装包根目录直接包含 metadata.yaml 与 main.py，使用 AstrBot 的安装包校验检查内容。
+- `install-packages` 分支只存安装包，源码在 master；下载链接指向包文件，不使用 GitHub 自动生成的源码归档替代安装包。
 
 ## 用户提示风格
 
