@@ -26,7 +26,14 @@
     "description": "排行后自动点评",
     "type": "bool",
     "default": true,
-    "hint": "使用 AstrBot 当前会话的聊天模型和人格追加简短点评；需先在 AstrBot 配置聊天模型"
+    "hint": "排行后让 AI 使用插件统一人格自由点评"
+  },
+  "ai_persona_id": {
+    "description": "插件 AI 人格",
+    "type": "string",
+    "default": "",
+    "_special": "select_persona",
+    "hint": "插件内所有 AI 功能共用；选择 AstrBot 已配置的人格，留空使用 AstrBot 全局默认人格"
   },
   "min_games": {
     "description": "进入个人排行所需最少对局数",

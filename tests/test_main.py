@@ -115,8 +115,9 @@ def ranking_with_llm(mod, tmp_path, text='/排行 七月'):
             get_curr_conversation_id=AsyncMock(return_value='conversation-a'),
             get_conversation=AsyncMock(return_value=SimpleNamespace(
                 persona_id='persona-a', history='PRIVATE_HISTORY'))),
-        persona_manager=SimpleNamespace(resolve_selected_persona=AsyncMock(
-            return_value=('persona-a', {'prompt': '你是本群的战术解说员。'}, None, False))),
+        persona_manager=SimpleNamespace(
+            get_persona_v3_by_id=Mock(return_value={'prompt': '你是插件统一的解说员。'}),
+            resolve_selected_persona=AsyncMock()),
         get_config=Mock(return_value={'provider_settings': {'default_personality': 'persona-default'}}),
     )
     ev = event(text)
@@ -149,11 +150,13 @@ def test_ranking_sends_primary_result_before_commentary_using_same_scope_and_mon
     assert (data['统计开始日期'], data['统计结束日期']) == ('2026-07-01', '2026-07-31')
     assert call['chat_provider_id'] == 'chat-selected' and call['contexts'] == []
     assert 'tools' not in call and 'PRIVATE_' not in str(call)
-    assert '你是本群的战术解说员。' in call['system_prompt']
+    assert call['system_prompt'] == '你是插件统一的解说员。'
+    assert call['prompt'].split('\n', 1)[0] == '请自由点评以下排行：'
     obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
-    obj.context.persona_manager.resolve_selected_persona.assert_awaited_once_with(
-        umo=ev.unified_msg_origin, conversation_persona_id='persona-a', platform_name='aiocqhttp',
-        provider_settings={'default_personality': 'persona-default'})
+    obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with('persona-default')
+    obj.context.get_config.assert_called_once_with()
+    obj.context.persona_manager.resolve_selected_persona.assert_not_awaited()
+    obj.context.conversation_manager.get_curr_conversation_id.assert_not_awaited()
     if scope == '本队个人榜':
         assert data['榜单'] == plugin_module.stats.build_ranking_cells(obj.db.get_player_ranking.return_value)
         assert data['战队战绩面板'] == [list(item) for item in
@@ -186,7 +189,7 @@ def test_image_ranking_and_text_fallback_each_append_one_commentary(plugin_modul
     obj.db.get_player_ranking.assert_awaited_once()
 
 
-def test_commentary_covers_only_visible_image_rows_and_caps_long_lists(plugin_module, tmp_path, monkeypatch):
+def test_commentary_covers_all_visible_rows_for_image_and_text(plugin_module, tmp_path, monkeypatch):
     obj, ev = ranking_with_llm(plugin_module, tmp_path, '/排行 全部')
     base = obj.db.get_player_ranking.return_value[0]
     rows = [dict(base, player=f'示例选手{i}') for i in range(50)]
@@ -195,15 +198,15 @@ def test_commentary_covers_only_visible_image_rows_and_caps_long_lists(plugin_mo
     monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
     asyncio.run(collect(obj.ranking(ev)))
     data = json.loads(obj.context.llm_generate.await_args.kwargs['prompt'].split('\n', 1)[1])
-    assert data['本次榜单条目数'] == 2 and data['本次点评数据条目数'] == 2
+    assert data['本次榜单条目数'] == 2
     assert len(data['榜单']) == 3 and '示例选手2' not in str(data)
     obj.config['ranking_image'] = False
     obj.context.llm_generate.reset_mock()
     results = asyncio.run(collect(obj.ranking(ev)))
     data = json.loads(obj.context.llm_generate.await_args.kwargs['prompt'].split('\n', 1)[1])
     assert '示例选手49' in results[0]
-    assert data['本次榜单条目数'] == 50 and data['本次点评数据条目数'] == 30
-    assert len(data['榜单']) == 31 and '示例选手30' not in str(data)
+    assert data['本次榜单条目数'] == 50
+    assert len(data['榜单']) == 51 and '示例选手49' in str(data)
 
 
 def test_commentary_uses_displayed_ties_points_and_settlement_bonus(plugin_module, tmp_path):
@@ -259,23 +262,25 @@ def test_llm_errors_do_not_turn_successful_ranking_into_query_failure(plugin_mod
     assert obj.context.llm_generate.await_count <= 1
 
 
-def test_default_persona_resolution_does_not_create_or_modify_conversation(plugin_module, tmp_path):
+def test_plugin_uses_global_default_persona_without_session_overrides(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
     obj.context.conversation_manager.get_curr_conversation_id.return_value = None
-    obj.context.persona_manager.resolve_selected_persona.return_value = (
-        'persona-default', {'prompt': '你是默认解说员。'}, None, False)
+    obj.context.persona_manager.get_persona_v3_by_id.return_value = {'prompt': '你是默认解说员。'}
     asyncio.run(collect(obj.ranking(ev)))
     obj.context.conversation_manager.get_conversation.assert_not_awaited()
-    assert obj.context.persona_manager.resolve_selected_persona.await_args.kwargs['conversation_persona_id'] is None
+    obj.context.persona_manager.resolve_selected_persona.assert_not_awaited()
+    obj.context.get_config.assert_called_once_with()
+    obj.context.conversation_manager.get_curr_conversation_id.assert_not_awaited()
     assert '你是默认解说员。' in obj.context.llm_generate.await_args.kwargs['system_prompt']
 
 
-def test_empty_persona_and_long_response_still_produce_bounded_plain_commentary(plugin_module, tmp_path):
+def test_empty_persona_and_long_response_do_not_add_style_or_truncate_text(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    obj.context.persona_manager.resolve_selected_persona.return_value = (None, None, None, False)
+    obj.context.persona_manager.get_persona_v3_by_id.return_value = {'prompt': ''}
     obj.context.llm_generate.return_value.completion_text = '稳' * 1000
     results = asyncio.run(collect(obj.ranking(ev)))
-    assert len(results[1].split('\n', 1)[1]) == 600 and results[1].endswith('…')
+    assert results[1] == '💬 排行点评\n' + '稳' * 1000
+    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] is None
 
 
 def test_cancelled_commentary_does_not_retry_or_repeat_ranking(plugin_module, tmp_path):
@@ -317,12 +322,76 @@ def test_commentary_deadline_cancels_slow_model_after_ranking_is_already_availab
     assert cancelled.is_set()
 
 
-def test_commentary_without_persona_api_uses_default_style(plugin_module, tmp_path):
+def test_commentary_without_persona_api_does_not_inject_style(plugin_module, tmp_path):
     obj, ev = ranking_with_llm(plugin_module, tmp_path)
     del obj.context.persona_manager
     results = asyncio.run(collect(obj.ranking(ev)))
     assert results[1].startswith('💬 排行点评')
-    assert '你是本群的战术解说员。' not in obj.context.llm_generate.await_args.kwargs['system_prompt']
+    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] is None
+
+
+@pytest.mark.parametrize('configured', ['plugin-persona', '  plugin-persona  ', 'default'])
+def test_commentary_uses_plugin_persona_and_current_chat_model(plugin_module, tmp_path, configured):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.config['ai_persona_id'] = configured
+    obj.context.get_config.side_effect = AssertionError('must use configured persona')
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert results[1].startswith('💬 排行点评')
+    assert obj.context.llm_generate.await_args.kwargs['chat_provider_id'] == 'chat-selected'
+    obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
+    obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with(configured.strip())
+    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] == '你是插件统一的解说员。'
+
+
+@pytest.mark.parametrize('configured', ['', '  ', None])
+def test_empty_plugin_persona_uses_global_default(plugin_module, tmp_path, configured):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.config['ai_persona_id'] = configured
+    asyncio.run(collect(obj.ranking(ev)))
+    obj.context.get_current_chat_provider_id.assert_awaited_once_with(umo=ev.unified_msg_origin)
+    assert obj.context.llm_generate.await_args.kwargs['chat_provider_id'] == 'chat-selected'
+    obj.context.get_config.assert_called_once_with()
+    obj.context.persona_manager.get_persona_v3_by_id.assert_called_once_with('persona-default')
+
+
+def test_invalid_plugin_persona_preserves_ranking_without_switching_personas(plugin_module, tmp_path):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    obj.config['ai_persona_id'] = 'removed-persona'
+    obj.context.persona_manager.get_persona_v3_by_id.return_value = None
+    results = asyncio.run(collect(obj.ranking(ev)))
+    assert '云玩家' in results[0] and '点评暂时没生成出来' in results[1]
+    obj.context.get_config.assert_not_called()
+    obj.context.llm_generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize('configured', ['', 'plugin-persona'])
+def test_plugin_persona_is_shared_across_groups(plugin_module, tmp_path, configured):
+    obj, first = ranking_with_llm(plugin_module, tmp_path)
+    obj.config['ai_persona_id'] = configured
+    second = event('/排行 七月', group='200')
+    second.unified_msg_origin = 'onebot-b:GroupMessage:200'
+    second.get_platform_name = lambda: 'aiocqhttp'
+    obj.context.conversation_manager.get_curr_conversation_id.side_effect = AssertionError('no per-group persona')
+    obj.context.persona_manager.resolve_selected_persona.side_effect = AssertionError('no per-group persona')
+    asyncio.run(collect(obj.ranking(first)))
+    asyncio.run(collect(obj.ranking(second)))
+    calls = obj.context.llm_generate.await_args_list
+    assert len(calls) == 2
+    assert calls[0].kwargs['system_prompt'] == calls[1].kwargs['system_prompt'] == '你是插件统一的解说员。'
+    assert [c.kwargs['umo'] for c in obj.context.get_current_chat_provider_id.await_args_list] == [
+        first.unified_msg_origin, second.unified_msg_origin]
+
+
+@pytest.mark.parametrize('configured', [True, False])
+def test_disabled_persona_does_not_force_plugin_style(plugin_module, tmp_path, configured):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path)
+    if configured:
+        obj.config['ai_persona_id'] = '[%None]'
+    else:
+        obj.context.get_config.return_value = {'provider_settings': {'default_personality': '[%None]'}}
+    asyncio.run(collect(obj.ranking(ev)))
+    assert obj.context.llm_generate.await_args.kwargs['system_prompt'] is None
+    obj.context.persona_manager.get_persona_v3_by_id.assert_not_called()
 
 
 def review_event(raw, text='', sender='10001', group=''):

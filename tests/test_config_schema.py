@@ -75,3 +75,10 @@ def test_private_submission_switch_is_removed():
 def test_ranking_commentary_is_enabled_by_default():
     item = _schema()['ranking_ai_comment']
     assert item['type'] == 'bool' and item['default'] is True
+
+
+def test_plugin_persona_selector_defaults_to_global_default():
+    item = _schema()['ai_persona_id']
+    assert item['type'] == 'string' and item['default'] == ''
+    assert item['_special'] == 'select_persona'
+    assert 'ranking_ai_provider_id' not in _schema()
