@@ -183,7 +183,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.2")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.3")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -551,6 +551,13 @@ class BattleReportPlugin(Star):
 
     # ---------- 排表 ----------
 
+    async def _send_report_text(self, event: AstrMessageEvent, text: str):
+        """可复制战报直接发送，避免回复装饰/清理/转图改写正文空白。"""
+        text = lineup.normalize_duel_spacing(text)
+        event.stop_event()
+        await event.send(event.plain_result(text))
+        logger.info("战报原文已按纯文本直接发送")
+
     @filter.command("排表", alias={"/排表"})
     async def lineup_cmd(self, event: AstrMessageEvent):
         """排表：解析名单 → 存库 → 生成随机配对模板"""
@@ -601,9 +608,9 @@ class BattleReportPlugin(Star):
             seed=(self.config.get("pairing_seed") or None),
         )
 
-        yield event.plain_result(gen.template)
+        await self._send_report_text(event, gen.template)
         for w in gen.warnings:
-            yield event.plain_result(w)
+            await event.send(event.plain_result(w))
 
     # ---------- 群战队绑定 ----------
 
@@ -1290,9 +1297,9 @@ class BattleReportPlugin(Star):
         if not result.ok:
             yield event.plain_result("❌ " + "\n".join(result.errors))
             return
-        yield event.plain_result(result.new_text)
+        await self._send_report_text(event, result.new_text)
         if result.errors:
-            yield event.plain_result("⚠️ 有几行对局没看懂喵：\n" + "\n".join(result.errors))
+            await event.send(event.plain_result("⚠️ 有几行对局没看懂喵：\n" + "\n".join(result.errors)))
 
     # ---------- 记录比分（/记录） ----------
 
@@ -1340,9 +1347,9 @@ class BattleReportPlugin(Star):
         if not all_added:
             yield event.plain_result("❌ 一局都没记上喵… (；・∀・)\n" + "\n".join(errors))
             return
-        yield event.plain_result(current)
+        await self._send_report_text(event, current)
         if errors:
-            yield event.plain_result("⚠️ 有几条没记上喵：\n" + "\n".join(errors))
+            await event.send(event.plain_result("⚠️ 有几条没记上喵：\n" + "\n".join(errors)))
 
     # ---------- 提交战报 ----------
 

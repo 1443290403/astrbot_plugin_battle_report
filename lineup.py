@@ -186,6 +186,22 @@ def generate_template(
 
 # ---------- 追加轮次 ----------
 
+def normalize_duel_spacing(draft_text: str) -> str:
+    """仅规范轮次内对局的外部分隔；保留 ID 内空格、标记、比分原样及换行。"""
+    lines = []
+    in_round = False
+    for line in draft_text.splitlines(keepends=True):
+        if ROUND_RE.match(line):
+            in_round = True
+        elif in_round and (match := SCORE_RE.search(line)):
+            left = line[:match.start()].rstrip()
+            right = line[match.end():].lstrip()
+            if left.strip() and right.strip():
+                line = f"{left}  {match.group(0)}  {right}"
+        lines.append(line)
+    return "".join(lines)
+
+
 @dataclass
 class RoundBuildResult:
     """/第N轮 构建结果。"""

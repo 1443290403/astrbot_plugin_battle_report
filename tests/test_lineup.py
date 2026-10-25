@@ -3,6 +3,38 @@
 from lineup import generate_template, parse_lineup
 
 
+def test_normalize_duel_spacing_preserves_headers_names_markers_scores_and_newlines():
+    from lineup import normalize_duel_spacing
+    header = ('战队: a队 VS b队\r\n时间: 2026.10.25 12:30 UTC\r\n'
+              '规则: 2/3【KOF】\r\n地点: 100\r\n')
+    draft = (header + '------第一轮------\r\n'
+             '示例  玩家(替) 2:0 萌新  遗老(规则)\r\n'
+             '备注  原样保留\r\n------第二轮------\r\n'
+             '云玩家\t0：0\t遗老\r\n')
+    expected = (header + '------第一轮------\r\n'
+                '示例  玩家(替)  2:0  萌新  遗老(规则)\r\n'
+                '备注  原样保留\r\n------第二轮------\r\n'
+                '云玩家  0：0  遗老\r\n')
+    assert normalize_duel_spacing(draft) == expected
+    assert normalize_duel_spacing(expected) == expected
+
+
+def test_normalize_duel_spacing_leaves_non_report_text_and_incomplete_rows_alone():
+    from lineup import normalize_duel_spacing
+    for text in ['', '说明 2:0 并非轮次内容\n', '------第一轮------\n2:0\n云玩家 2:0\n']:
+        assert normalize_duel_spacing(text) == text
+
+
+def test_normalize_duel_spacing_does_not_change_parsed_duels():
+    from lineup import normalize_duel_spacing
+    from battle_report_parser import parse_battle_report
+    text = ('战队: a队 VS b队\n时间: 2026.10.25\n规则: 2/3【KOF】\n地点: 100\n'
+            '------第一轮------\n示例 玩家 2:0 萌新 遗老\n------第二轮------\n')
+    before, after = parse_battle_report(text), parse_battle_report(normalize_duel_spacing(text))
+    assert not before.errors and not after.errors
+    assert before.report.duels == after.report.duels
+
+
 def test_parse_lineup_ok():
     r = parse_lineup("KC:红莲 凯撒亮 悠悠球\nDYG:老千 蓝大 红大", "2/3【KOF】")
     assert not r.errors

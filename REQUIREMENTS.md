@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.19.2`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-25
+> 对应版本：`1.19.3`｜数据库 `SCHEMA_VERSION = 18`｜最后核对：2026-10-25
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -384,6 +384,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 ---
 
 ### M-10 平台消息收发（QQ 适配器口径）
+
+**可复制战报直发（v1.19.3）：** `/排表`、`/记录`、`/第N轮` 成功时统一调用 `_send_report_text`。先由 `lineup.normalize_duel_spacing` 仅规范轮次内对局行的左右分隔为两个 ASCII 空格，保留 ID 内空格、标记、比分原写法、头部与换行；再 stop_event 并 await event.send(plain_result(text))，不 yield 战报到回复装饰/分段/转图阶段。成功后记录不含正文的 INFO，部分失败提示也通过 event.send 直接在战报后发送。原权限/禁群/参数校验在直发之前保留；发送失败不通过普通回复重试，避免不确定结果下重复发送。此处不改 OneBot 适配器或战报解析/入库口径，其他命令仍用原发送流程。现场证据为生成器及部署文件均保留双空格，但 Prepare to send 日志已变单空格；具体修改正文的处理器尚未确认，新路径需 QQ 端验证。
 
 战报文本在群里"流浪"，读写消息是本插件的一大块隐式依赖：
 
@@ -912,6 +914,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **改排行点评** | ① `ranking` 的先发榜单/后点评路径及 `_ranking_commentary` ② `_ai_persona_prompt` 的插件统一人格解析 ③ `ranking_ai_comment`/`ai_persona_id` 配置四处 ④ `tests/test_main.py`、主群帮助与预览 | 复用本次查询的月份、范围与展示函数；不因图片提前 return 漏点评，不把 LLM 失败报成数据库查询失败，不另算积分或导入聊天历史 |
+| **改战报原文输出** | ① 排表/记录/轮次三个 handler 的 `_send_report_text` ② `lineup.normalize_duel_spacing` ③ handler 与格式保留测试 ④ README/M-10 | 成功正文不得回到回复整理流程；错误提示正常保留，禁群/私聊/参数检查不能绕过；只规范比分外部分隔，不压缩 ID 内空格 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
 | **对局加一个属性**（如 出场序号/时长） | ① `Duel` dataclass ② `parse_battle_report` ③ `duels` 表 + 迁移 ④ `insert_report` ⑤ **所有读出 duels 的 SELECT**：`get_export_rows`、`get_reports_for_export`、`get_player_match_stats` ⑥ dict 组装处（`get_reports_for_export` 逐字段手写）⑦ `format_duels_block` 还原 ⑧ CSV 列 | ⑤⑥ 是"逐字段罗列"的写法，**漏一个字段就是静默丢数据** |
@@ -1245,6 +1248,8 @@ v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选�
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
 
+v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮次 handler 的直接发送与普通回复流隔离、已存在单空格草稿恢复、ID 内多空格/标记/比分原写法/CRLF/头部保留、规范化幂等及解析结果不变；禁群不得直发、部分错误在战报后提示、发送异常不得普通回复重试。平台发送使用模拟接口，具体外部整理器与 QQ 端新路径仍需现场验证。
+
 **数据库测试需显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1`**；独立使用
 `ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`，默认本机，不读取插件配置。
 建删库名为 `astrbot_battle_report_test_<进程号>`，应指向隔离测试服务。
@@ -1260,7 +1265,7 @@ v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模�
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.19.2")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.19.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

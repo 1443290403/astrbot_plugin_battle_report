@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import json
 import logging
+import re
 import sys
 import types
 from pathlib import Path
@@ -68,6 +69,8 @@ def event(text='', group='100', admin=False, messages=None):
         plain_result=lambda text: text,
         chain_result=lambda chain: chain,
         bot=SimpleNamespace(call_action=AsyncMock()),
+        send=AsyncMock(),
+        stop_event=Mock(),
         is_at_or_wake_command=True,
     )
 
@@ -766,11 +769,96 @@ def test_round_command_fills_only_available_survivors(plugin_module, tmp_path):
 ------第二轮------
 云玩家  0:0  柠檬"""
     obj._read_latest_report = AsyncMock(return_value=draft)
-    response = asyncio.run(collect(obj.round_cmd(event('/第二轮'))))
-    assert len(response) == 1
-    assert response[0].splitlines() == draft.splitlines() + ['路人甲  0:0  鸽子']
+    ev = event('/第二轮')
+    response = asyncio.run(collect(obj.round_cmd(ev)))
+    assert response == [] and ev.send.await_count == 1
+    assert ev.send.await_args.args[0].splitlines() == draft.splitlines() + ['路人甲  0:0  鸽子']
     obj._read_latest_report.assert_awaited_once()
     obj.db.insert_report.assert_not_awaited()
+
+
+@pytest.mark.parametrize('handler_name', ['lineup_cmd', 'record_cmd', 'round_cmd'])
+def test_report_output_sends_exact_double_spaces_without_decorating_pipeline(plugin_module, tmp_path, handler_name):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['pairing_seed'] = 'test'
+    obj.db.replace_teams = AsyncMock()
+    draft = ('战队: a队 VS b队\n时间: 2026.10.25\n规则: 2/3【KOF】\n地点: 100\n'
+             '------第一轮------\n示例  玩家(替) 2:0 萌新  遗老(规则)\n'
+             '云玩家 0:0 遗老\n------第二轮------')
+    obj._read_latest_report = AsyncMock(return_value=draft)
+    command = {'lineup_cmd': '/排表\na队: "示例  玩家"\nb队: "萌新  遗老"',
+               'record_cmd': '/记录 云玩家 20',
+               'round_cmd': '/第二轮 云玩家 0:0 遗老'}[handler_name]
+    ev = event(command)
+    sent = []
+    async def send(text):
+        assert ev.stop_event.called
+        sent.append(text)
+    ev.send.side_effect = send
+    # 普通回复经过整理会把连续空格合并；战报应完全不进入该回复流。
+    decorated = [re.sub(r' {2,}', ' ', result)
+                 for result in asyncio.run(collect(getattr(obj, handler_name)(ev)))]
+    assert decorated == [] and len(sent) == 1
+    rows = [line for line in sent[0].splitlines() if '0:0' in line or '2:0' in line]
+    assert rows
+    assert all(re.fullmatch(r'.+  \d+:\d+  .+', line) for line in rows)
+    assert '示例  玩家' in sent[0] and '萌新  遗老' in sent[0]
+    if handler_name != 'lineup_cmd':
+        assert sent[0].startswith('战队: a队 VS b队\n时间: 2026.10.25\n')
+        assert '示例  玩家(替)  ' in sent[0]
+    ev.stop_event.assert_called_once()
+    obj.db.insert_report.assert_not_awaited()
+
+
+@pytest.mark.parametrize('handler_name,command', [
+    ('lineup_cmd', '/排表\na队: 云玩家\nb队: 萌新'),
+    ('record_cmd', '/记录 云玩家 20'), ('round_cmd', '/第二轮')])
+def test_forbidden_group_cannot_directly_send_a_report(plugin_module, tmp_path, handler_name, command):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_ban.return_value = True
+    obj._read_latest_report = AsyncMock()
+    obj.db.replace_teams = AsyncMock()
+    ev = event(command)
+    result = asyncio.run(collect(getattr(obj, handler_name)(ev)))
+    assert len(result) == 1 and '禁用' in result[0]
+    ev.send.assert_not_awaited()
+    obj._read_latest_report.assert_not_awaited()
+    obj.db.replace_teams.assert_not_awaited()
+
+
+def test_partial_round_warning_is_delivered_after_exact_report(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj._read_latest_report = AsyncMock(return_value=(
+        '战队: a队 VS b队\n时间: 2026.10.25\n规则: 2/3【KOF】\n地点: 100\n'
+        '------第一轮------\n云玩家 2:0 萌新\n------第二轮------'))
+    ev = event('/第二轮 云玩家 0:0 萌新\ninvalid')
+    result = asyncio.run(collect(obj.round_cmd(ev)))
+    assert result == [] and ev.send.await_count == 2
+    report, warning = [call.args[0] for call in ev.send.await_args_list]
+    assert '云玩家  2:0  萌新' in report and '云玩家  0:0  萌新' in report
+    assert '有几行对局没看懂' in warning
+
+
+def test_partial_record_warning_is_delivered_after_exact_report(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj._read_latest_report = AsyncMock(return_value=(
+        '战队: a队 VS b队\n时间: 2026.10.25\n规则: 2/3【KOF】\n地点: 100\n'
+        '------第一轮------\n云玩家 0:0 萌新\n------第二轮------'))
+    ev = event('/记录 云玩家 20\ninvalid')
+    result = asyncio.run(collect(obj.record_cmd(ev)))
+    assert result == [] and ev.send.await_count == 2
+    report, warning = [call.args[0] for call in ev.send.await_args_list]
+    assert '云玩家  2:0  萌新' in report and '有几条没记上' in warning
+
+
+def test_failed_direct_report_send_is_not_retried_through_normal_reply(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    ev = event('/排表')
+    ev.send.side_effect = TimeoutError('result unknown')
+    with pytest.raises(TimeoutError):
+        asyncio.run(obj._send_report_text(ev, '------第一轮------\n云玩家 0:0 萌新'))
+    ev.send.assert_awaited_once_with('------第一轮------\n云玩家  0:0  萌新')
+    ev.stop_event.assert_called_once()
 
 
 def report(group='100', team='DYG', colon=':'):
