@@ -205,17 +205,18 @@ def _parse_month_filter(payload: str) -> tuple[str, int | None]:
     return payload[: m.start()].rstrip(), month
 
 
-def parse_export_payload(payload: str) -> dict:
-    """解析 /导出 参数：玩家名 / 胜负范围 / 时间 / 文件格式。
+def parse_export_payload(payload: str, *, allow_kind: bool = True) -> dict:
+    """解析 /导出 参数：战报类型 / 玩家名 / 胜负范围 / 时间 / 文件格式。
 
-    语法（顺序无关）：导出 [玩家名] [胜场|负场|全部] [X月|最近N天] [csv|json]
+    语法（顺序无关）：导出 [踢馆] [玩家名] [胜场|负场|全部] [X月|最近N天] [csv|json]
 
     - 时间：`X月`/`时间=X月`（走 _parse_month_filter）或 `最近N天`/`N天`；
       先剥末尾再逐 token 归类，可出现在任意位置；同时给出时月份优先（调用方处理）。
     - 玩家：剩余非关键字 token 用空格 join（多词名兼容）。
+    - 类型：未加引号的 `踢馆` 单独识别；缺省不限制类型。趋势复用时禁用类型识别。
 
     Returns:
-        {"player": str|None, "outcome": "全部|胜场|负场",
+        {"kind": "raid"|None, "player": str|None, "outcome": "全部|胜场|负场",
          "month": int|None, "days": int|None, "fmt": "csv"|"json"|None}
     """
     days = None
@@ -226,6 +227,7 @@ def parse_export_payload(payload: str) -> dict:
     payload, month = _parse_month_filter(payload)
     tokens = parse_command_args(payload)
     fmt = None
+    kind = None
     outcome = "全部"
     rest: list[str] = []
     for token in tokens:
@@ -236,6 +238,8 @@ def parse_export_payload(payload: str) -> dict:
         tl = t.lower()
         if tl in ("csv", "json"):
             fmt = tl
+        elif allow_kind and t == "踢馆":
+            kind = KIND_RAID
         elif t in ("胜场", "负场"):
             outcome = t
         elif t == "全部":
@@ -251,7 +255,7 @@ def parse_export_payload(payload: str) -> dict:
                 continue
             rest.append(t)
     player = " ".join(rest) if rest else None
-    return {"player": player, "outcome": outcome, "month": month, "days": days, "fmt": fmt}
+    return {"kind": kind, "player": player, "outcome": outcome, "month": month, "days": days, "fmt": fmt}
 
 
 def _month_bounds(year: int, m: int) -> tuple[str, str]:

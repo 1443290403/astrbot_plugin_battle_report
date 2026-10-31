@@ -35,16 +35,31 @@ def test_manage_ids_preserves_legacy_and_quoted_names(text):
 
 
 def test_keywords_inside_quotes_are_literal_ids():
-    for name in ('csv', '胜场', '全部', '7月', '最近7天'):
+    for name in ('csv', '胜场', '全部', '7月', '最近7天', '踢馆'):
         args = parse_export_payload('"'+name+'" 七月 json')
         assert args['player'] == name
         assert args['outcome'] == '全部' and args['fmt'] == 'json' and args['month'] == 7
 
 
+@pytest.mark.parametrize('text,outcome', [('踢馆', '全部'), ('踢馆 胜场', '胜场'), ('负场 踢馆', '负场')])
+def test_export_raid_is_a_type_instead_of_a_player(text, outcome):
+    args = parse_export_payload(text)
+    assert args['player'] is None
+    assert args['kind'] == 'raid' and args['outcome'] == outcome
+
+
+def test_export_raid_combines_with_quoted_player_dates_and_format():
+    args = parse_export_payload('json 七月 "示例 玩家" 踢馆 胜场 最近7天')
+    assert args == {'kind': 'raid', 'player': '示例 玩家', 'outcome': '胜场',
+                    'month': 7, 'days': 7, 'fmt': 'json'}
+    literal = parse_export_payload('"踢馆" json')
+    assert literal['player'] == '踢馆' and literal['kind'] is None
+
+
 @pytest.mark.parametrize('text', ['"ice boundary" 胜场 最近7天 csv', 'csv 胜场 "ice boundary" 最近7天'])
 def test_export_quote_order_is_independent(text):
     assert parse_export_payload(text) == {
-        'player': 'ice boundary', 'outcome': '胜场', 'days': 7, 'month': None, 'fmt': 'csv'}
+        'kind': None, 'player': 'ice boundary', 'outcome': '胜场', 'days': 7, 'month': None, 'fmt': 'csv'}
 
 
 def test_template_record_round_and_reparse_keep_original_space_id():

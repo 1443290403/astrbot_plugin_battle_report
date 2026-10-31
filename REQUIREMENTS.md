@@ -63,8 +63,9 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
         校验（含本队/对局数/胜负已定/内容未重复）──► 入库 matches + duels + player_ids
              │
              ▼
-/排行 /战绩 /趋势 /导出 /我的战绩 ──► 按 home_team 跨群聚合，且 kind = 'friendly'
+/排行 /战绩 /趋势 /我的战绩       ──► 按 home_team 跨群聚合，且 kind = 'friendly'
                                        （踢馆被排除在上述友谊口径之外）
+/导出                              ──► 按 home_team 跨群取数，默认含两种类型，可选踢馆
 /踢馆                              ──► 按 team_a/team_b 对称取数（M-02 的例外）
 ```
 
@@ -772,7 +773,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-05** | `/排行 [个人\|队伍\|全部] [X月]` | `ranking` | 见下方详解 |
 | **F-06** | `/战绩 [玩家名] [X月]` | `record` | 无名字 → **战队总战绩**（`get_home_team_record`，按 `winner`；另附踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮）；有名字 → `resolve_role` 命中则聚合该角色全部参赛ID，否则按单个参赛ID（同上一组字段，走 `get_player_record(with_raid=True)`）。三条次数与排行末三列同源，**多出一行**展示 |
 | **F-07** | `/趋势 <玩家名\|队伍> [最近N天\|X月]` | `trend` | 三级回退：角色聚合 → 单个参赛ID → **按队名查**。默认无参数时展示**本战队**；左轴胜率按数据自动缩放（M-09），右轴累计场次独立 |
-| **F-08** | `/导出 [玩家名] [胜场\|负场\|全部] [X月\|最近N天] [csv\|json]` | `export` | 见下方详解 |
+| **F-08** | `/导出 [踢馆] [玩家名] [胜场\|负场\|全部] [X月\|最近N天] [csv\|json]` | `export` | 见下方详解 |
 | **F-09** | `/我的战绩 [X月]` | `my_record` | 按自己绑定的全部参赛ID汇总；多ID时额外列每个ID明细（含踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮） |
 | **F-27** | `/踢馆 [玩家名] [X月]` | `raid` | 无名字 → 本战队踢馆卡（踢馆成功 / 守馆成功 / 守馆首轮 / 踢馆成功含馆主 + 徽章 + 积分明细 + 合计）；有名字 → 该选手的踢馆卡。alias `/踢馆`、`/战报踢馆`。入口 `_require_home` → `get_raid_team_stats` / `get_raid_stats_for_players` → `stats.format_raid_record` |
 | **F-28** | `/结算 <月份> [名次数]` | `settle` | **双模式**（v1.15.0）。入口统一 `_require_home`（含 `_group_check` + 必须已绑定战队）→ `_is_manager`，此后分叉：<br>**管理/群主 = 写** —— 给该月榜单前 N 名（默认 4，上限 12）按 §5-M14 发奖金并覆盖写入 `settlements`。顺序：`_parse_settle_args`（**不是** `_parse_month_filter`，见 §5-M14）→ `settle_month_range` → 当月未结束则拒 → `get_player_ranking(…, limit=None, team=home_team)` → `ranks_for` + `rank_bonus` → **`get_settlement_entries`（读旧记录，供公告判定）** → `set_settlement` → `format_settlement` → 获奖名次变了就 `get_qq_ids_by_names` + `At` 发公告（见 §5-M14「结算公告」）。<br>**其他人 = 只读查询** —— `get_settlement_entries` → 有记录 `format_settlement_view`、无记录回「该月尚未结算」。**不跑写路径的任何一步**，见 §5-M14「只读查询」。<br>**月份缺省 = 上个月**（`settle_month_range(None)`） |
@@ -830,11 +831,13 @@ year = now.year - 1 if month > now.month else now.year
 | 维度 | 取值 |
 |---|---|
 | 格式 | 无 `csv`/`json` → **合并转发**（每份战报一个节点，逐字还原）；指定则输出文件 |
+| 类型 | 缺省包含友谊与踢馆；未加引号的 `踢馆` → `kind='raid'`。引号内的“踢馆”仍是玩家名 |
 | 胜负 | 全部 / 胜场 / 负场 |
 | 玩家 | 无 → 以 `home_team` 为参照（整场胜负）；有 → **以该玩家本人对局结果**判定（选手级口径，同一场可能同时命中胜/负） |
 | 时间 | 月份 > 最近N天 > 本月 |
 
 - 文件导出：先查 `get_export_rows`，再按比赛级过滤裁剪
+- v1.19.4：`parse_export_payload` 返回独立 `kind`，类型筛选统一放在 `filter_report_outcome`，文件与转发均先筛类型再筛玩家/胜负。指定类型的文件导出也需查聚合战报取命中 ID；无人守馆的空对局战报仍可按整场胜负导出，不会误当成个人出场。未指定玩家时包含本队进攻和守馆的整场胜负；指定玩家沿用个人对局口径。默认本月、日期优先级、home_team 跨群范围与 SQL 均不变。趋势复用参数函数时传 `allow_kind=False`，不能吞掉其玩家名“踢馆”。
 - 合并转发：`get_reports_for_export` → `lineup.report_to_text`，**头部逐字保留**（`raw_text`），对局段按 `seq` 双空格重建
 - 单条上限 100 节点，自动分批
 - **踢馆报同样可导出**：两条导出 SQL **刻意不加 `kind` 过滤**（`m.kind` / `d.owner` 随行返回）。CSV 新增「战报类型」（`踢馆`/`友谊`）与「防守方馆主」（`是`/空）两列；还原时 `owner` 为真 → 给右侧补 `(馆主)`、`round_no == 0` → 不输出轮次头
@@ -931,7 +934,7 @@ year = now.year - 1 if month > now.month else now.year
 | **新增配置项** | ① `_conf_schema.json` 加定义 ② `main.py` 读取 ③ `README.md` 配置表 ④ 本文件 §11 | `tests/conftest.py` 使用独立测试连接配置，不继承插件配置；`tests/test_config_schema.py` 会校验格式 |
 | **删除配置项** | 同上四处**一起删** | 只从 schema 删会留下"界面没有、代码在读"的隐式默认值；只从代码删会留下界面上的死开关（`home_team`、`default_days` 就是这么来的，§10-3/§10-4） |
 | **新增群级开关** | ① 建表（仿 `group_ban`/`group_chat_type`：`group_id` 主键）② 迁移 ③ 读/写函数 ④ 在**每个**命令入口串进校验链 | 漏了某个命令的入口 → 该开关对它无效 |
-| **改导出** | ① `get_export_rows`（CSV/JSON 行）vs `get_reports_for_export`（合并转发）——**两条独立链路** ② `report_to_text` ③ `filter_report_outcome` ④ main 里的 CSV 表头 ⑤ 100 节点分批 | 两条链路常被当成一条改，结果"文件导出变了、转发没变" |
+| **改导出** | ① `parse_export_payload`（趋势复用时禁用类型识别）② `get_export_rows`（CSV/JSON 行）vs `get_reports_for_export`（合并转发）——**两条独立链路** ③ `report_to_text` ④ `filter_report_outcome` 的类型/胜负/玩家筛选 ⑤ main 里的 CSV 表头 ⑥ 100 节点分批及帮助 | 两条链路常被当成一条改，结果"文件导出变了、转发没变"；引号里的类型关键字仍是 ID |
 | **改删除/撤销** | ① `delete_match` 的群归属校验 ② `get_last_match_by_submitter` ③ 外键 `ON DELETE CASCADE`（旧表可能没有，代码显式删 duels 兜底） | 删除是**物理删除**，无软删/回收站 |
 | **改命令中的名字参数** | ① `command_args.py` ② main 绑定/解绑/管理/查ID/改名/战绩/踢馆/趋势/导出 ③ parser 导出参数 ④ lineup 排表/记录/追加轮次 ⑤ 测试和用户示例 | 不改数据库原始 ID；有空格/逗号/关键字时靠引号明确边界 |
 | **改用户/身份** | ① `users`/`player_ids` 表 ② `find_or_create_user` 的"一QQ一角色" ③ `claim_user_by_name` ④ `bind_player_to_user` / `unbind_player` ⑤ `resolve_role` ⑥ **所有依赖 COALESCE 的 SQL** | "一QQ一角色"是不变量，改绑定语义会连锁影响 6 处 |
@@ -1247,6 +1250,8 @@ v1.19.0 验证：**654 项通过、1 项跳过**。新增 `/排行` 各分支和
 v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选择、缺失/空白配置使用全局默认、跨群同人格、内置 default/禁用/失效人格、当前会话模型继续调用、仅传选中人格而无额外提示、全部展示条目与长文本不截断。保留模型失败/超时取消、先发榜单及数据口径回归；模型使用模拟接口，数据库测试未启用。
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
+
+v1.19.4 验证：**711 项测试通过，1 项跳过**。新增踢馆类型解析及关键字引号保护，覆盖合并转发、CSV、JSON 与全部/胜场/负场组合，进攻/守馆双视角、绑定玩家及无人守馆、仅有友谊报时无结果、默认混合导出和趋势玩家名兼容。使用模拟数据库/平台，未连接生产数据库或 QQ。
 
 v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮次 handler 的直接发送与普通回复流隔离、已存在单空格草稿恢复、ID 内多空格/标记/比分原写法/CRLF/头部保留、规范化幂等及解析结果不变；禁群不得直发、部分错误在战报后提示、发送异常不得普通回复重试。平台发送使用模拟接口，具体外部整理器与 QQ 端新路径仍需现场验证。
 

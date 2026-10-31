@@ -183,7 +183,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.4")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1984,10 +1984,10 @@ class BattleReportPlugin(Star):
         payload = _strip_command(event.get_message_str(), _TREND_CMDS)
         try:
             # 趋势与导出共用引号/月份/最近N天解析；兼容旧的末尾裸数字天数。
-            args = parse_export_payload(payload)
+            args = parse_export_payload(payload, allow_kind=False)
             tokens = parse_command_args(payload)
             if len(tokens) >= 2 and not tokens[-1].quoted and tokens[-1].value.isdigit():
-                args = parse_export_payload(payload[:tokens[-1].start])
+                args = parse_export_payload(payload[:tokens[-1].start], allow_kind=False)
                 args["days"] = int(tokens[-1].value)
             name = args["player"] or home_team
             month = args["month"]
@@ -2039,7 +2039,7 @@ class BattleReportPlugin(Star):
 
     @filter.command("导出", alias={"/导出", "战报导出", "/战报导出"})
     async def export(self, event: AstrMessageEvent):
-        """导出战报：可指定玩家/胜场负场/时间（X月|最近N天），合并转发或 csv/json 文件"""
+        """导出战报：可指定踢馆/玩家/胜场负场/时间，合并转发或 csv/json 文件"""
         err, home_team = await self._require_home(event)
         if err:
             yield event.plain_result(err)
@@ -2054,6 +2054,7 @@ class BattleReportPlugin(Star):
             return
         fmt = args["fmt"]
         outcome = args["outcome"]
+        kind = args["kind"]
 
         # 时间三态：月份 优先 → 最近N天 → 默认本月
         if args["month"]:
@@ -2079,7 +2080,8 @@ class BattleReportPlugin(Star):
             else:
                 players = [args["player"]]
                 player_label = args["player"]
-        filter_label = " · ".join(x for x in (outcome, player_label, period_label) if x)
+        kind_label = "踢馆" if kind == KIND_RAID else ""
+        filter_label = " · ".join(x for x in (kind_label, outcome, player_label, period_label) if x)
 
         # ---------- 文件导出（csv/json） ----------
         if fmt:
@@ -2089,7 +2091,7 @@ class BattleReportPlugin(Star):
                 logger.exception("导出查询失败")
                 yield event.plain_result(_ERR_EXPORT)
                 return
-            if players is not None or outcome != "全部":
+            if kind is not None or players is not None or outcome != "全部":
                 # 以比赛级聚合过滤出命中 match_id，再裁剪对局行
                 try:
                     reports = await self.db.get_reports_for_export(home_team, date_from, date_to)
@@ -2097,14 +2099,14 @@ class BattleReportPlugin(Star):
                     logger.exception("导出查询失败")
                     yield event.plain_result(_ERR_EXPORT)
                     return
-                reports = lineup.filter_report_outcome(reports, outcome, players, member_team)
+                reports = lineup.filter_report_outcome(reports, outcome, players, member_team, kind=kind)
                 keep = {r["match_id"] for r in reports}
                 rows = [r for r in rows if r["match_id"] in keep]
             if not rows:
                 msg = (
                     f"喵…{player_label} 没有符合条件的战报呢。"
                     if player_label
-                    else "喵…本战队还没有战报数据呢。"
+                    else "喵…没有符合这个条件的战报呢。"
                 )
                 yield event.plain_result(msg)
                 return
@@ -2150,7 +2152,7 @@ class BattleReportPlugin(Star):
             logger.exception("导出查询失败")
             yield event.plain_result(_ERR_EXPORT)
             return
-        reports = lineup.filter_report_outcome(reports, outcome, players, member_team)
+        reports = lineup.filter_report_outcome(reports, outcome, players, member_team, kind=kind)
         if not reports:
             msg = (
                 f"喵…{player_label} 没有符合条件的战报呢。"

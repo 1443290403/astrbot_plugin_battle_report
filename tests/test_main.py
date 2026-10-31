@@ -3,6 +3,7 @@
 不启动 QQ 登录；装饰器桩只记录命令注册参数，数据库集成在 test_database_stats 验证。
 """
 import asyncio
+import csv
 import importlib
 import json
 import logging
@@ -1259,6 +1260,99 @@ def test_export_quoted_space_id_uses_same_player_filter(plugin_module, tmp_path)
     asyncio.run(collect(obj.export(event('/导出 "ice boundary" 七月 json'))))
     obj.db.resolve_role.assert_awaited_once_with('KC', 'ice boundary')
     obj.db.get_export_rows.assert_awaited_once_with('KC', '2026-07-01', '2026-07-31')
+
+
+def raid_export_data():
+    reports, rows = [], []
+    # 友谊胜、踢馆胜负、守馆胜负、无人守馆；所有记录均从本队 a队视角筛选。
+    for mid, kind, team_a, team_b, winner, left, right, score_a, score_b in [
+        (1, 'friendly', 'a队', 'b队', 'a队', '云玩家', '萌新', 2, 0),
+        (2, 'raid', 'a队', 'b队', 'a队', '云玩家', '萌新', 2, 0),
+        (3, 'raid', 'a队', 'b队', 'b队', '云玩家', '萌新', 0, 2),
+        (4, 'raid', 'b队', 'a队', 'a队', '遗老', '云玩家', 0, 2),
+        (5, 'raid', 'b队', 'a队', 'b队', '遗老', '云玩家', 2, 0),
+        (6, 'raid', 'a队', 'b队', 'a队', None, None, None, None),
+    ]:
+        duel = dict(seq=0, round_no=(1 if kind == 'friendly' else 0) if left else None,
+                    player_a=left, player_b=right, score_a=score_a, score_b=score_b,
+                    a_sub=False, b_sub=False, ruled=False, owner=(kind == 'raid') if left else None)
+        header = (f'战队: {team_a} VS {team_b}\n时间: 2026.07.01\n规则: 人头赛\n地点: 100'
+                  if kind == 'friendly' else f'{team_a}踢馆{team_b}\n规则：OCG\n2026.07.01\n踢馆开始！')
+        reports.append(dict(match_id=mid, kind=kind, home_team='a队', team_a=team_a,
+                            team_b=team_b, winner=winner, match_time='2026-07-01',
+                            rule='人头赛' if kind == 'friendly' else 'OCG', location='100',
+                            raw_text=header, submitted_by='10001', submitted_name='提交者',
+                            duels=[duel] if left else []))
+        rows.append(dict(match_id=mid, group_id='100', kind=kind, team_a=team_a,
+                         team_b=team_b, match_time='2026-07-01', rule='OCG', location='100',
+                         result='A' if (score_a or 0) > (score_b or 0) else 'B', **duel))
+    return reports, rows
+
+
+@pytest.mark.parametrize('fmt', ['', 'csv', 'json'])
+@pytest.mark.parametrize('suffix,expected', [('', [2, 3, 4, 5, 6]), (' 胜场', [2, 4, 6]), (' 负场', [3, 5])])
+@pytest.mark.parametrize('player', ['', ' "示例 玩家"'])
+def test_export_raid_type_and_outcome_in_all_formats(plugin_module, tmp_path, monkeypatch, fmt, suffix, expected, player):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_home.return_value = 'a队'
+    reports, rows = raid_export_data()
+    obj.db.resolve_role = AsyncMock(return_value={'players': ['云玩家'], 'user_name': '示例 玩家'})
+    obj.db.get_export_rows = AsyncMock(return_value=rows)
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    monkeypatch.setattr(plugin_module, 'month_range', lambda month: ('2026-07-01', '2026-07-31'))
+    response = asyncio.run(collect(obj.export(event('/导出 踢馆' + suffix + player + (' '+fmt if fmt else '')))))
+    if player:
+        expected = [mid for mid in expected if mid != 6]  # 无人守馆没有个人对局。
+        obj.db.resolve_role.assert_awaited_once_with('a队', '示例 玩家')
+    else:
+        obj.db.resolve_role.assert_not_awaited()
+    obj.db.get_reports_for_export.assert_awaited_once_with('a队', '2026-07-01', '2026-07-31')
+    if fmt:
+        output = Path(response[0][1].file)
+        if fmt == 'json':
+            data = json.loads(output.read_text())
+            assert [r['match_id'] for r in data] == expected
+            assert all(r['kind'] == 'raid' for r in data)
+        else:
+            with output.open(encoding='utf-8-sig', newline='') as stream:
+                data = list(csv.DictReader(stream))
+            assert [int(r['战报ID']) for r in data] == expected
+            assert all(r['战报类型'] == '踢馆' for r in data)
+            assert all(r['防守方馆主'] == ('是' if r['玩家A'] else '') for r in data)
+    else:
+        nodes = response[0][0].args[0]
+        texts = [node.content[0].args[0] for node in nodes]
+        assert texts == [plugin_module.lineup.report_to_text(r) for r in reports if r['match_id'] in expected]
+        assert '踢馆' in response[-1] and f'{len(expected)} 份' in response[-1]
+
+
+@pytest.mark.parametrize('fmt', ['', 'json'])
+def test_export_raid_with_only_friendly_data_returns_no_match(plugin_module, tmp_path, fmt):
+    obj = plugin(plugin_module, tmp_path)
+    reports, rows = raid_export_data()
+    obj.db.get_export_rows = AsyncMock(return_value=rows[:1])
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports[:1])
+    response = asyncio.run(collect(obj.export(event('/导出 踢馆 '+fmt))))
+    assert len(response) == 1 and '没有符合' in response[0]
+    assert not list(tmp_path.rglob('*.json'))
+
+
+def test_export_without_type_still_includes_friendly_and_raid(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    reports, _ = raid_export_data()
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    response = asyncio.run(collect(obj.export(event('/导出'))))
+    assert len(response[0][0].args[0]) == len(reports)
+
+
+@pytest.mark.parametrize('suffix', ['', ' 7'])
+def test_trend_keeps_raid_word_as_player_name(plugin_module, tmp_path, suffix):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.resolve_role = AsyncMock(return_value=None)
+    obj.db.get_player_trend = AsyncMock(return_value=[])
+    obj.db.get_team_trend = AsyncMock(return_value=[])
+    asyncio.run(collect(obj.trend(event('/趋势 踢馆'+suffix))))
+    obj.db.resolve_role.assert_awaited_once_with('KC', '踢馆')
 
 
 @pytest.mark.parametrize('role', ['友谊群','战报群','主群'])

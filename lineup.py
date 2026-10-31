@@ -782,8 +782,12 @@ def filter_report_outcome(
     outcome: str,
     players: list[str] | None = None,
     member_team: str | None = None,
+    *,
+    kind: str | None = None,
 ) -> list[dict]:
     """按导出范围过滤战报聚合 dict 列表。
+
+    kind 非空时先按战报类型筛选，再应用相同的玩家/胜负条件。
 
     players 为空时以主体战队 home_team 为参照（现有语义）：
     - 全部：不过滤
@@ -805,6 +809,8 @@ def filter_report_outcome(
     pset = set(players) if players else None
     result = []
     for r in reports:
+        if kind is not None and r.get("kind") != kind:
+            continue
         if pset:
             if _player_side(r, pset, member_team) is None:
                 continue  # 玩家未参与，或两侧都出现/跨队同名无法判定

@@ -86,6 +86,8 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 
 ## 安装包交付
 
+- v1.19.4：`/导出 踢馆` 的类型与玩家独立解析，转发和 CSV/JSON 共用 `filter_report_outcome(..., kind=...)`。缺省仍含两种类型，保留 home_team/月份/个人胜负口径与引号 ID；趋势复用解析时设置 `allow_kind=False`。
+
 - 更新时同时交付 ZIP。安装包根目录直接包含 metadata.yaml 与 main.py，使用 AstrBot 的安装包校验检查内容。
 - `install-packages` 分支只存安装包，源码在 master；下载链接指向包文件，不使用 GitHub 自动生成的源码归档替代安装包。
 
