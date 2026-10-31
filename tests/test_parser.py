@@ -269,12 +269,12 @@ def test_split_reports():
 
 def test_parse_export_empty():
     a = parse_export_payload("")
-    assert a == {"kind": None, "player": None, "outcome": "全部", "month": None, "days": None, "fmt": None}
+    assert a == {"sent": None, "kind": None, "player": None, "outcome": "全部", "month": None, "days": None, "fmt": None}
 
 
 def test_parse_export_full():
     a = parse_export_payload("老千 胜场 7月")
-    assert a == {"kind": None, "player": "老千", "outcome": "胜场", "month": 7, "days": None, "fmt": None}
+    assert a == {"sent": None, "kind": None, "player": "老千", "outcome": "胜场", "month": 7, "days": None, "fmt": None}
 
 
 def test_parse_export_player_loss_recent_days_csv():
@@ -304,7 +304,7 @@ def test_parse_export_month_wins_over_days():
     # 月份 + 最近N天 同时给出：先剥末尾 最近N天 再剥末尾 X月，两种顺序都兼容
     for s in ("红莲 胜场 7月 最近7天", "红莲 胜场 最近7天 7月"):
         a = parse_export_payload(s)
-        assert a == {"kind": None, "player": "红莲", "outcome": "胜场", "month": 7, "days": 7, "fmt": None}, s
+        assert a == {"sent": None, "kind": None, "player": "红莲", "outcome": "胜场", "month": 7, "days": 7, "fmt": None}, s
 
 
 def test_parse_export_old_style_month():
@@ -315,7 +315,7 @@ def test_parse_export_old_style_month():
 def test_parse_export_time_token_mid_string():
     # 时间参数夹在中间（csv/json 在末尾）也能提取，不污染玩家名
     a = parse_export_payload("老千 胜场 7月 csv")
-    assert a == {"kind": None, "player": "老千", "outcome": "胜场", "month": 7, "days": None, "fmt": "csv"}
+    assert a == {"sent": None, "kind": None, "player": "老千", "outcome": "胜场", "month": 7, "days": None, "fmt": "csv"}
     b = parse_export_payload("红莲 时间=7月 最近7天 json")
     assert b["month"] == 7 and b["days"] == 7 and b["player"] == "红莲" and b["fmt"] == "json"
 

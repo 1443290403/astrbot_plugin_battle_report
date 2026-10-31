@@ -50,16 +50,32 @@ def test_export_raid_is_a_type_instead_of_a_player(text, outcome):
 
 def test_export_raid_combines_with_quoted_player_dates_and_format():
     args = parse_export_payload('json 七月 "示例 玩家" 踢馆 胜场 最近7天')
-    assert args == {'kind': 'raid', 'player': '示例 玩家', 'outcome': '胜场',
+    assert args == {'sent': None, 'kind': 'raid', 'player': '示例 玩家', 'outcome': '胜场',
                     'month': 7, 'days': 7, 'fmt': 'json'}
     literal = parse_export_payload('"踢馆" json')
     assert literal['player'] == '踢馆' and literal['kind'] is None
 
 
+@pytest.mark.parametrize('word,value', [('已发送', True), ('未发送', False)])
+def test_export_status_is_independent_of_other_filters(word, value):
+    args = parse_export_payload(f'踢馆 {word} "示例 玩家" 胜场 七月 csv')
+    assert args == {'sent': value, 'kind': 'raid', 'player': '示例 玩家',
+                    'outcome': '胜场', 'month': 7, 'days': None, 'fmt': 'csv'}
+    assert parse_export_payload(f'"{word}"')['player'] == word
+    assert parse_export_payload(f'"{word}"')['sent'] is None
+    assert parse_export_payload(word, allow_status=False)['player'] == word
+
+
+def test_export_rejects_conflicting_status_filters():
+    with pytest.raises(ValueError, match='请选一个'):
+        parse_export_payload('已发送 未发送')
+    assert parse_export_payload('已发送 已发送')['sent'] is True
+
+
 @pytest.mark.parametrize('text', ['"ice boundary" 胜场 最近7天 csv', 'csv 胜场 "ice boundary" 最近7天'])
 def test_export_quote_order_is_independent(text):
     assert parse_export_payload(text) == {
-        'kind': None, 'player': 'ice boundary', 'outcome': '胜场', 'days': 7, 'month': None, 'fmt': 'csv'}
+        'sent': None, 'kind': None, 'player': 'ice boundary', 'outcome': '胜场', 'days': 7, 'month': None, 'fmt': 'csv'}
 
 
 def test_template_record_round_and_reparse_keep_original_space_id():

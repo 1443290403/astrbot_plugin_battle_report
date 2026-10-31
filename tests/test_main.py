@@ -1346,13 +1346,170 @@ def test_export_without_type_still_includes_friendly_and_raid(plugin_module, tmp
 
 
 @pytest.mark.parametrize('suffix', ['', ' 7'])
-def test_trend_keeps_raid_word_as_player_name(plugin_module, tmp_path, suffix):
+@pytest.mark.parametrize('name', ['踢馆', '已发送', '未发送'])
+def test_trend_keeps_raid_word_as_player_name(plugin_module, tmp_path, suffix, name):
     obj = plugin(plugin_module, tmp_path)
     obj.db.resolve_role = AsyncMock(return_value=None)
     obj.db.get_player_trend = AsyncMock(return_value=[])
     obj.db.get_team_trend = AsyncMock(return_value=[])
-    asyncio.run(collect(obj.trend(event('/趋势 踢馆'+suffix))))
-    obj.db.resolve_role.assert_awaited_once_with('KC', '踢馆')
+    asyncio.run(collect(obj.trend(event('/趋势 '+name+suffix))))
+    obj.db.resolve_role.assert_awaited_once_with('KC', name)
+
+
+@pytest.mark.parametrize('fmt', ['', 'csv', 'json'])
+@pytest.mark.parametrize('selector', ['', '已发送', '未发送'])
+def test_export_separates_sent_and_unsent_without_marking(plugin_module, tmp_path, fmt, selector):
+    obj = plugin(plugin_module, tmp_path)
+    reports, rows = raid_export_data()
+    for r in reports + rows:
+        r['export_sent'] = r['match_id'] in (2, 4)
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    obj.db.get_export_rows = AsyncMock(return_value=rows)
+    obj.db.set_reports_export_sent = AsyncMock()
+    response = asyncio.run(collect(obj.export(event(f'/导出 {selector} {fmt}'))))
+    expected = [('未发送', [1, 3, 5, 6]), ('已发送', [2, 4])]
+    if selector:
+        expected = [(label, ids) for label, ids in expected if label == selector]
+    for i, (label, ids) in enumerate(expected):
+        if fmt:
+            assert label in response[i][0].args[0]
+            path = Path(response[i][1].file)
+            assert label in path.name
+            if fmt == 'json':
+                data = json.loads(path.read_text())
+                assert [r['match_id'] for r in data] == ids
+                assert all(bool(r['export_sent']) == (label == '已发送') for r in data)
+            else:
+                with path.open(encoding='utf-8-sig', newline='') as f:
+                    data = list(csv.DictReader(f))
+                assert [int(r['战报ID']) for r in data] == ids
+                assert all(r['发送状态'] == label for r in data)
+        else:
+            nodes = response[i][0].args[0]
+            assert [int(n.name.rsplit(' ', 1)[1]) for n in nodes] == ids
+            assert all(f' · {label} · ' in n.name for n in nodes)
+            assert [n.content[0].args[0] for n in nodes] == [
+                plugin_module.lineup.report_to_text(r) for r in reports if r['match_id'] in ids]
+    assert len(response) == len(expected) + (0 if fmt else 1)
+    obj.db.set_reports_export_sent.assert_not_awaited()
+
+
+def test_export_status_groups_each_obey_node_limit(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    reports, _ = raid_export_data()
+    obj.db.get_reports_for_export = AsyncMock(return_value=[
+        {**reports[0], 'match_id': i+1, 'export_sent': bool(i % 2)} for i in range(203)])
+    response = asyncio.run(collect(obj.export(event('/导出'))))
+    assert [len(part[0].args[0]) for part in response[:-1]] == [100, 2, 100, 1]
+    for part in response[:-1]:
+        assert len({n.name.split(' · ')[1] for n in part[0].args[0]}) == 1
+
+
+@pytest.mark.parametrize('fmt', ['csv', 'json'])
+def test_export_file_group_uses_same_status_snapshot_as_filter(plugin_module, tmp_path, fmt):
+    obj = plugin(plugin_module, tmp_path)
+    reports, rows = raid_export_data()
+    reports[1]['export_sent'] = True  # 两次查询之间完成了标记。
+    rows[1]['export_sent'] = False
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    obj.db.get_export_rows = AsyncMock(return_value=rows)
+    response = asyncio.run(collect(obj.export(event('/导出 已发送 踢馆 胜场 '+fmt))))
+    assert len(response) == 1
+    assert '已发送' in response[0][0].args[0]
+    path = Path(response[0][1].file)
+    if fmt == 'json':
+        assert json.loads(path.read_text())[0]['export_sent'] is True
+    else:
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            assert list(csv.DictReader(stream))[0]['发送状态'] == '已发送'
+
+
+@pytest.mark.parametrize('sent', [True, False])
+def test_mark_export_entire_quoted_forward_and_repeat(plugin_module, tmp_path, sent):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_home.return_value = 'a队'
+    reports, _ = raid_export_data()
+    # 实际无人守馆战报保留 0:0 规则占位行，而不是没有任何对局行。
+    reports[5]['duels'] = [{**reports[1]['duels'][0], 'player_b': '规则',
+                           'score_a': 0, 'score_b': 0, 'owner': False}]
+    texts = [plugin_module.lineup.report_to_text(r) for r in reports]
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    obj.db.set_reports_export_sent = AsyncMock(return_value=6)
+    ev = event('/标记已发送' if sent else '/标记未发送', messages=[plugin_module.Reply(id='42')])
+    ev.bot.call_action.side_effect = [
+        {'message': [{'type': 'forward', 'data': {'id': 'forward-a'}}]},
+        {'messages': [{'content': [{'type': 'text', 'data': {'text': text}}]} for text in texts]},
+    ] * 2
+    handler = obj.mark_export_sent if sent else obj.mark_export_unsent
+    for _ in range(2):
+        response = asyncio.run(collect(handler(ev)))
+        assert '✅' in response[0] and '6 份' in response[0]
+    assert obj.db.set_reports_export_sent.await_args.args == ('a队', [1, 2, 3, 4, 5, 6], sent)
+    # 只调用标记方法，不调用入库、删除或统计。
+    obj.db.insert_report.assert_not_awaited()
+
+
+def test_mark_one_quoted_report_matches_content_instead_of_name_or_id(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_home.return_value = 'a队'
+    reports, _ = raid_export_data()
+    obj._extract_reply_reports = AsyncMock(return_value=[plugin_module.lineup.report_to_text(reports[3])])
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    obj.db.set_reports_export_sent = AsyncMock(return_value=1)
+    response = asyncio.run(collect(obj.mark_export_sent(event('/标记已发送'))))
+    assert '✅' in response[0]
+    obj.db.set_reports_export_sent.assert_awaited_once_with('a队', [4], True)
+
+
+@pytest.mark.parametrize('case', ['missing', 'ambiguous', 'truncated', 'no_quote'])
+def test_mark_quote_failure_never_partially_updates(plugin_module, tmp_path, case):
+    obj = plugin(plugin_module, tmp_path)
+    reports, _ = raid_export_data()
+    texts = [plugin_module.lineup.report_to_text(r) for r in reports[:2]]
+    if case == 'truncated':
+        texts.append('战队: a队 VS b队\n时间: 无效')
+    if case == 'no_quote':
+        texts = None
+    obj._extract_reply_reports = AsyncMock(return_value=texts)
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports[:1] if case == 'missing' else reports + [reports[0]])
+    obj.db.set_reports_export_sent = AsyncMock()
+    response = asyncio.run(collect(obj.mark_export_sent(event('/标记已发送'))))
+    assert '❌' in response[0]
+    obj.db.set_reports_export_sent.assert_not_awaited()
+
+
+@pytest.mark.parametrize('text', ['/标记已发送 1 2,2', '标记已发送 1，2'])
+def test_mark_by_ids_uses_team_scope_and_deduplicates(plugin_module, tmp_path, text):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.set_reports_export_sent = AsyncMock(return_value=2)
+    response = asyncio.run(collect(obj.mark_export_sent(event(text))))
+    assert '✅' in response[0]
+    obj.db.set_reports_export_sent.assert_awaited_once_with('KC', [1, 2], True)
+
+
+@pytest.mark.parametrize('payload', ['0', '-1', 'abc', str(2**63), '1 '*101])
+def test_mark_invalid_ids_never_writes(plugin_module, tmp_path, payload):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.set_reports_export_sent = AsyncMock()
+    response = asyncio.run(collect(obj.mark_export_sent(event('/标记已发送 '+payload))))
+    assert '❌' in response[0]
+    obj.db.set_reports_export_sent.assert_not_awaited()
+
+
+@pytest.mark.parametrize('case', ['non_admin', 'private', 'banned', 'unbound'])
+def test_mark_export_rejects_unauthorized_or_unconfigured_context(plugin_module, tmp_path, case):
+    obj = plugin(plugin_module, tmp_path)
+    ev = event('/标记已发送 1', group='' if case == 'private' else '100')
+    obj.db.set_reports_export_sent = AsyncMock()
+    if case == 'non_admin':
+        obj._is_manager = AsyncMock(return_value=False)
+    elif case == 'banned':
+        obj.db.get_group_ban.return_value = True
+    elif case == 'unbound':
+        obj.db.get_group_home.return_value = None
+    response = asyncio.run(collect(obj.mark_export_sent(ev)))
+    assert response
+    obj.db.set_reports_export_sent.assert_not_awaited()
 
 
 @pytest.mark.parametrize('role', ['友谊群','战报群','主群'])

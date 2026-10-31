@@ -45,6 +45,7 @@ from .battle_report_parser import (
     parse_battle_report,
     parse_export_payload,
     parse_raid_report,
+    report_fingerprint,
     split_reports,
 )
 from .database import Database, DuplicateReportError
@@ -183,7 +184,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.19.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1984,10 +1985,10 @@ class BattleReportPlugin(Star):
         payload = _strip_command(event.get_message_str(), _TREND_CMDS)
         try:
             # 趋势与导出共用引号/月份/最近N天解析；兼容旧的末尾裸数字天数。
-            args = parse_export_payload(payload, allow_kind=False)
+            args = parse_export_payload(payload, allow_kind=False, allow_status=False)
             tokens = parse_command_args(payload)
             if len(tokens) >= 2 and not tokens[-1].quoted and tokens[-1].value.isdigit():
-                args = parse_export_payload(payload[:tokens[-1].start], allow_kind=False)
+                args = parse_export_payload(payload[:tokens[-1].start], allow_kind=False, allow_status=False)
                 args["days"] = int(tokens[-1].value)
             name = args["player"] or home_team
             month = args["month"]
@@ -2055,6 +2056,7 @@ class BattleReportPlugin(Star):
         fmt = args["fmt"]
         outcome = args["outcome"]
         kind = args["kind"]
+        sent = args["sent"]
 
         # 时间三态：月份 优先 → 最近N天 → 默认本月
         if args["month"]:
@@ -2091,7 +2093,7 @@ class BattleReportPlugin(Star):
                 logger.exception("导出查询失败")
                 yield event.plain_result(_ERR_EXPORT)
                 return
-            if kind is not None or players is not None or outcome != "全部":
+            if sent is not None or kind is not None or players is not None or outcome != "全部":
                 # 以比赛级聚合过滤出命中 match_id，再裁剪对局行
                 try:
                     reports = await self.db.get_reports_for_export(home_team, date_from, date_to)
@@ -2099,9 +2101,11 @@ class BattleReportPlugin(Star):
                     logger.exception("导出查询失败")
                     yield event.plain_result(_ERR_EXPORT)
                     return
-                reports = lineup.filter_report_outcome(reports, outcome, players, member_team, kind=kind)
-                keep = {r["match_id"] for r in reports}
-                rows = [r for r in rows if r["match_id"] in keep]
+                reports = lineup.filter_report_outcome(reports, outcome, players, member_team, kind=kind, sent=sent)
+                # 两次读取之间可能有人标记状态；文件分组沿用本次筛选的同一份状态。
+                states = {r["match_id"]: bool(r.get("export_sent", False)) for r in reports}
+                rows = [{**r, "export_sent": states[r["match_id"]]}
+                        for r in rows if r["match_id"] in states]
             if not rows:
                 msg = (
                     f"喵…{player_label} 没有符合条件的战报呢。"
@@ -2111,38 +2115,41 @@ class BattleReportPlugin(Star):
                 yield event.plain_result(msg)
                 return
 
-            if fmt == "csv":
-                buffer = io.StringIO()
-                writer = csv.writer(buffer)
-                writer.writerow([
-                    "战报ID", "群号", "战报类型", "队伍A", "队伍B", "日期", "规则", "地点",
-                    "轮次", "玩家A", "比分A", "玩家B", "比分B", "胜者",
-                    "玩家A替补", "玩家B替补", "防守方馆主",
-                ])
-                for r in rows:
+            for status, status_rows in lineup.split_export_status(rows):
+                status_label = "已发送" if status else "未发送"
+                if fmt == "csv":
+                    buffer = io.StringIO()
+                    writer = csv.writer(buffer)
                     writer.writerow([
-                        r["match_id"], r["group_id"],
-                        # 战报类型：踢馆报的 A 侧恒为踢馆方（见 REQUIREMENTS §5-M13）
-                        "踢馆" if r.get("kind") == KIND_RAID else "友谊",
-                        r["team_a"], r["team_b"], r["match_time"],
-                        r["rule"], r["location"], r["round_no"], r["player_a"], r["score_a"],
-                        r["player_b"], r["score_b"], r["result"],
-                        "是" if r["a_sub"] else "", "是" if r["b_sub"] else "",
-                        "是" if r.get("owner") else "",
+                        "战报ID", "群号", "战报类型", "队伍A", "队伍B", "日期", "规则", "地点",
+                        "轮次", "玩家A", "比分A", "玩家B", "比分B", "胜者",
+                        "玩家A替补", "玩家B替补", "防守方馆主", "发送状态",
                     ])
-                content = buffer.getvalue()
-                encoding = "utf-8-sig"
-            else:
-                content = json.dumps(rows, ensure_ascii=False, indent=2, default=str)
-                encoding = "utf-8"
+                    for r in status_rows:
+                        writer.writerow([
+                            r["match_id"], r["group_id"],
+                            # 战报类型：踢馆报的 A 侧恒为踢馆方（见 REQUIREMENTS §5-M13）
+                            "踢馆" if r.get("kind") == KIND_RAID else "友谊",
+                            r["team_a"], r["team_b"], r["match_time"],
+                            r["rule"], r["location"], r["round_no"], r["player_a"], r["score_a"],
+                            r["player_b"], r["score_b"], r["result"],
+                            "是" if r["a_sub"] else "", "是" if r["b_sub"] else "",
+                            "是" if r.get("owner") else "",
+                            status_label,
+                        ])
+                    content = buffer.getvalue()
+                    encoding = "utf-8-sig"
+                else:
+                    content = json.dumps(status_rows, ensure_ascii=False, indent=2, default=str)
+                    encoding = "utf-8"
 
-            out = self.data_dir / "exports" / f"battle_report_{group_id}_{uuid4().hex}.{fmt}"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(content, encoding=encoding)
-            yield event.chain_result([
-                Plain("📦 战报数据喵～"),
-                File(name=out.name, file=str(out)),
-            ])
+                out = self.data_dir / "exports" / f"battle_report_{group_id}_{status_label}_{uuid4().hex}.{fmt}"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(content, encoding=encoding)
+                yield event.chain_result([
+                    Plain(f"📦 {status_label}战报数据喵～"),
+                    File(name=out.name, file=str(out)),
+                ])
             return
 
         # ---------- 合并转发导出（全部/胜场/负场） ----------
@@ -2152,7 +2159,7 @@ class BattleReportPlugin(Star):
             logger.exception("导出查询失败")
             yield event.plain_result(_ERR_EXPORT)
             return
-        reports = lineup.filter_report_outcome(reports, outcome, players, member_team, kind=kind)
+        reports = lineup.filter_report_outcome(reports, outcome, players, member_team, kind=kind, sent=sent)
         if not reports:
             msg = (
                 f"喵…{player_label} 没有符合条件的战报呢。"
@@ -2162,23 +2169,87 @@ class BattleReportPlugin(Star):
             yield event.plain_result(msg)
             return
 
-        # 每份战报一个转发节点；头部逐字保留、对局段双空格重建
-        nodes = [
-            Node(
-                name=r["submitted_name"] or "战队战报",
-                uin=r["submitted_by"] or "10001",
-                content=[Plain(lineup.report_to_text(r))],
-            )
-            for r in reports
-        ]
-        max_nodes = 100  # QQ 合并转发单条节点上限
-        batch = (len(nodes) + max_nodes - 1) // max_nodes
-        for i in range(0, len(nodes), max_nodes):
-            yield event.chain_result([Nodes(nodes[i:i + max_nodes])])
+        # 每个转发包只含一种发送状态；节点正文仍是可复制的完整战报。
+        batch = 0
+        counts = []
+        for status, status_reports in lineup.split_export_status(reports):
+            status_label = "已发送" if status else "未发送"
+            counts.append(f"{status_label} {len(status_reports)} 份")
+            nodes = [
+                Node(
+                    name=f"{r['submitted_name'] or '战队战报'} · {status_label} · ID {r['match_id']}",
+                    uin=r["submitted_by"] or "10001",
+                    content=[Plain(lineup.report_to_text(r))],
+                )
+                for r in status_reports
+            ]
+            for i in range(0, len(nodes), 100):
+                yield event.chain_result([Nodes(nodes[i:i + 100])])
+                batch += 1
         yield event.plain_result(
-            f"📤 导出好啦喵～ 一共 {len(nodes)} 份战报（{filter_label}），"
-            f"分 {batch} 条转发打包好了 🐾"
+            f"📤 导出好啦喵～ 一共 {len(reports)} 份战报（{filter_label}），"
+            f"{'，'.join(counts)}，分 {batch} 条转发打包好了 🐾"
         )
+
+    @filter.command("标记已发送", alias={"/标记已发送"})
+    async def mark_export_sent(self, event: AstrMessageEvent):
+        async for result in self._mark_export_status(event, True):
+            yield result
+
+    @filter.command("标记未发送", alias={"/标记未发送"})
+    async def mark_export_unsent(self, event: AstrMessageEvent):
+        async for result in self._mark_export_status(event, False):
+            yield result
+
+    async def _mark_export_status(self, event: AstrMessageEvent, sent: bool):
+        err, home_team = await self._require_home(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        if not await self._is_manager(event):
+            yield event.plain_result("❌ 标记战报需要管理员权限喵。")
+            return
+        command = "标记已发送" if sent else "标记未发送"
+        payload = _strip_command(event.get_message_str(), (command, "/" + command))
+        try:
+            if payload:
+                tokens = re.split(r"[\s,，]+", payload.strip())
+                if len(tokens) > 100 or any(not re.fullmatch(r"[1-9]\d{0,18}", t) or int(t) >= 2**63 for t in tokens):
+                    raise ValueError("请提供有效战报 ID 喵，每次最多 100 份。")
+                ids = sorted({int(t) for t in tokens})
+            else:
+                texts = await self._extract_reply_reports(event)
+                if not texts:
+                    raise ValueError(f"请引用导出的战报或转发包，回复 /{command} 喵，也可在命令后填写战报 ID。")
+                if len(texts) > 100:
+                    raise ValueError("每次最多标记 100 份战报喵。")
+                parsed = [_parse_chunk(text) for text in texts]
+                if any(p.errors for p in parsed):
+                    raise ValueError("引用的战报不完整喵，请重新选择或使用战报 ID。")
+                wanted = {report_fingerprint(p.report, home_team) for p in parsed}
+                dates = [p.report.match_time for p in parsed]
+                reports = await self.db.get_reports_for_export(home_team, min(dates), max(dates))
+                matches = {fp: [] for fp in wanted}
+                for report in reports:
+                    # 按原文语义核验，兼容历史 fingerprint 为 NULL 的战报。
+                    p = _parse_chunk(lineup.report_to_text(report))
+                    if not p.errors:
+                        fp = report_fingerprint(p.report, home_team)
+                        if fp in matches:
+                            matches[fp].append(report["match_id"])
+                if any(len(candidates) != 1 for candidates in matches.values()):
+                    raise ValueError("部分战报未找到或存在重复记录喵，请使用战报 ID 标记。")
+                ids = sorted({candidates[0] for candidates in matches.values()})
+            count = await self.db.set_reports_export_sent(home_team, ids, sent)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        except Exception:
+            logger.exception("标记战报发送状态失败")
+            yield event.plain_result("❌ 标记失败了喵，请稍后重试。")
+            return
+        label = "已发送" if sent else "未发送"
+        yield event.plain_result(f"✅ {count} 份战报已标记为{label}喵～")
 
     @filter.command("导出群成员", alias={"/导出群成员"})
     async def export_group_members(self, event: AstrMessageEvent, group_id: str = ""):

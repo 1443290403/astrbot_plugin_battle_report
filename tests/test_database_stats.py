@@ -1213,6 +1213,32 @@ def test_raid_export_keeps_kind_and_owner():
     _with_db(ops)
 
 
+def test_export_sent_state_survives_restart_and_is_team_scoped():
+    async def ops(db):
+        text = 'a队踢馆b队\n规则：OCG\n2026.10.31\n踢馆开始！\n云玩家 2:0 萌新(馆主)'
+        parsed = parse_raid_report(text)
+        assert not parsed.errors
+        parsed.report.group_id = '100'
+        mid = await db.insert_report(parsed.report, 'A队', 'A队', text)
+        assert not (await db.get_reports_for_export('A队'))[0]['export_sent']
+        assert await db.set_reports_export_sent('A队', [mid], True) == 1
+        assert await db.set_reports_export_sent('A队', [mid], True) == 1
+        await db.close()
+        await db.initialize()
+        assert (await db.get_reports_for_export('A队'))[0]['export_sent'] is True
+        assert (await db.get_export_rows('A队'))[0]['export_sent'] == 1
+        with pytest.raises(ValueError):
+            await db.set_reports_export_sent('B队', [mid], False)
+        with pytest.raises(ValueError):
+            await db.set_reports_export_sent('A队', [mid, mid + 100], False)
+        assert (await db.get_reports_for_export('A队'))[0]['export_sent'] is True
+        await db.set_reports_export_sent('A队', [mid], False)
+        assert not (await db.get_reports_for_export('A队'))[0]['export_sent']
+        assert await db.delete_match('100', mid)
+        assert await db.get_reports_for_export('A队') == []
+    _with_db(ops)
+
+
 def test_raid_placeholder_creates_no_player_id():
     """`规则` 占位行不建参赛ID（否则 ID 池里会多出一个叫「规则」的假人）。"""
     text = RAID_SAMPLE.replace("云猫(馆主)", "规则").replace("无语靴", "规则")

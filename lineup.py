@@ -777,6 +777,12 @@ def _player_has_duel_result(r: dict, players: set[str], want_win: bool) -> bool:
     return False
 
 
+def split_export_status(records: list[dict]) -> list[tuple[bool, list[dict]]]:
+    """保持组内顺序，未发送/已发送分别成包，不输出空包。"""
+    return [(status, group) for status in (False, True)
+            if (group := [r for r in records if bool(r.get("export_sent", False)) == status])]
+
+
 def filter_report_outcome(
     reports: list[dict],
     outcome: str,
@@ -784,10 +790,11 @@ def filter_report_outcome(
     member_team: str | None = None,
     *,
     kind: str | None = None,
+    sent: bool | None = None,
 ) -> list[dict]:
     """按导出范围过滤战报聚合 dict 列表。
 
-    kind 非空时先按战报类型筛选，再应用相同的玩家/胜负条件。
+    kind/sent 非空时先按类型/人工发送状态筛选，再应用相同的玩家/胜负条件。
 
     players 为空时以主体战队 home_team 为参照（现有语义）：
     - 全部：不过滤
@@ -810,6 +817,8 @@ def filter_report_outcome(
     result = []
     for r in reports:
         if kind is not None and r.get("kind") != kind:
+            continue
+        if sent is not None and bool(r.get("export_sent", False)) != sent:
             continue
         if pset:
             if _player_side(r, pset, member_team) is None:

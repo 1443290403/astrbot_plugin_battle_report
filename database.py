@@ -29,7 +29,7 @@ except ImportError:  # 单元测试以顶层模块方式导入 database
         KIND_FRIENDLY, KIND_RAID, RAID_PLACEHOLDER, report_fingerprint,
     )
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -136,6 +136,7 @@ class Database:
                         created_at BIGINT NOT NULL,
                         fingerprint CHAR(64) NULL DEFAULT NULL,
                         kind VARCHAR(16) NOT NULL DEFAULT 'friendly',
+                        export_sent TINYINT NOT NULL DEFAULT 0,
                         INDEX idx_matches_group_time (group_id, match_time),
                         INDEX idx_matches_group (group_id),
                         UNIQUE KEY uk_matches_fingerprint (fingerprint)
@@ -449,6 +450,8 @@ class Database:
                 # v17：月度结算（settlements 表）。表本身在上面已经无条件建好，这里
                 # 没有需要迁移的存量数据 —— 所以**没有 current < 17 的分支**，靠末尾
                 # 那句统一的「写版本行」推进。v18 的 team_admins 同样使用幂等建表。
+                if current < 19:
+                    await ensure_column("matches", "export_sent", "TINYINT NOT NULL DEFAULT 0")
                 if current < SCHEMA_VERSION:
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
 
@@ -1863,7 +1866,7 @@ class Database:
             params += [d1, d2]
         return await self._query(
             f"""SELECT m.id AS match_id, m.group_id, m.team_a, m.team_b,
-                      m.match_time, m.rule, m.location, m.kind,
+                      m.match_time, m.rule, m.location, m.kind, m.export_sent,
                       d.round_no, d.player_a, d.score_a, d.player_b, d.score_b, d.result,
                       d.a_sub, d.b_sub, d.ruled, d.owner
                FROM matches m LEFT JOIN duels d ON d.match_id = m.id
@@ -1886,7 +1889,7 @@ class Database:
         rows = await self._query(
             f"""SELECT m.id AS match_id, m.team_a, m.team_b, m.match_time, m.rule, m.location,
                       m.winner, m.home_team, m.raw_text, m.submitted_by, m.submitted_name,
-                      m.kind,
+                      m.kind, m.export_sent,
                       d.seq, d.round_no, d.player_a, d.score_a, d.player_b, d.score_b,
                       d.a_sub, d.b_sub, d.ruled, d.owner
                FROM matches m LEFT JOIN duels d ON d.match_id = m.id
@@ -1911,6 +1914,7 @@ class Database:
                     "submitted_by": r["submitted_by"] or "",
                     "submitted_name": r["submitted_name"] or "",
                     "kind": r["kind"] or KIND_FRIENDLY,
+                    "export_sent": bool(r["export_sent"]),
                     "duels": [],
                 }
                 reports.append(current)
@@ -1928,3 +1932,31 @@ class Database:
                     "owner": bool(r["owner"]),
                 })
         return reports
+
+    async def set_reports_export_sent(self, home_team: str, match_ids: list[int], sent: bool) -> int:
+        """按本队原子标记整批战报；任一 ID 不存在/不属本队时整批不修改。"""
+        ids = sorted(set(match_ids))
+        if not ids or len(ids) > 100 or any(type(mid) is not int or not 0 < mid < 2**63 for mid in ids):
+            raise ValueError("战报 ID 无效喵，每次最多标记 100 份。")
+        placeholders = ",".join(["%s"] * len(ids))
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f"SELECT id FROM matches WHERE home_team = %s AND id IN ({placeholders}) FOR UPDATE",
+                        (home_team, *ids),
+                    )
+                    found = {row[0] for row in await cur.fetchall()}
+                    if found != set(ids):
+                        raise ValueError("部分战报已删除或不属于本战队喵，请重新选择。")
+                    await cur.execute(
+                        f"UPDATE matches SET export_sent = %s WHERE home_team = %s AND id IN ({placeholders})",
+                        (int(sent), home_team, *ids),
+                    )
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+        return len(ids)
