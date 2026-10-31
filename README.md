@@ -1,13 +1,13 @@
 # AstrBot 插件安装包
 
-这里保存可以直接上传到 AstrBot 的插件安装包。插件源码在 master 分支。
+源码见 master 分支；本分支仅保存安装包。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新安装包：[astrbot_plugin_battle_report-1.19.3.zip](astrbot_plugin_battle_report-1.19.3.zip)
+最新版本：v1.19.4
 
-- 插件版本：1.19.3
-- 源码提交：`6a6f11f7b48d6acd3a69bbcda487c3f875000695`
-- metadata.yaml 与 main.py 直接位于压缩包根目录。
-- 已通过 AstrBot v4.27.3 的安装包校验，并核对全部解压文件。
-- SHA-256：`ac199d9472471e50ac1431186166b36bcabd67b52f354200ea2d74c5281ae0f0`
+- 文件：astrbot_plugin_battle_report-1.19.4.zip
+- 源码提交：a693fe26155623f8c8cee9f5448cae1753c27f8b
+- 根目录包含 metadata.yaml 与 main.py
+- 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
+- SHA256：2003021a55529418ba88c684ebb7b066c5d89c06cdf8a12f0a33f8d3636e9ad5
 
-旧版本安装包保留在本分支。
+旧版本安装包保留，按文件名选择。
