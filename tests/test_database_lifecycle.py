@@ -70,29 +70,31 @@ def test_initialization_failure_closes_created_pool(monkeypatch):
     pool.wait_closed.assert_awaited_once()
 
 
-@pytest.mark.parametrize('found', [[(1,), (2,)], [(1,)], []])
-def test_export_mark_transaction_scopes_team_and_never_partially_updates(found):
+@pytest.mark.parametrize('found', [(200,), None])
+@pytest.mark.parametrize('sent', [True, False])
+def test_export_mark_cutoff_transaction_scopes_team(found, sent):
     statements = []
     async def execute(sql, params=()):
         statements.append((sql, params))
-    cur = SimpleNamespace(execute=execute, fetchall=AsyncMock(return_value=found))
+    cur = SimpleNamespace(execute=execute, fetchone=AsyncMock(return_value=found), rowcount=170)
     conn = SimpleNamespace(cursor=lambda *a: Context(cur), begin=AsyncMock(),
                            commit=AsyncMock(), rollback=AsyncMock())
     db = Database('localhost', 3306, 'root', '', 'test')
     db.pool = SimpleNamespace(acquire=lambda: Context(conn))
-    if len(found) == 2:
-        assert asyncio.run(db.set_reports_export_sent('a队', [2, 1, 2], True)) == 2
+    if found:
+        assert asyncio.run(db.set_reports_export_sent_through('a队', 200, sent)) == 170
         conn.commit.assert_awaited_once()
-        assert statements[1][1] == (1, 'a队', 1, 2)
-        assert 'WHERE home_team = %s' in statements[1][0]
+        assert statements[1][1] == (int(sent), 'a队', 200)
+        assert 'WHERE home_team = %s AND id <= %s' in statements[1][0]
     else:
         with pytest.raises(ValueError, match='不属于本战队'):
-            asyncio.run(db.set_reports_export_sent('a队', [1, 2], True))
+            asyncio.run(db.set_reports_export_sent_through('a队', 200, sent))
         conn.rollback.assert_awaited_once()
         conn.commit.assert_not_awaited()
         assert len(statements) == 1
-    assert statements[0][1] == ('a队', 1, 2)
-    assert 'FOR UPDATE' in statements[0][0]
+    assert statements[0][1] == ('a队', 200)
+    assert 'id = %s FOR UPDATE' in statements[0][0]
+
 
 
 def test_export_mark_cancellation_rolls_back():
@@ -102,7 +104,7 @@ def test_export_mark_cancellation_rolls_back():
     db = Database('localhost', 3306, 'root', '', 'test')
     db.pool = SimpleNamespace(acquire=lambda: Context(conn))
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(db.set_reports_export_sent('a队', [1], False))
+        asyncio.run(db.set_reports_export_sent_through('a队', 1, False))
     conn.rollback.assert_awaited_once()
     conn.commit.assert_not_awaited()
 
@@ -145,15 +147,20 @@ def test_each_teams_export_mark_is_independent_in_executed_sql():
     """
     raw = sqlite3.connect(':memory:')
     raw.execute('CREATE TABLE matches (id INTEGER PRIMARY KEY, home_team TEXT, export_sent INTEGER)')
-    raw.executemany('INSERT INTO matches VALUES (?, ?, ?)', [(1, 'a队', 0), (2, 'b队', 0)])
+    raw.executemany('INSERT INTO matches VALUES (?, ?, ?)', [(i, 'a队' if i % 2 else 'b队', 0) for i in range(1, 245)])
     raw.commit()
+    fail_after_update = [False]
 
     class Cursor:
         async def execute(self, sql, params=()):
             self.cursor = raw.execute(sql.replace('%s', '?').replace(' FOR UPDATE', ''), params)
+            self.rowcount = self.cursor.rowcount
+            if sql.startswith('UPDATE') and fail_after_update[0]:
+                fail_after_update[0] = False
+                raise RuntimeError('模拟范围更新后的事务异常')
 
-        async def fetchall(self):
-            return self.cursor.fetchall()
+        async def fetchone(self):
+            return self.cursor.fetchone()
 
     class Connection:
         def cursor(self):
@@ -171,15 +178,29 @@ def test_each_teams_export_mark_is_independent_in_executed_sql():
     db = Database('localhost', 3306, 'root', '', 'test')
     db.pool = SimpleNamespace(acquire=lambda: Context(Connection()))
 
+    def states():
+        return dict(raw.execute('SELECT id, export_sent FROM matches').fetchall())
+
     async def run():
-        await db.set_reports_export_sent('a队', [1], True)
-        assert raw.execute('SELECT export_sent FROM matches ORDER BY id').fetchall() == [(1,), (0,)]
+        # 超过 100 份，边界本身包含在内，较新战报和其他队均保持不变。
+        await db.set_reports_export_sent_through('a队', 241, True)
+        assert states() == {i: int(i % 2 == 1 and i <= 241) for i in range(1, 245)}
         with pytest.raises(ValueError):
-            await db.set_reports_export_sent('b队', [1, 2], True)
-        assert raw.execute('SELECT export_sent FROM matches ORDER BY id').fetchall() == [(1,), (0,)]
-        await db.set_reports_export_sent('b队', [2], True)
-        await db.set_reports_export_sent('a队', [1], False)
-        assert raw.execute('SELECT export_sent FROM matches ORDER BY id').fetchall() == [(0,), (1,)]
+            await db.set_reports_export_sent_through('b队', 241, True)
+        with pytest.raises(ValueError):
+            await db.set_reports_export_sent_through('a队', 999, False)
+        assert states() == {i: int(i % 2 == 1 and i <= 241) for i in range(1, 245)}
+        fail_after_update[0] = True
+        with pytest.raises(RuntimeError):
+            await db.set_reports_export_sent_through('a队', 121, False)
+        assert states() == {i: int(i % 2 == 1 and i <= 241) for i in range(1, 245)}
+        await db.set_reports_export_sent_through('b队', 242, True)
+        await db.set_reports_export_sent_through('a队', 121, False)
+        expected = {i: int((i % 2 == 0 and i <= 242) or (i % 2 == 1 and 121 < i <= 241))
+                    for i in range(1, 245)}
+        assert states() == expected
+        await db.set_reports_export_sent_through('a队', 121, False)
+        assert states() == expected
 
     try:
         asyncio.run(run())

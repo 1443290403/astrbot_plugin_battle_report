@@ -46,7 +46,6 @@ from .battle_report_parser import (
     parse_battle_report,
     parse_export_payload,
     parse_raid_report,
-    report_fingerprint,
     split_reports,
 )
 from .database import Database, DuplicateReportError
@@ -185,7 +184,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -2213,35 +2212,10 @@ class BattleReportPlugin(Star):
         command = "标记已发送" if sent else "标记未发送"
         payload = _strip_command(event.get_message_str(), (command, "/" + command))
         try:
-            if payload:
-                tokens = re.split(r"[\s,，]+", payload.strip())
-                if len(tokens) > 100 or any(not re.fullmatch(r"[1-9]\d{0,18}", t) or int(t) >= 2**63 for t in tokens):
-                    raise ValueError("请提供有效战报 ID 喵，每次最多 100 份。")
-                ids = sorted({int(t) for t in tokens})
-            else:
-                texts = await self._extract_reply_reports(event)
-                if not texts:
-                    raise ValueError(f"请引用导出的战报或转发包，回复 /{command} 喵，也可在命令后填写战报 ID。")
-                if len(texts) > 100:
-                    raise ValueError("每次最多标记 100 份战报喵。")
-                parsed = [_parse_chunk(text) for text in texts]
-                if any(p.errors for p in parsed):
-                    raise ValueError("引用的战报不完整喵，请重新选择或使用战报 ID。")
-                wanted = {report_fingerprint(p.report, home_team) for p in parsed}
-                dates = [p.report.match_time for p in parsed]
-                reports = await self.db.get_reports_for_export(home_team, min(dates), max(dates))
-                matches = {fp: [] for fp in wanted}
-                for report in reports:
-                    # 按原文语义核验，兼容历史 fingerprint 为 NULL 的战报。
-                    p = _parse_chunk(lineup.report_to_text(report))
-                    if not p.errors:
-                        fp = report_fingerprint(p.report, home_team)
-                        if fp in matches:
-                            matches[fp].append(report["match_id"])
-                if any(len(candidates) != 1 for candidates in matches.values()):
-                    raise ValueError("部分战报未找到或存在重复记录喵，请使用战报 ID 标记。")
-                ids = sorted({candidates[0] for candidates in matches.values()})
-            count = await self.db.set_reports_export_sent(home_team, ids, sent)
+            if not re.fullmatch(r"[1-9]\d{0,18}", payload) or int(payload) >= 2**63:
+                raise ValueError(f"用法喵：/{command} <截止战报ID>")
+            cutoff_id = int(payload)
+            await self.db.set_reports_export_sent_through(home_team, cutoff_id, sent)
         except ValueError as e:
             yield event.plain_result(f"❌ {e}")
             return
@@ -2250,7 +2224,7 @@ class BattleReportPlugin(Star):
             yield event.plain_result("❌ 标记失败了喵，请稍后重试。")
             return
         label = "已发送" if sent else "未发送"
-        yield event.plain_result(f"✅ {count} 份战报已标记为{label}喵～")
+        yield event.plain_result(f"✅ {home_team} ID {cutoff_id} 及之前的战报已标记为{label}喵～")
 
     @filter.command("导出群成员", alias={"/导出群成员"})
     async def export_group_members(self, event: AstrMessageEvent, group_id: str = ""):

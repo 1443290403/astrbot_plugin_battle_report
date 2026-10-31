@@ -1221,18 +1221,18 @@ def test_export_sent_state_survives_restart_and_is_team_scoped():
         parsed.report.group_id = '100'
         mid = await db.insert_report(parsed.report, 'A队', 'A队', text)
         assert not (await db.get_reports_for_export('A队'))[0]['export_sent']
-        assert await db.set_reports_export_sent('A队', [mid], True) == 1
-        assert await db.set_reports_export_sent('A队', [mid], True) == 1
+        assert await db.set_reports_export_sent_through('A队', mid, True) == 1
+        assert await db.set_reports_export_sent_through('A队', mid, True) == 0
         await db.close()
         await db.initialize()
         assert (await db.get_reports_for_export('A队'))[0]['export_sent'] is True
         assert (await db.get_export_rows('A队'))[0]['export_sent'] == 1
         with pytest.raises(ValueError):
-            await db.set_reports_export_sent('B队', [mid], False)
+            await db.set_reports_export_sent_through('B队', mid, False)
         with pytest.raises(ValueError):
-            await db.set_reports_export_sent('A队', [mid, mid + 100], False)
+            await db.set_reports_export_sent_through('A队', mid + 100, False)
         assert (await db.get_reports_for_export('A队'))[0]['export_sent'] is True
-        await db.set_reports_export_sent('A队', [mid], False)
+        await db.set_reports_export_sent_through('A队', mid, False)
         assert not (await db.get_reports_for_export('A队'))[0]['export_sent']
         assert await db.delete_match('100', mid)
         assert await db.get_reports_for_export('A队') == []

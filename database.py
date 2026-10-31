@@ -1933,30 +1933,31 @@ class Database:
                 })
         return reports
 
-    async def set_reports_export_sent(self, home_team: str, match_ids: list[int], sent: bool) -> int:
-        """按本队原子标记整批战报；任一 ID 不存在/不属本队时整批不修改。"""
-        ids = sorted(set(match_ids))
-        if not ids or len(ids) > 100 or any(type(mid) is not int or not 0 < mid < 2**63 for mid in ids):
-            raise ValueError("战报 ID 无效喵，每次最多标记 100 份。")
-        placeholders = ",".join(["%s"] * len(ids))
+    async def set_reports_export_sent_through(self, home_team: str, cutoff_id: int, sent: bool) -> int:
+        """标记本队 ID≤截止 ID 的所有战报；截止战报必须存在且属于本队。
+
+        不限月份、类型或数量，返回实际更新行数。重复操作不改变范围外状态。
+        """
+        if type(cutoff_id) is not int or not 0 < cutoff_id < 2**63:
+            raise ValueError("截止战报 ID 无效喵。")
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             await conn.begin()
             try:
                 async with conn.cursor() as cur:
                     await cur.execute(
-                        f"SELECT id FROM matches WHERE home_team = %s AND id IN ({placeholders}) FOR UPDATE",
-                        (home_team, *ids),
+                        "SELECT id FROM matches WHERE home_team = %s AND id = %s FOR UPDATE",
+                        (home_team, cutoff_id),
                     )
-                    found = {row[0] for row in await cur.fetchall()}
-                    if found != set(ids):
-                        raise ValueError("部分战报已删除或不属于本战队喵，请重新选择。")
+                    if await cur.fetchone() is None:
+                        raise ValueError("截止战报不存在或不属于本战队喵。")
                     await cur.execute(
-                        f"UPDATE matches SET export_sent = %s WHERE home_team = %s AND id IN ({placeholders})",
-                        (int(sent), home_team, *ids),
+                        "UPDATE matches SET export_sent = %s WHERE home_team = %s AND id <= %s",
+                        (int(sent), home_team, cutoff_id),
                     )
+                    changed = cur.rowcount
                 await conn.commit()
             except BaseException:
                 await conn.rollback()
                 raise
-        return len(ids)
+        return changed
