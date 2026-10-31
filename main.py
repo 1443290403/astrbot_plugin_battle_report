@@ -32,6 +32,7 @@ from .command_args import parse_command_args, parse_managed_ids, single_name
 from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
 from .battle_report_parser import (
+    KIND_FRIENDLY,
     KIND_RAID,
     TEAM_RE,
     _TOKEN_MONTH_RE,
@@ -184,7 +185,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -2055,7 +2056,7 @@ class BattleReportPlugin(Star):
             return
         fmt = args["fmt"]
         outcome = args["outcome"]
-        kind = args["kind"]
+        kind = args["kind"] or KIND_FRIENDLY
         sent = args["sent"]
 
         # 时间三态：月份 优先 → 最近N天 → 默认本月
@@ -2082,7 +2083,7 @@ class BattleReportPlugin(Star):
             else:
                 players = [args["player"]]
                 player_label = args["player"]
-        kind_label = "踢馆" if kind == KIND_RAID else ""
+        kind_label = "踢馆" if kind == KIND_RAID else "友谊"
         filter_label = " · ".join(x for x in (kind_label, outcome, player_label, period_label) if x)
 
         # ---------- 文件导出（csv/json） ----------

@@ -213,7 +213,8 @@ def parse_export_payload(payload: str, *, allow_kind: bool = True, allow_status:
     - 时间：`X月`/`时间=X月`（走 _parse_month_filter）或 `最近N天`/`N天`；
       先剥末尾再逐 token 归类，可出现在任意位置；同时给出时月份优先（调用方处理）。
     - 玩家：剩余非关键字 token 用空格 join（多词名兼容）。
-    - 类型：未加引号的 `踢馆` 单独识别；缺省不限制类型。趋势复用时禁用类型识别。
+    - 类型：未加引号的 `踢馆` 单独识别；未指定返回 None，导出入口默认取友谊。
+      趋势复用时禁用类型识别。
     - 发送状态：缺省全部，已发送/未发送独立于胜负；引号内仍是玩家名。
 
     Returns:

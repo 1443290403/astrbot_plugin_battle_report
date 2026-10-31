@@ -1009,6 +1009,9 @@ def test_round_command_with_slash_and_without(plugin_module):
 def test_export_requests_never_share_output_file(plugin_module, tmp_path):
     obj = plugin(plugin_module, tmp_path)
     obj.db.get_export_rows = AsyncMock(return_value=[{'match_id': 1}])
+    obj.db.get_reports_for_export = AsyncMock(return_value=[{
+        'match_id': 1, 'kind': 'friendly', 'home_team': 'KC', 'team_a': 'KC',
+        'team_b': 'b队', 'winner': 'KC'}])
     ev = event('/导出 json 七月')
 
     async def run():
@@ -1337,12 +1340,52 @@ def test_export_raid_with_only_friendly_data_returns_no_match(plugin_module, tmp
     assert not list(tmp_path.rglob('*.json'))
 
 
-def test_export_without_type_still_includes_friendly_and_raid(plugin_module, tmp_path):
+def test_export_without_type_only_includes_friendly(plugin_module, tmp_path):
     obj = plugin(plugin_module, tmp_path)
     reports, _ = raid_export_data()
     obj.db.get_reports_for_export = AsyncMock(return_value=reports)
     response = asyncio.run(collect(obj.export(event('/导出'))))
-    assert len(response[0][0].args[0]) == len(reports)
+    nodes = response[0][0].args[0]
+    assert len(nodes) == 1
+    assert nodes[0].content[0].args[0] == plugin_module.lineup.report_to_text(reports[0])
+    assert '友谊' in response[-1]
+
+
+@pytest.mark.parametrize('fmt', ['', 'csv', 'json'])
+@pytest.mark.parametrize('outcome', ['', '全部', '胜场', '负场'])
+def test_default_export_outcomes_never_include_raid(plugin_module, tmp_path, fmt, outcome):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_home.return_value = 'a队'
+    reports, rows = raid_export_data()
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports)
+    obj.db.get_export_rows = AsyncMock(return_value=rows)
+    response = asyncio.run(collect(obj.export(event(f'/战报导出 {outcome} 七月 {fmt}'))))
+    if outcome == '负场':
+        assert len(response) == 1 and '没有符合' in response[0]
+        assert not list(tmp_path.rglob('*.csv')) and not list(tmp_path.rglob('*.json'))
+    elif fmt == 'json':
+        data = json.loads(Path(response[0][1].file).read_text())
+        assert [r['match_id'] for r in data] == [1]
+        assert data[0]['kind'] == 'friendly'
+    elif fmt == 'csv':
+        with Path(response[0][1].file).open(encoding='utf-8-sig', newline='') as stream:
+            data = list(csv.DictReader(stream))
+        assert [r['战报ID'] for r in data] == ['1']
+        assert data[0]['战报类型'] == '友谊'
+    else:
+        nodes = response[0][0].args[0]
+        assert len(nodes) == 1
+        assert nodes[0].content[0].args[0] == plugin_module.lineup.report_to_text(reports[0])
+
+
+@pytest.mark.parametrize('fmt', ['', 'csv', 'json'])
+def test_default_export_with_only_raid_returns_no_match(plugin_module, tmp_path, fmt):
+    obj = plugin(plugin_module, tmp_path)
+    reports, rows = raid_export_data()
+    obj.db.get_reports_for_export = AsyncMock(return_value=reports[1:])
+    obj.db.get_export_rows = AsyncMock(return_value=rows[1:])
+    response = asyncio.run(collect(obj.export(event('/导出 '+fmt))))
+    assert len(response) == 1 and '没有符合' in response[0]
 
 
 @pytest.mark.parametrize('suffix', ['', ' 7'])
@@ -1358,16 +1401,20 @@ def test_trend_keeps_raid_word_as_player_name(plugin_module, tmp_path, suffix, n
 
 @pytest.mark.parametrize('fmt', ['', 'csv', 'json'])
 @pytest.mark.parametrize('selector', ['', '已发送', '未发送'])
-def test_export_separates_sent_and_unsent_without_marking(plugin_module, tmp_path, fmt, selector):
+@pytest.mark.parametrize('kind', ['', '踢馆'])
+def test_export_separates_sent_and_unsent_without_marking(plugin_module, tmp_path, fmt, selector, kind):
     obj = plugin(plugin_module, tmp_path)
     reports, rows = raid_export_data()
+    reports.append({**reports[0], 'match_id': 7, 'match_time': '2026-07-02',
+                    'raw_text': reports[0]['raw_text'].replace('2026.07.01', '2026.07.02')})
+    rows.append({**rows[0], 'match_id': 7, 'match_time': '2026-07-02'})
     for r in reports + rows:
-        r['export_sent'] = r['match_id'] in (2, 4)
+        r['export_sent'] = r['match_id'] in (2, 4, 7)
     obj.db.get_reports_for_export = AsyncMock(return_value=reports)
     obj.db.get_export_rows = AsyncMock(return_value=rows)
     obj.db.set_reports_export_sent = AsyncMock()
-    response = asyncio.run(collect(obj.export(event(f'/导出 {selector} {fmt}'))))
-    expected = [('未发送', [1, 3, 5, 6]), ('已发送', [2, 4])]
+    response = asyncio.run(collect(obj.export(event(f'/导出 {kind} {selector} {fmt}'))))
+    expected = [('未发送', [3, 5, 6]), ('已发送', [2, 4])] if kind else [('未发送', [1]), ('已发送', [7])]
     if selector:
         expected = [(label, ids) for label, ids in expected if label == selector]
     for i, (label, ids) in enumerate(expected):
