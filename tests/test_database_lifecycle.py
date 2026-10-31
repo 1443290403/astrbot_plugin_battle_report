@@ -1,5 +1,6 @@
 """不依赖数据库服务的连接生命周期和唯一键冲突回归。"""
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -135,3 +136,52 @@ def test_export_queries_return_persisted_status_in_both_paths():
     assert asyncio.run(db.get_reports_for_export('a队'))[0]['export_sent'] is True
     assert asyncio.run(db.get_export_rows('a队'))[0]['export_sent'] == 1
     assert all('m.export_sent' in call.args[0] for call in db._query.await_args_list)
+
+
+def test_each_teams_export_mark_is_independent_in_executed_sql():
+    """实际执行标记 SQL，验证 A 队标记/恢复均不改 B 队。
+
+    SQLite 只替换占位符并省略 MySQL 行锁；锁及迁移仍由专门测试覆盖。
+    """
+    raw = sqlite3.connect(':memory:')
+    raw.execute('CREATE TABLE matches (id INTEGER PRIMARY KEY, home_team TEXT, export_sent INTEGER)')
+    raw.executemany('INSERT INTO matches VALUES (?, ?, ?)', [(1, 'a队', 0), (2, 'b队', 0)])
+    raw.commit()
+
+    class Cursor:
+        async def execute(self, sql, params=()):
+            self.cursor = raw.execute(sql.replace('%s', '?').replace(' FOR UPDATE', ''), params)
+
+        async def fetchall(self):
+            return self.cursor.fetchall()
+
+    class Connection:
+        def cursor(self):
+            return Context(Cursor())
+
+        async def begin(self):
+            raw.execute('BEGIN')
+
+        async def commit(self):
+            raw.commit()
+
+        async def rollback(self):
+            raw.rollback()
+
+    db = Database('localhost', 3306, 'root', '', 'test')
+    db.pool = SimpleNamespace(acquire=lambda: Context(Connection()))
+
+    async def run():
+        await db.set_reports_export_sent('a队', [1], True)
+        assert raw.execute('SELECT export_sent FROM matches ORDER BY id').fetchall() == [(1,), (0,)]
+        with pytest.raises(ValueError):
+            await db.set_reports_export_sent('b队', [1, 2], True)
+        assert raw.execute('SELECT export_sent FROM matches ORDER BY id').fetchall() == [(1,), (0,)]
+        await db.set_reports_export_sent('b队', [2], True)
+        await db.set_reports_export_sent('a队', [1], False)
+        assert raw.execute('SELECT export_sent FROM matches ORDER BY id').fetchall() == [(0,), (1,)]
+
+    try:
+        asyncio.run(run())
+    finally:
+        raw.close()
