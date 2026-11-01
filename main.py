@@ -184,7 +184,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.2")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.3")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1656,6 +1656,30 @@ class BattleReportPlugin(Star):
             logger.exception("生成排行点评失败")
             return "点评暂时没生成出来喵。"
 
+    async def _send_ranking_image(self, event: AstrMessageEvent, result, fallback: str) -> bool | None:
+        """等待实际发送；True=图片，False=文字回退，None=未确认发送成功。"""
+        event.stop_event()
+        try:
+            await event.send(result)
+        except Exception as error:
+            logger.exception("排行图片发送失败")
+            response = getattr(error, "result", None)
+            wording = response.get("wording") if isinstance(response, dict) else None
+            # 仅明确发生在图片上传阶段的失败可回退，超时/连接中断等未知结果不重发。
+            upload_failed = (isinstance(response, dict) and response.get("status") == "failed"
+                             and isinstance(wording, str)
+                             and "highway upload transport failed after " in wording
+                             and re.search(r"\(cmdId=1004(?:\s|\))", wording) is not None)
+            if not upload_failed:
+                return None
+            try:
+                await event.send(event.plain_result("图片暂时发不出去，先看文字榜单喵。\n" + fallback))
+            except Exception:
+                logger.exception("排行文字回退发送失败")
+                return None
+            return False
+        return True
+
     @filter.command("排行", alias={"/排行", "战报排行", "/战报排行"})
     async def ranking(self, event: AstrMessageEvent):
         """排行榜（个人/队伍），默认本月，末尾可加 X月"""
@@ -1674,6 +1698,7 @@ class BattleReportPlugin(Star):
 
         try:
             panel = None
+            image_result = None
             if scope in ("队伍", "战队", "队"):
                 rows = await self.db.get_home_team_vs_opponents(
                     home_team, date_from, date_to
@@ -1730,7 +1755,7 @@ class BattleReportPlugin(Star):
                         path = await asyncio.to_thread(
                             chart.make_ranking_image, cells, aligns, title, out, max_rows, panel
                         )
-                        result = event.chain_result([
+                        image_result = event.chain_result([
                             Plain(f"{caption}："),
                             Image.fromFileSystem(str(path)),
                         ])
@@ -1743,11 +1768,24 @@ class BattleReportPlugin(Star):
             yield event.plain_result(_ERR_QUERY)
             return
 
-        yield result
+        if image_result is not None:
+            displayed_as_image = await self._send_ranking_image(event, image_result, fallback)
+            if displayed_as_image is None:
+                return
+            if not displayed_as_image:
+                comment_rows = rows
+        else:
+            yield result
         commentary = await self._ranking_commentary(
             event, home_team, comment_scope, date_from, date_to, comment_rows, panel)
         if commentary:
-            yield event.plain_result(commentary)
+            if image_result is None:
+                yield event.plain_result(commentary)
+            else:
+                try:
+                    await event.send(event.plain_result(commentary))
+                except Exception:
+                    logger.exception("排行点评发送失败")
 
     @filter.command("结算", alias={"/结算"})
     async def settle(self, event: AstrMessageEvent):
