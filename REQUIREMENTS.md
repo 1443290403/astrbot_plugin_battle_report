@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.20.3`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
+> 对应版本：`1.20.4`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -371,15 +371,15 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 | 输出形态 | 实现 | 触发条件 |
 |---|---|---|
-| 文本表格 | `stats.format_player_ranking` / `_format_table`（按显示宽度对齐，CJK 算 2） | `ranking_image=false`、图片生成失败或明确的图片 Highway 上传传输失败 |
-| 排行图片 | `chart.make_ranking_image` | `ranking_image=true`（默认）；生成失败或明确上传传输失败回退文本，其他结果未知时不重发 |
+| 文本表格 | `stats.format_player_ranking` / `_format_table`（按显示宽度对齐，CJK 算 2） | `ranking_image=false` 或图片生成失败 |
+| 排行图片 | `chart.make_ranking_image` | `ranking_image=true`（默认）；标准响应阶段发送，生成失败回退文本 |
 | 趋势图 | `chart.make_trend_chart` | `/趋势` 恒为图片；胜率左轴自动缩放，累计场次右轴独立 |
 | 合并转发 | `_send_responses`（≥2 条时封装 Node） | 提交结果、导出 |
 | 文件 | `File` 组件 + `data_dir/exports/` | `/导出 csv/json`、`/导出群成员` |
 
-**排行实际发送（v1.20.3）：** 图片成功生成后由 `_send_ranking_image` 通过 event.send 等待适配器发送，不再仅 yield 给会吞掉异常的 respond stage；该分支停止事件且不把主结果再 yield 一次。仅结构化错误 result.status=failed、wording 含 `highway upload transport failed after ` 且匹配 `(cmdId=1004 …)` 时，直接纯文本发送预先生成的同次查询文字榜单。已生成文件、数据库与网络 DNS 不是同一种错误：明确上传失败可以回退；超时、断线、未知 API 错误和发送后处理异常不能猜成未投递，不重发。文字回退也失败时停止，不继续点评；取消继续向上传播。
+**排行标准发送（v1.20.4）：** 图片生成成功后，通过 `yield event.chain_result([Plain, Image])` 交给 AstrBot 标准回复阶段；点评同样 yield 普通文本。排行不能调用 stop_event 或直接 event.send 来接管响应阶段，以保留第三方回复装饰、TTS 与持久化的框架接入流程。v1.20.3 的 `_send_ranking_image` 与上传失败文字替代已撤回；仅图片生成失败沿用文字回退，上传异常由平台/响应阶段记录，不能伪装为成功。此修改恢复框架路径，不代表已验证所有第三方插件兼容或普通聊天已恢复。
 
-图片或回退文字成功发送后，点评才执行；该分支的点评也使用 event.send，独立记录发送错误。全战队图片成功时点评仍取图中显示的截断条目；上传回退时恢复文字榜单的完整条目。文字配置、空榜、队伍对战榜和图片生成失败分支继续原 yield 路径。失败日志区分排行查询、图片生成、图片发送、文字回退发送及点评发送，不因网络错误谎报数据库失败。未更改 QQ 连接、其他插件包装器、图表公式、统计或 persona/model 配置；该回退需要平台明确返回已知图片上传错误，不能代替部署端恢复 htdata3.qq.com 的 DNS。
+`EAI_AGAIN htdata3.qq.com` 是 SnowLuma 所在部署环境的 DNS 解析失败；图片能否上传需在该环境验证。普通聊天/LLM 无响应需结合新的请求日志判断，不能仅从图片上传异常推定原因；插件不修改宿主/容器 DNS、不管理其他插件会话状态。
 
 **趋势图纵轴（v1.17.6）：** `_win_rate_ticks` 按全部累计胜率的最小/最大值选取窗口，跨度取 `max(10, 数据跨度 × 1.2)` 并限制在 100 内，窗口在 0%～100% 内平移后按整齐刻度向外取整。最终上界取 `min(100, (floor(最高胜率 / 5) + 1) × 5)`，按 5 个百分点一档取整且最多高于最高值 5 个百分点，全部刻度均为整数；步长按范围从 5/10/20 中选择，并保证整除上界，所有刻度均为等间隔整数，不额外插入间距不同的顶部刻度。通常向下补足至少 10 个百分点跨度，接近 0% 时优先上界限制，最小跨度为 5；0%/100%、单点/恒定数据均可显示。每个蓝色点位上方标注实际胜率，使用 `:g` 去掉多余小数（如 60%、59.4%），加白色描边以便与虚线交叉时阅读。网格、左轴标签和蓝线共用同一映射，图底部标注实际范围，图例不遮曲线；累计场次虚线继续按独立右轴 0～最大场次绘制。只调整绘图，不修改累计胜率公式、查询或存储。
 
@@ -796,7 +796,7 @@ year = now.year - 1 if month > now.month else now.year
 
 **F-05 自动点评（v1.19.0）：**
 
-- `ranking_ai_comment` 默认 true。查询和原图表/文字生成成功后先发榜单，再由 `_ranking_commentary` 追加文本；v1.20.3 图片分支等待实际发送，已知上传失败先回退文字，成功后再点评。未确认发送或文字回退失败不调用模型；查询失败、空榜、未绑定或禁群也不调用。
+- `ranking_ai_comment` 默认 true。查询和原图表/文字生成成功后先 yield 榜单，再由 `_ranking_commentary` 追加文本；v1.20.4 恢复图片和点评均使用 AstrBot 标准响应阶段。图片生成失败回退文字；查询失败、空榜、未绑定或禁群不调用模型。
 - 模型继续由 `get_current_chat_provider_id(umo)` 解析，交给 `llm_generate`；无插件模型选择项。`ai_persona_id` 是插件全局通用人格配置，默认空，`_special=select_persona` 提供 AstrBot 人格下拉框。公共 `_ai_persona_prompt()` 不接收 event，用 `get_persona_v3_by_id` 读取显式选择的人格，包括内置 default。v1.19.2 起未配置/空白/[%None]/不可用人格或空提示词时，静默跳过点评且不解析模型；人格读取错误仅记日志。不回退全局默认人格，普通帮助也不追加点评引导。所有群和插件内 AI 功能共用该配置，不读取群会话人格、会话规则或聊天历史，不写会话、不提供工具或使用工具循环。模型接口需要 AstrBot 4.5.7+，人格按 v4.27.3 签名适配。
 - 传入本次 home_team、范围和同一次查询的起止日期；个人表复用 `stats.build_ranking_cells` 的名次、积分、胜率、奖金，队伍表复用 `format_home_team_vs`，本队面板复用 `build_team_panel`。不新查排行，不修改排序、SQL、结算或字段公式，不传数据库行里的额外字段、QQ 关联字段、内部 ID 或连接凭据。
 - v1.19.1 传入全部已展示条目，取消前 30 条采样；成功的全战队图片截断后只取实际展示条目，文字回退按文字展示条目处理。本队完整表仍照常显示所有成员。
@@ -937,7 +937,7 @@ year = now.year - 1 if month > now.month else now.year
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
-| **改排行图片发送** | ① `ranking` 与 `_send_ranking_image` 的直接发送/已知上传错误判定 ② 文字回退与点评展示行一致 ③ `tests/test_main.py` 实际 ActionFailed、发送顺序、未知结果不重发及取消测试 ④ README/M-09 | 生成成功不等于发送成功；不绕过 event.send、不修改 DNS、不在点评失败时重发榜单、不把网络失败报成数据库查询失败 |
+| **改排行图片发送** | ① `ranking` 的标准 yield 响应链 ② 图片生成失败回退与点评展示行一致 ③ `tests/test_main.py` 图片先输出/点评后生成、不调用 stop_event/event.send、独立请求测试 ④ README/M-09 | 不绕开 AstrBot 回复装饰/发送阶段，不修改 DNS、不把网络故障宣称已修复、不将排行测试等同普通聊天全链路验证 |
 | **改排行点评** | ① `ranking` 的先发榜单/后点评路径及 `_ranking_commentary` ② `_ai_persona_prompt` 的插件统一人格解析 ③ `ranking_ai_comment`/`ai_persona_id` 配置四处 ④ `tests/test_main.py`、主群帮助与预览 | 复用本次查询的月份、范围与展示函数；不因图片提前 return 漏点评，不把 LLM 失败报成数据库查询失败，不另算积分或导入聊天历史 |
 | **改战报原文输出** | ① 排表/记录/轮次三个 handler 的 `_send_report_text` ② `lineup.normalize_duel_spacing` ③ handler 与格式保留测试 ④ README/M-10 | 成功正文不得回到回复整理流程；错误提示正常保留，禁群/私聊/参数检查不能绕过；只规范比分外部分隔，不压缩 ID 内空格 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
@@ -1273,6 +1273,8 @@ v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选�
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
 
+v1.20.4 验证：**799 项测试通过，1 项跳过**。恢复标准图片/点评路径，新增本队/全战队/别名排行先 yield 图片后生成点评、不停止事件、不直接发送，以及同会话独立请求测试。数据库 schema v19 与战报状态规则保留。未连接生产环境，无法据此确认普通聊天或服务器 DNS 已恢复。
+
 v1.20.3 验证：**809 项测试通过，1 项跳过**。使用真实 aiocqhttp ActionFailed 模拟用户日志中的图片 Highway/DNS 失败，覆盖先文字后点评、同月同数据/奖金保留、全战队图片截断后回退完整文字行、无人格静默、未知结果不重发、文字/点评发送失败及取消传播。未连接生产 QQ、LLM 或数据库，也未修改服务器 DNS。
 
 v1.20.2 验证：**795 项测试通过，1 项跳过**。覆盖两条命令单截止 ID/旧多 ID 和引用用法拒绝/零更新成功/权限，事务核验截止归属、异常取消回滚，以及实际 SQL 执行中超过 100 份、包含截止 ID、较新记录保持、其他战队不变、较小截止范围恢复与重复执行。schema v19 与导出规则不变；数据库集成测试未启用，未连接生产数据库或 QQ。
@@ -1302,7 +1304,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.20.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.20.4")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

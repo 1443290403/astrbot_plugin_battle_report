@@ -184,18 +184,57 @@ def test_image_ranking_and_text_fallback_each_append_one_commentary(plugin_modul
     render = Mock(return_value=tmp_path / 'rank.png', side_effect=None if image_works else OSError('render failed'))
     monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', render)
     results = asyncio.run(collect(obj.ranking(ev)))
+    assert len(results) == 2 and results[1] == '云玩家表现稳健，继续积累对局喵。'
+    assert isinstance(results[0], list) == image_works
     if image_works:
-        assert results == []
-        sends = [call.args[0] for call in ev.send.await_args_list]
-        assert len(sends) == 2 and isinstance(sends[0][1], plugin_module.Image)
-        assert sends[1] == '云玩家表现稳健，继续积累对局喵。'
-        ev.stop_event.assert_called_once()
+        assert isinstance(results[0][1], plugin_module.Image)
     else:
-        assert len(results) == 2 and '云玩家' in results[0]
-        assert results[1] == '云玩家表现稳健，继续积累对局喵。'
-        ev.send.assert_not_awaited()
+        assert '云玩家' in results[0]
     obj.context.llm_generate.assert_awaited_once()
     obj.db.get_player_ranking.assert_awaited_once()
+
+
+@pytest.mark.parametrize('command', ['/排行 七月', '/排行 全部 七月', '/战报排行 七月'])
+def test_image_ranking_keeps_astrbot_response_pipeline_and_commentary(plugin_module, tmp_path, monkeypatch, command):
+    obj, ev = ranking_with_llm(plugin_module, tmp_path, command)
+    obj.config['ranking_image'] = True
+    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
+
+    async def run():
+        handler = obj.ranking(ev)
+        image = await anext(handler)
+        assert isinstance(image[1], plugin_module.Image)
+        # 图和点评均交给原响应阶段，不能提前停止事件或越过发送装饰器。
+        ev.stop_event.assert_not_called()
+        ev.send.assert_not_awaited()
+        obj.context.llm_generate.assert_not_awaited()
+        commentary = await anext(handler)
+        assert commentary == '云玩家表现稳健，继续积累对局喵。'
+        ev.stop_event.assert_not_called()
+        ev.send.assert_not_awaited()
+        with pytest.raises(StopAsyncIteration):
+            await anext(handler)
+
+    asyncio.run(run())
+    obj.context.llm_generate.assert_awaited_once()
+
+
+def test_image_ranking_keeps_independent_turns_separate(plugin_module, tmp_path, monkeypatch):
+    obj, first = ranking_with_llm(plugin_module, tmp_path)
+    obj.config['ranking_image'] = True
+    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
+    second = event('/排行 七月')
+    second.unified_msg_origin = first.unified_msg_origin
+
+    async def run():
+        result = await asyncio.gather(collect(obj.ranking(first)), collect(obj.ranking(second)))
+        assert all(len(chain) == 2 and isinstance(chain[0][1], plugin_module.Image) for chain in result)
+
+    asyncio.run(run())
+    for ev in (first, second):
+        ev.stop_event.assert_not_called()
+        ev.send.assert_not_awaited()
+    assert obj.context.llm_generate.await_count == 2
 
 
 def test_commentary_covers_all_visible_rows_for_image_and_text(plugin_module, tmp_path, monkeypatch):
@@ -216,108 +255,6 @@ def test_commentary_covers_all_visible_rows_for_image_and_text(plugin_module, tm
     assert '示例选手49' in results[0]
     assert data['本次榜单条目数'] == 50
     assert len(data['榜单']) == 51 and '示例选手49' in str(data)
-
-
-def ranking_upload_failure(**overrides):
-    errors = pytest.importorskip('aiocqhttp.exceptions')
-    return errors.ActionFailed(result={
-        'status': 'failed', 'retcode': 100, 'data': None,
-        'wording': 'highway upload transport failed after 3 attempts '
-                   '(cmdId=1004 chunk=72633/72633 offset=0): Error: getaddrinfo EAI_AGAIN htdata3.qq.com',
-        **overrides})
-
-
-@pytest.mark.parametrize('command', ['/排行 七月', '/排行 全部 七月', '/战报排行 七月'])
-def test_ranking_dns_upload_failure_sends_text_then_comments_on_all_fallback_rows(plugin_module, tmp_path, monkeypatch, command):
-    obj, ev = ranking_with_llm(plugin_module, tmp_path, command)
-    obj.config.update(ranking_image=True, ranking_image_max_rows=1)
-    base = obj.db.get_player_ranking.return_value[0]
-    obj.db.get_player_ranking.return_value = [dict(base, player=name) for name in ['云玩家', '萌新', '遗老']]
-    obj.db.get_settlement.return_value = {'云玩家': 30}
-    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
-    ev.send.side_effect = [ranking_upload_failure(), None, None]
-    async def generate(**kwargs):
-        assert ev.send.await_count == 2  # 点评必须在文字榜单成功发送之后。
-        return SimpleNamespace(completion_text='大家继续加油。')
-    obj.context.llm_generate.side_effect = generate
-    assert asyncio.run(collect(obj.ranking(ev))) == []
-    sends = [call.args[0] for call in ev.send.await_args_list]
-    assert len(sends) == 3 and isinstance(sends[0][1], plugin_module.Image)
-    assert isinstance(sends[1], str) and '先看文字榜单' in sends[1]
-    assert all(name in sends[1] for name in ['云玩家', '萌新', '遗老'])
-    assert sends[2] == '大家继续加油。'
-    if '全部' not in command:
-        assert '奖金' in sends[1] and '30' in sends[1]
-    data = json.loads(obj.context.llm_generate.await_args.kwargs['prompt'].split('\n', 1)[1])
-    assert data['本次榜单条目数'] == 3 and len(data['榜单']) == 4
-    assert (data['统计开始日期'], data['统计结束日期']) == ('2026-07-01', '2026-07-31')
-    assert 'PRIVATE_' not in str(data)
-    obj.db.get_player_ranking.assert_awaited_once()
-    obj.context.llm_generate.assert_awaited_once()
-    ev.stop_event.assert_called_once()
-
-
-def test_ranking_upload_fallback_without_persona_has_no_ai_notice(plugin_module, tmp_path, monkeypatch):
-    obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    obj.config.update(ranking_image=True, ai_persona_id='')
-    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
-    ev.send.side_effect = [ranking_upload_failure(), None]
-    assert asyncio.run(collect(obj.ranking(ev))) == []
-    assert ev.send.await_count == 2
-    obj.context.llm_generate.assert_not_awaited()
-
-
-@pytest.mark.parametrize('failure', ['timeout', 'connection', 'other_action', 'voice_upload', 'unstructured', 'not_failed'])
-def test_ranking_unconfirmed_or_unrelated_send_failure_does_not_resend(plugin_module, tmp_path, monkeypatch, failure, caplog):
-    obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    obj.config['ranking_image'] = True
-    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
-    cases = {
-        'timeout': TimeoutError('response timeout'), 'connection': ConnectionError('connection reset'),
-        'other_action': ranking_upload_failure(wording='permission denied'),
-        'voice_upload': ranking_upload_failure(wording='highway upload transport failed after 3 attempts (cmdId=1003 chunk=1/1)'),
-        'unstructured': RuntimeError('getaddrinfo EAI_AGAIN htdata3.qq.com'),
-        'not_failed': ranking_upload_failure(status='ok'),
-    }
-    ev.send.side_effect = cases[failure]
-    assert asyncio.run(collect(obj.ranking(ev))) == []
-    ev.send.assert_awaited_once()
-    obj.context.llm_generate.assert_not_awaited()
-    assert '排行图片发送失败' in caplog.text and '排行查询失败' not in caplog.text
-
-
-def test_ranking_text_fallback_send_failure_is_not_retried_or_commented(plugin_module, tmp_path, monkeypatch, caplog):
-    obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    obj.config['ranking_image'] = True
-    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
-    ev.send.side_effect = [ranking_upload_failure(), TimeoutError('text response timeout')]
-    assert asyncio.run(collect(obj.ranking(ev))) == []
-    assert ev.send.await_count == 2
-    obj.context.llm_generate.assert_not_awaited()
-    assert '排行文字回退发送失败' in caplog.text and '排行查询失败' not in caplog.text
-
-
-def test_ranking_commentary_send_failure_does_not_resend_primary_result(plugin_module, tmp_path, monkeypatch, caplog):
-    obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    obj.config['ranking_image'] = True
-    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
-    ev.send.side_effect = [None, RuntimeError('commentary send failed')]
-    assert asyncio.run(collect(obj.ranking(ev))) == []
-    assert ev.send.await_count == 2 and '排行点评发送失败' in caplog.text
-    assert '排行图片发送失败' not in caplog.text and '排行查询失败' not in caplog.text
-
-
-@pytest.mark.parametrize('stage', ['image', 'fallback'])
-def test_ranking_cancellation_propagates_without_extra_sends(plugin_module, tmp_path, monkeypatch, stage):
-    obj, ev = ranking_with_llm(plugin_module, tmp_path)
-    obj.config['ranking_image'] = True
-    monkeypatch.setattr(plugin_module.chart, 'make_ranking_image', Mock(return_value=tmp_path / 'rank.png'))
-    ev.send.side_effect = ([asyncio.CancelledError()] if stage == 'image'
-                           else [ranking_upload_failure(), asyncio.CancelledError()])
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(collect(obj.ranking(ev)))
-    assert ev.send.await_count == (1 if stage == 'image' else 2)
-    obj.context.llm_generate.assert_not_awaited()
 
 
 def test_commentary_uses_displayed_ties_points_and_settlement_bonus(plugin_module, tmp_path):
