@@ -786,7 +786,26 @@ def settlement_awards_changed(
     return awards(old_entries) != awards(new_entries)
 
 
-def settlement_announcement(names: list[str]) -> list[tuple[str, str]]:
+def format_settlement_notice(home_team: str, settlements: list[tuple[str, list[dict]]]) -> str:
+    """QQ 群公告正文：本次各月明细、每人领取合计，均取已保存的快照。"""
+    lines = [f"{home_team} 月度奖励领取", ""]
+    totals: dict[str, float] = {}
+    for key, entries in settlements:
+        year, month = key.split("-")
+        lines.append(f"{year}年{int(month)}月")
+        lines.extend(_settlement_lines(entries))
+        lines.append("")
+        for entry in entries:
+            name = entry["player"]
+            totals[name] = totals.get(name, 0) + float(entry.get("bonus") or 0)
+    lines.append("本次领取合计")
+    lines.extend(f"{name}  奖金{bonus:g}" for name, bonus in totals.items())
+    lines.append(f"总计 {sum(totals.values()):g}")
+    lines.append("\n奖励已结算好啦，请获奖成员找战队管理员领取喵～ 🐾")
+    return "\n".join(lines)
+
+
+def settlement_announcement(names: list[str], period: str = "本月") -> list[tuple[str, str]]:
     """结算公告的**分段**内容：`("text", 文本)` 或 `("at", 成员名)`。
 
     返回分段而不是成品字符串，是因为 @ 必须是真正的 `At` 消息组件（QQ 上才会
@@ -796,7 +815,7 @@ def settlement_announcement(names: list[str]) -> list[tuple[str, str]]:
     猫娘口吻 —— 文案改动不影响任何数值，随便改。
     """
     segments: list[tuple[str, str]] = [
-        ("text", "喵～ 本月的奖金已经结算好啦！(=^･ω･^=)\n"
+        ("text", f"喵～ {period}的奖金已经结算好啦！(=^･ω･^=)\n"
                  "这几位小伙伴快来领奖喵："),
     ]
     for i, name in enumerate(names):
@@ -865,8 +884,8 @@ HELP_SECTIONS = {
 
         "/战报删除 <战报ID>      超管/战队管理员/群管理/群主\n"
         "/战报撤销              撤销自己最近一条\n"
-        "/结算 [月份] [名次数]   管理人员结算发奖金；普通成员查看结果\n"
-        "                        默认上个月、前 4 名\n"
+        "/结算 [月份...] [名次数] 管理人员结算并发群公告；普通成员查看结果\n"
+        "                        默认上个月、前 4 名；多月如：7月 8月 9月\n"
         "/重置结算 [月份]        管理人员重置月度结算，默认上个月"
     ),
     "查询": (

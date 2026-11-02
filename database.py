@@ -1561,42 +1561,42 @@ class Database:
     async def set_settlement(
         self, home_team: str, month: str, entries: list[dict]
     ) -> None:
-        """覆盖写入某队某月的结算结果。
+        """覆盖写入本队单月快照，复用多月事务。"""
+        await self.set_settlements(home_team, [(month, entries)])
 
-        `month` 是 `'YYYY-MM'` 键（见 `battle_report_parser.settle_month_range`），
-        `entries` 每项含 rank_no / player / total_points / bonus。
-
-        **先 DELETE 再 INSERT**：`/结算` 重跑一次就是重算，旧奖金必须作废（用户
-        确认的口径）。只 DELETE 本队本月，不动别队别月。
-        """
+    async def set_settlements(
+        self, home_team: str, settlements: list[tuple[str, list[dict]]]
+    ) -> None:
+        """本次各月在同一事务内覆盖；任意一月失败则全部回滚。"""
         assert self.pool is not None
         now = int(time.time())
         async with self.pool.acquire() as conn:
             await conn.begin()
             try:
                 async with conn.cursor() as cur:
-                    await cur.execute(
-                        "DELETE FROM settlements WHERE home_team = %s AND month = %s",
-                        (home_team, month),
-                    )
-                    for e in entries:
+                    for month, entries in settlements:
                         await cur.execute(
-                            """INSERT INTO settlements
-                               (home_team, month, player_name, rank_no,
-                                total_points, bonus, created_at)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                            (
-                                home_team,
-                                month,
-                                e["player"],
-                                int(e["rank_no"]),
-                                e.get("total_points", 0) or 0,
-                                e.get("bonus", 0) or 0,
-                                now,
-                            ),
+                            "DELETE FROM settlements WHERE home_team = %s AND month = %s",
+                            (home_team, month),
                         )
+                        for e in entries:
+                            await cur.execute(
+                                """INSERT INTO settlements
+                                   (home_team, month, player_name, rank_no,
+                                    total_points, bonus, created_at)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                                (
+                                    home_team,
+                                    month,
+                                    e["player"],
+                                    int(e["rank_no"]),
+                                    e.get("total_points", 0) or 0,
+                                    e.get("bonus", 0) or 0,
+                                    now,
+                                ),
+                            )
                 await conn.commit()
-            except Exception:
+            except BaseException:
                 await conn.rollback()
                 raise
 

@@ -1688,3 +1688,24 @@ def test_group_type_explicit_setting_is_distinct_from_default():
             await db.set_group_chat_type('new','未知')
         assert await db.get_group_chat_type('new') == '友谊群'
     _with_db(ops)
+
+
+def test_batch_settlement_atomic_replacement_and_failure_rollback():
+    """独立 MySQL 实例验证多月覆盖及第二月失败时恢复第一月。"""
+    async def ops(db):
+        old = [dict(rank_no=1, player='遗老', total_points=10, bonus=30)]
+        new = [dict(rank_no=1, player='云玩家', total_points=20, bonus=60)]
+        await db.set_settlements('a队', [('2026-07', old), ('2026-08', old)])
+        await db.set_settlement('b队', '2026-07', old)
+        await db.set_settlement('a队', '2026-09', old)
+        invalid = [dict(rank_no='invalid', player='萌新', total_points=20, bonus=60)]
+        with pytest.raises(ValueError):
+            await db.set_settlements('a队', [('2026-07', new), ('2026-08', invalid)])
+        assert await db.get_settlement('a队', '2026-07') == {'遗老': 30}
+        assert await db.get_settlement('a队', '2026-08') == {'遗老': 30}
+        await db.set_settlements('a队', [('2026-07', new), ('2026-08', new)])
+        assert await db.get_settlement('a队', '2026-07') == {'云玩家': 60}
+        assert await db.get_settlement('a队', '2026-08') == {'云玩家': 60}
+        assert await db.get_settlement('b队', '2026-07') == {'遗老': 30}
+        assert await db.get_settlement('a队', '2026-09') == {'遗老': 30}
+    _with_db(ops)

@@ -487,3 +487,18 @@ def test_settle_tie_across_boundary_cuts_by_row_position():
     assert [e["bonus"] for e in entries] == [130, 100, 80, 50]
     # 第 5 行同为第 4 名，却拿不到
     assert "E" not in [r["player"] for r in rows[:4]]
+
+
+def test_settlement_group_notice_contains_all_months_and_exact_claim_totals():
+    from stats import _settlement_lines, format_settlement_notice
+    settlements = [('2025-12', [dict(rank_no=1, player='示例 玩家', total_points=10, bonus=30)]),
+                   ('2026-01', [dict(rank_no=1, player='萌新', total_points=20, bonus=60),
+                                dict(rank_no=2, player='示例 玩家', total_points=5, bonus=15)])]
+    out = format_settlement_notice('a队', settlements)
+    assert out.startswith('a队 月度奖励领取')
+    assert '2025年12月' in out and '2026年1月' in out
+    for _, entries in settlements:
+        assert all(line in out for line in _settlement_lines(entries))
+    assert '示例 玩家  奖金45' in out and '萌新  奖金60' in out and '总计 105' in out
+    assert '战队管理员' in out and '领取' in out
+    assert '本月' not in out

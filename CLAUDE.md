@@ -31,7 +31,7 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 - **改名次口径**：唯一实现是 `stats.ranks_for()`，排行榜表格与 `/结算` 发奖金共用——另写一份会让榜上第 1 名按第 2 档发钱
 - **奖金列开关**：唯一实现是 `stats.attach_bonus(rows, bonus_map)`，`bonus_map` 空就**一个 `bonus` 键都不加**——`build_ranking_cells` 正是靠「行里有没有这个键」决定加不加第 15 列。写成无条件赋值会让未结算月份也长出整列 0
 - **`/结算` 是双模式命令**（`main.settle`）：`_is_manager` 之前是共用的（`_require_home`、参数解析、`settle_month_range`），之后分叉 —— **写路径**（管理员）和**只读查询**（其他人）。**加任何写操作必须放进 `is_admin` 分支内**，放到分叉前会让群员的查询也写库。两个回执 `format_settlement` / `format_settlement_view` 的抬头**刻意不同形**（「结算完成」/「结算查询」），行体共用 `stats._settlement_lines`
-- **结算公告的 @ 只在「该月首次结算 / 获奖名次变了」时发**：判据是 `stats.settlement_awards_changed`（比 `(rank_no, player)`，**不比奖金**）。⚠️ `main.settle` 里**读旧记录的 `get_settlement_entries` 必须在 `set_settlement` 之前** —— 挪到后面永远比不出变化，每次重跑都会 @ 全群。公告文案是 `stats.settlement_announcement` 的**分段**（`("at", 名)` 不能拼进字符串，否则 QQ 上只剩字面的「@名字」）；取 QQ 走 `database.get_qq_ids_by_names`，它按 **`users.name`（展示名）** 查而不是 `player_ids.player_name`（参赛ID）—— 榜上的 `player` 是 `COALESCE(u.name, d.player_a)`
+- **群消息的结算 @ 只在「该月首次结算 / 获奖名次变了」时发**：判据是 `stats.settlement_awards_changed`（比 `(rank_no, player)`，**不比奖金**）。⚠️ `main.settle` 里**读旧记录的 `get_settlement_entries` 必须在 `set_settlements` 之前** —— 挪到后面永远比不出变化，每次重跑都会 @ 全群。公告文案是 `stats.settlement_announcement` 的**分段**（`("at", 名)` 不能拼进字符串，否则 QQ 上只剩字面的「@名字」）；取 QQ 走 `database.get_qq_ids_by_names`，它按 **`users.name`（展示名）** 查而不是 `player_ids.player_name`（参赛ID）—— 榜上的 `player` 是 `COALESCE(u.name, d.player_a)`
 - **`/重置结算` 只做一件事：`database.clear_settlement` 删本队本月那几行**（`DELETE`，不是 `UPDATE` 置标志位）。它是**纯管理命令**（`_is_manager` 硬拦，没有 `/结算` 那种群员只读分支），返回 0 行 = 该月本就没结算过 → 回「无需重置」而**不是报错**。`clear_settlement` 一旦被改成带附加写操作（连删用户、改积分），`/结算` 的双模式分叉就白设计了
 - **月份缺省 = 上个月**：唯一实现是 `battle_report_parser.settle_month_range(month: int | None = None)`（`12 if now.month == 1 else now.month - 1`），`/结算` 与 `/重置结算` **共用**它——两边的 `key` 必须由同一个函数产出，否则「重置 8 月」会把 7 月的记录删掉。⚠️ 「当月未结束」的拦截只在 `/结算` 的**写路径**里，`/重置结算` **没有**这个检查（重置一个未过完的月无害）
 - **面板的守馆/守馆首轮/踢馆三行是「各自赚了多少」的原始分量**（`_ceil_div3` + `attack_points`），**刻意绕开带 10 分封顶的 `raid_defense_points`**。别"顺手修"成 `raid_defense_points`——封顶只体现在面板最后一行「积分」上
@@ -136,3 +136,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 数据库测试只使用独立的 `ASTRBOT_TEST_MYSQL_HOST/PORT/USER/PASSWORD`（默认本机），
 **不继承插件配置**。必须显式设置 `ASTRBOT_TEST_MYSQL_ENABLE=1` 才启用；会创建并删除
 `astrbot_battle_report_test_<进程号>`。使用隔离测试实例，勿配置生产服务。
+
+## v1.22.0 多月份结算与 QQ 群公告
+
+- `_parse_settle_args` 返回月份列表和一个统一名次数，支持空格/逗号/中文分隔，去重；不写月份仍是上个月，复用 `settle_month_range` 的跨年口径。重置只接受一个月份，多月必须拒绝，不能静默选一个。
+- `settle` 先校验所有日期、准备所有可结算月份，再由 `set_settlements` 在单一事务覆盖本队各月；空榜月份跳过、不删旧快照，错误/取消回滚全部。单月 `set_settlement` 委托同一实现，schema v19 不变。
+- 每次管理员成功提交后调用本群 `_send_group_notice` 一次（包括名单未变），正文由 `format_settlement_notice` 复用同份快照生成，含各月明细与每人合计。普通成员只读，不能发公告或写库。
+- 群公告使用当前事件机器人/群号，20 秒限时，无自动重试；需要机器人 QQ 自身公告权限。公告失败/超时与已保存结算分开回执，不伪装成结算失败。群消息 @ 继续按名次变化触发、同次按人去重，QQ 查询失败降级为文字提醒。

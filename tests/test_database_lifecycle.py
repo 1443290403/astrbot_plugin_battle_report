@@ -237,3 +237,39 @@ def test_each_teams_export_mark_is_independent_in_executed_sql():
         asyncio.run(run())
     finally:
         raw.close()
+
+
+@pytest.mark.parametrize('failure', [None, RuntimeError('second month insert failed'), asyncio.CancelledError()])
+def test_settlement_batch_transaction_replaces_only_requested_team_months_and_rolls_back(failure):
+    raw = sqlite3.connect(':memory:', isolation_level=None)
+    raw.execute('CREATE TABLE settlements(home_team TEXT, month TEXT, player_name TEXT, rank_no INT, total_points REAL, bonus REAL, created_at INT)')
+    initial = [('a队', '2026-07', '遗老', 1, 10, 30, 0), ('a队', '2026-08', '遗老', 1, 10, 30, 0),
+               ('b队', '2026-07', '萌新', 1, 10, 30, 0), ('a队', '2026-09', '萌新', 1, 10, 30, 0)]
+    raw.executemany('INSERT INTO settlements VALUES(?,?,?,?,?,?,?)', initial)
+    async def execute(sql, params=()):
+        if failure is not None and 'INSERT INTO' in sql and params[1] == '2026-08':
+            raise failure
+        raw.execute(sql.replace('%s', '?'), params)
+    cur = SimpleNamespace(execute=execute)
+    conn = SimpleNamespace(cursor=lambda: Context(cur), begin=AsyncMock(side_effect=lambda: raw.execute('BEGIN')),
+                           commit=AsyncMock(side_effect=raw.commit), rollback=AsyncMock(side_effect=raw.rollback))
+    db = Database('localhost', 3306, 'root', '', 'test')
+    db.pool = SimpleNamespace(acquire=lambda: Context(conn))
+    entries = [dict(rank_no=1, player='云玩家', total_points=20, bonus=60)]
+    try:
+        if failure is not None:
+            with pytest.raises(type(failure)):
+                asyncio.run(db.set_settlements('a队', [('2026-07', entries), ('2026-08', entries)]))
+            assert raw.execute('SELECT * FROM settlements').fetchall() == initial
+            conn.commit.assert_not_awaited()
+            conn.rollback.assert_awaited_once()
+        else:
+            asyncio.run(db.set_settlements('a队', [('2026-07', entries), ('2026-08', entries)]))
+            assert raw.execute('SELECT home_team,month,player_name,bonus FROM settlements ORDER BY home_team,month').fetchall() == [
+                ('a队', '2026-07', '云玩家', 60), ('a队', '2026-08', '云玩家', 60),
+                ('a队', '2026-09', '萌新', 30), ('b队', '2026-07', '萌新', 30)]
+            conn.commit.assert_awaited_once()
+            conn.rollback.assert_not_awaited()
+        conn.begin.assert_awaited_once()
+    finally:
+        raw.close()

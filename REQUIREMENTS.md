@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.21.3`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
+> 对应版本：`1.22.0`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -590,7 +590,7 @@ KC踢馆BAR                     ← 首行：左=踢馆方(team_a)，右=守馆�
 
 ### M-14 月度结算 / 奖金 ★v1.15.0 新增
 
-管理员用 `/结算 <月份> [名次数]` 把某个月的榜单前 N 名连同奖金**快照**进 `settlements` 表。
+管理员用 `/结算 [月份...] [名次数]` 把各月份的榜单前 N 名连同奖金**快照**进 `settlements` 表。v1.22.0 支持空格、英文/中文逗号及顿号分隔多个月份，中文月份与 `时间=7月` 仍可用；重复月份去重后按实际年月排列，只允许一个统一名次数，默认 4。未指定月份仍为上个月。`/重置结算` 仍只接收一个月份，多月输入拒绝。
 
 v1.15.0 起同一个命令对**非管理/群主**开放为**只读查询**（查已结算的名单与金额），**不写库、不重算** —— 见下方「只读查询」小节。
 
@@ -633,27 +633,33 @@ year = now.year - 1 if month > now.month else now.year
 
 #### 覆盖重算
 
-`database.set_settlement` **先 `DELETE` 该队该月全部行再 `INSERT`**（显式事务，仿 `insert_report` 的 `begin/commit/rollback`），配合唯一键 `uk_settle` 保证幂等：
+`database.set_settlements(home_team, [(month, entries), ...])` 在**单一事务**中逐月先 `DELETE` 本队该月旧行、再 `INSERT` 新快照；`set_settlement` 单月接口委托它。任意写入错误或取消则全部回滚，其他队和其他月份不变，schema v19 不变。
 
-- 重跑 `/结算 7月` = 重算，旧奖金作废，**行数不翻倍**。
-- **无参数重跑一律回到前 4 名**（`_parse_settle_args` 的名次数缺省 4）—— 不记忆上次的名次数，所以**不需要 `reward_ranks` 列**。追加到 12 名后再跑一次 `/结算 7月`，5~12 名的行会被删掉。
-- 结算属于**战队**不是群：只发本战队（`team=home_team`），`/排行 全部` 是跨队榜故**不显示**奖金列。
+- `settle` 先校验所有月份均已结束，再查询各月榜单和旧记录；准备全部结果成功后才写库，查询失败不写任何月份。
+- 空榜月份跳过并回执，不删除该月原有快照；全部为空时不写、不发公告。
+- 重跑按月份覆盖，默认名次数仍为 4；奖金公式、封顶、排名及边界并列截断不变。
+- 结算只写本队，按 home_team 跨群统计，不能按群号筛榜。奖金不改变排行数字。
 
-#### 结算公告：@ 获奖成员 ★v1.15.0
+#### QQ 群公告与群内 @ 提醒 ★v1.22.0
 
-写路径成功后，除回执外再发一条**猫娘口吻**的领奖公告，`At` 到每位获奖成员（用户要求）。
+每次管理员成功保存至少一个月份后，使用当前事件的 bot、self_id 与群号调用 `_send_group_notice` **一次**，即使获奖名单未变也发布；不能广播到本队其他群。公告正文 `stats.format_settlement_notice` 复用本次结算数据与 `_settlement_lines`，包含年份明确的各月明细/合计、每人跨月领取合计与总额，提醒向战队管理员领取。仅包含成功写入的月份，跳过月份在群消息回执说明。
 
-**触发条件只有两种**（`stats.settlement_awards_changed`）：
+- 平台调用开启弹窗和确认收到，关闭改群昵称引导、不置顶。需要机器人 QQ 本身具备公告发布权限，插件管理员身份不能代替平台权限。
+- API 用 `asyncio.wait_for` 限时 20 秒，不自动重试；失败与超时分别报告「结算已保存，公告发布失败/结果未确认」，不会撤销奖金快照或把成功结算误报为失败。未支持 OneBot 的平台不调用 QQ 扩展接口。
+- 普通成员查询不写快照、不发公告、不查排行。
+- 另保留群消息中的 `At` 领奖提醒，按下述旧规则触发，并在一次指令中合并、去重姓名；获取 QQ 失败只降级为文字 @，不能影响已发公告和结算回执。
+
+**群消息 @ 的触发条件只有两种**（`stats.settlement_awards_changed`，不控制 QQ 群公告）：
 
 | 场景 | 是否 @ |
 |---|---|
 | 该月**第一次**结算（库里查不到旧记录） | ✅ @ |
 | 重跑，但 `(名次, 获奖人)` 列表变了（追加名次 / 缩回前 4 / 有人被反超） | ✅ @ |
-| 重跑，名单与名次**一模一样** | ❌ 不 @，回执后附一句「名次和上次一样，就不打扰大家了」|
+| 重跑，名单与名次**一模一样** | ❌ 不 @，回执提示「获奖名次未变」；QQ 群公告仍发布|
 | 非管理/群主（只读查询） | ❌ 不 @（见下节）|
 
 - **比对键是 `(rank_no, player)`，不含奖金**：奖金由总积分派生，事后补录战报让积分微调、名次却没动时不该再 @ 一次全群。这是刻意选的（见 §10.4）。
-- **读旧记录必须在 `set_settlement` 之前**：写完再读拿到的是自己刚写进去的，永远比不出变化。
+- **读旧记录必须在 `set_settlements` 之前**：写完再读拿到的是自己刚写进去的，永远比不出变化。
 - **@ 的是 `users.name` 而不是参赛ID**：榜单的 `player` 是 `COALESCE(u.name, d.player_a)`（M-03），所以 `get_qq_ids_by_names` 按 `users.name` 查。
 - **@ 不出来就退化成字面「@名字」**：没绑定角色、绑了角色但没存 QQ 的成员（`users.qq_id` 为空）没有可 @ 的目标，降级成纯文本 —— 一行字面 @ 好过整条公告不发。
 - **只在 QQ 平台真弹提醒**：`At` 是消息组件，非 QQ 平台（如 WebChat）渲染成什么由平台适配器决定，插件不做平台判断。
@@ -661,7 +667,7 @@ year = now.year - 1 if month > now.month else now.year
 
 #### 只读查询：同一个命令的第二种模式 ★v1.15.0
 
-`/结算` 对**非管理/群主**开放为**纯查询**，只读不写：
+`/结算` 对**非管理/群主**开放为**纯查询**，支持多月，只读不写、不发布公告：
 
 - 走的是**同一条命令的另一个分支**，判据是入口处的 `_is_manager(event)`（与 F-20 等管理命令同一个判定），**不是**新命令、不是新参数。
 - **只读 `settlements` 表**（`database.get_settlement_entries`），**不重算、不覆盖**：查到的就是当初结算那一刻的快照，之后榜单怎么变都不影响。这是刻意的 —— 重算会绕过 `set_settlement` 的覆盖语义，等于把「发过就算数」变成「随时可被任何人改写」。
@@ -692,14 +698,16 @@ year = now.year - 1 if month > now.month else now.year
 | `stats` | `format_settlement(home_team, year, month, entries, reward_ranks) -> str` | **写路径**回执（⚔️「结算完成」） |
 | `stats` | `format_settlement_view(home_team, year, month, entries) -> str` | **读路径**回执（📋「结算查询」抬头） |
 | `stats` | `build_ranking_cells(rows)` | `any("bonus" in r for r in rows)` 为真才加第 15 列 |
-| `database` | `set_settlement(home_team, month, entries)` | 覆盖写（先 DELETE 再 INSERT） |
+| `database` | `set_settlement(home_team, month, entries)` | 单月兼容接口，委托 set_settlements |
+| `database` | `set_settlements(home_team, settlements)` | 单事务覆盖本队多月，异常/取消全部回滚 |
+| `stats` | `format_settlement_notice(home_team, settlements)` | 本次各月明细与每人领取合计，生成 QQ 群公告正文 |
 | `database` | `clear_settlement(home_team, month) -> int` | 只 DELETE、不 INSERT，返回删掉的行数；0 = 本来就没结算过（`/重置结算`） |
 | `database` | `get_settlement(home_team, month) -> dict[str, float]` | `{玩家名: 奖金}`；未结算 → **空 dict**（只服务 `/排行` 的奖金列） |
 | `database` | `get_settlement_entries(home_team, month) -> list[dict]` | `[{rank_no, player, total_points, bonus}]`，`ORDER BY rank_no`；未结算 → **空 list**（服务只读 `/结算`，也充当结算公告的「旧记录」基准） |
 | `database` | `get_qq_ids_by_names(home_team, names) -> dict[str, str]` | **展示名 → qq_id**，`qq_id` 为空或查不到的**不返回**；按 `users.name` 查（见上节） |
-| `stats` | `settlement_awards_changed(old_entries, new_entries) -> bool` | 获奖名次变没变（公告 @ 不 @ 的唯一判据） |
-| `stats` | `settlement_announcement(names) -> list[tuple[str, str]]` | 公告分段（`text` / `at`），由 `main.py` 翻译成 `At` |
-| `stats` | `format_settlement_repeat() -> str` | 名单没变时的「不打扰」提示 |
+| `stats` | `settlement_awards_changed(old_entries, new_entries) -> bool` | 获奖名次变没变（仅控制群消息 @，不控制 QQ 群公告） |
+| `stats` | `settlement_announcement(names, period) -> list[tuple[str, str]]` | 公告分段（`text` / `at`），由 `main.py` 翻译成 `At` |
+| `stats` | `format_settlement_repeat() -> str` | 名单没变时的简短提示 |
 
 > ⚠️ 两个 `get_settlement*` **不是重复**：前者是 `{名字: 奖金}` 的查表（给榜单贴第 15 列），后者是**有序明细**（给 `/结算` 回执逐行念）。合并任一种都会让另一边多绕一圈。注意后者的 `total_points` 取自 `settlements` 表（`DECIMAL(10,2)`，**已截断到 2 位**），与榜单的实时值可能有末位差 —— 这正是「快照」的应有之义。
 
@@ -708,7 +716,7 @@ year = now.year - 1 if month > now.month else now.year
 #### 未覆盖 / 已决定的边界
 
 - **并列跨奖励边界时按行位置截断**：`/结算 7月 4` 遇到第 4、5 行同为展示名次 4 时，第 4 行拿满 50、第 5 行没有（截断依据是 `enumerate` 的行位置，不是名次）。见 §10。
-- **`_parse_settle_args` 不按位置解析**：正则 `_TOKEN_MONTH_RE` 逐个 token 试，纯数字 token 当名次数 → `7月 12` 与 `12 7月` 都认。**不能复用 `_parse_month_filter`** —— 它的正则**末尾锚定**，`/结算 7月 12` 里月份不在末尾会解析不出。
+- **`_parse_settle_args` 不按位置解析**：正则 `_TOKEN_MONTH_RE.fullmatch` 逐个 token 试，月份去重为列表，纯数字 token 当唯一名次数 → `7月 12` 与 `12 7月` 都认。**不能复用 `_parse_month_filter`** —— 它的正则**末尾锚定**，`/结算 7月 12` 里月份不在末尾会解析不出。
 - **`min_games` 门槛照旧生效**：只踢馆不打友谊的玩家不进榜（M-13 边界），自然也不参与结算。
 
 ---
@@ -795,8 +803,8 @@ year = now.year - 1 if month > now.month else now.year
 | **F-08** | `/导出 [已发送\|未发送] [踢馆] [玩家名] [胜场\|负场\|全部] [X月\|最近N天] [csv\|json]` | `export` | 见下方详解 |
 | **F-09** | `/我的战绩 [X月]` | `my_record` | v1.21.2 综合、多个有场次 ID 明细及内嵌趋势均在同一张图中；按自己绑定的全部参赛ID汇总（含踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮） |
 | **F-27** | `/踢馆 [玩家名] [X月]` | `raid` | 无名字 → 本战队踢馆卡（踢馆成功 / 守馆成功 / 守馆首轮 / 踢馆成功含馆主 + 徽章 + 积分明细 + 合计）；有名字 → 该选手的踢馆卡。alias `/踢馆`、`/战报踢馆`。入口 `_require_home` → `get_raid_team_stats` / `get_raid_stats_for_players` → `stats.format_raid_record` |
-| **F-28** | `/结算 <月份> [名次数]` | `settle` | **双模式**（v1.15.0）。入口统一 `_require_home`（含 `_group_check` + 必须已绑定战队）→ `_is_manager`，此后分叉：<br>**管理/群主 = 写** —— 给该月榜单前 N 名（默认 4，上限 12）按 §5-M14 发奖金并覆盖写入 `settlements`。顺序：`_parse_settle_args`（**不是** `_parse_month_filter`，见 §5-M14）→ `settle_month_range` → 当月未结束则拒 → `get_player_ranking(…, limit=None, team=home_team)` → `ranks_for` + `rank_bonus` → **`get_settlement_entries`（读旧记录，供公告判定）** → `set_settlement` → `format_settlement` → 获奖名次变了就 `get_qq_ids_by_names` + `At` 发公告（见 §5-M14「结算公告」）。<br>**其他人 = 只读查询** —— `get_settlement_entries` → 有记录 `format_settlement_view`、无记录回「该月尚未结算」。**不跑写路径的任何一步**，见 §5-M14「只读查询」。<br>**月份缺省 = 上个月**（`settle_month_range(None)`） |
-| **F-29** | `/重置结算 [月份]` | `reset_settle` | **管理/群主**（非管理员硬拒）。把该月恢复成**未结算**：`_require_home` → `_is_manager` → `_parse_settle_args`（名次数丢掉）→ `settle_month_range` → `clear_settlement`。删掉 0 行回「无需重置」而非报错；**没有「当月未结束」校验**（那是写路径独有）。见 §5-M14「重置结算」 |
+| **F-28** | `/结算 [月份...] [名次数]` | `settle` | **双模式**。统一 `_require_home` 与 `_is_manager`；普通成员按月只读 `get_settlement_entries`，无写入和公告。管理员先校验所有日期 → 各月 `get_player_ranking(...team=home_team)`、`ranks_for/rank_bonus`、读旧记录 → `set_settlements` 单事务覆盖 → `_publish_settlement_notice` 本群发布一条含所有成功月份及每人合计的 QQ 群公告；群消息按名次变化发送去重 At。空月跳过、查询/写入失败无公告；公告失败不影响保存。默认上个月、前 4 名，上限 12；具体见 §5-M14。 |
+| **F-29** | `/重置结算 [月份]` | `reset_settle` | **管理/群主**（非管理员硬拒）。把该月恢复成**未结算**：`_require_home` → `_is_manager` → `_parse_settle_args`（名次数丢掉，多月拒绝）→ `settle_month_range` → `clear_settlement`。删掉 0 行回「无需重置」而非报错；**没有「当月未结束」校验**（那是写路径独有）。见 §5-M14「重置结算」 |
 
 **F-05 `/排行` 详解：**
 
@@ -959,10 +967,10 @@ year = now.year - 1 if month > now.month else now.year
 | **改胜负判定** | ① `determine_match_winner` + 两个 winner 函数 ② 历史 `matches.winner` 回填脚本 ③ 战队战绩/对战记录 ④ 导出胜负过滤 ⑤ `compute_match_stats` 的 winner 守卫 ⑥ 提交时的拒录分支 | M-07：**历史数据不会自动重算** |
 | **改积分/胜率公式** | 见 §7.3「同源重复实现」第 1、2 条 —— 共 **5 处** | 漏 SQL 侧 → Python 表格与 DB 排序不一致 |
 | **新增排行列** | ① `stats._RANK_HEADERS` ② `stats.build_ranking_cells` 的**数据行**（文字与图片同源，手写定长列表）③ `chart.make_ranking_image` 布局宽高自适应（列宽已自动算）④ 测试里别再手写 `aligns` 字面量 | ①③④ 由 `rank_aligns(ncols)` 自动跟随（**没有定长常量了**，v1.15.0）；**② 不会**，漏了就是行列数对不上。`tests/test_chart.py::test_rank_aligns_matches_header_columns` 会拦住 ① 与 ② 不一致 |
-| **改结算/奖金**（封顶表、名次截断、月份回退） | ① `stats.RANK_BONUS_CAPS` / `rank_bonus`（**唯一**公式实现）② `stats.ranks_for`（**唯一**名次实现，与排行表格共用）③ `battle_report_parser.settle_month_range`（月份缺省=上个月也在这里，**`/重置结算` 共用**）④ `main.settle` 的「当月拒结」校验 ⑤ `stats.format_settlement` 的年份回显 ⑥ `stats.attach_bonus`（bonus 键加不加的唯一实现，「未结算不长第 15 列」靠它）⑦ `tests/test_settlement.py` | **③④ 必须成对**：`settle_month_range` 只回退、不校验，少了 ④ 就会静默结算去年同月。改封顶表别顺手改排序 key —— 奖金是派生值，**不影响名次**。改 ③ 的返回形态（如把年份/月也一并返回）要同时看 `main.settle` 与 `main.reset_settle` 两个调用点 |
+| **改结算/奖金**（封顶表、名次截断、月份回退） | ① `stats.RANK_BONUS_CAPS` / `rank_bonus`（**唯一**公式实现）② `stats.ranks_for`（**唯一**名次实现，与排行表格共用）③ `battle_report_parser.settle_month_range`（月份缺省=上个月也在这里，**`/重置结算` 共用**）④ `main.settle` 的「当月拒结」校验 ⑤ `stats.format_settlement` 的年份回显 ⑥ `stats.attach_bonus`（bonus 键加不加的唯一实现，「未结算不长第 15 列」靠它）⑦ `tests/test_settlement.py`、真实 handler 与事务回滚测试 ⑧ 多月统一校验和 `set_settlements` 原子提交 | **③④ 必须成对**：`settle_month_range` 只回退、不校验，少了 ④ 就会静默结算去年同月。改封顶表别顺手改排序 key —— 奖金是派生值，**不影响名次**。改 ③ 的返回形态（如把年份/月也一并返回）要同时看 `main.settle` 与 `main.reset_settle` 两个调用点 |
 | **改 `/重置结算`** | ① `database.clear_settlement`（**只 DELETE、不 INSERT** —— 补上 INSERT 就退化成「重算」，不再是重置）② `main.reset_settle` 的 `_is_manager` 硬拦 ③ 与 `/结算` **共用** `settle_month_range` 取 key（月份缺省=上个月的口径必须一致，否则删不到结算时写的那一行）④ 回执里「重新结算会重新 @」的说法依赖 `settlement_awards_changed([], …) == True` ⑤ `tests/test_database_stats.py` / `tests/test_settlement.py` | 重置把该月打回「从没结算过」，于是重新结算必然被判成**第一次结算**、**重新 @ 一遍全群**。想「只改金额不 @ 人」的话不能走重置 |
 | **改 `/结算` 的读/写分叉** | ① `main.settle` 里 `_is_manager` 之后的那次分叉（**写路径的每一步都必须在分支之内**）② 读路径的 `get_settlement_entries`（只读 `settlements`，**不能改成跑 `get_player_ranking` 重算**）③ 只读回执 `stats.format_settlement_view` 的抬头（必须与写路径「结算完成」不同形）④ 两边共用的 `stats._settlement_lines`（改行体只改这一处，两个回执同时变）⑤ `tests/test_settlement.py` | **新加写操作时必须放进 `is_admin` 分支内** —— 放到分叉之前会让非管理员的查询也写库。回执文案两个函数刻意不同形，是为了避免非管理员误以为钱已发出 |
-| **改结算公告（@ 获奖成员）** | ① `stats.settlement_awards_changed` 的比对键（改口径 = 改「什么时候 @ 全群」）② `main.settle` 里**「读旧记录」必须仍在 `set_settlement` 之前**（挪到后面就永远比不出变化、每次重跑都 @ 全群）③ `stats.settlement_announcement` 的分段（`("at", 名)` 不能改成把名字拼进文本）④ `database.get_qq_ids_by_names`（按 `users.name` 查，**不是** `player_ids.player_name`）⑤ `stats.format_settlement_repeat` ⑥ `tests/test_settlement.py` | ②挪错位置是最隐蔽的一种：功能「看起来正常」（首次结算照样 @），只在重跑时静默退化成每次都 @。③拼成字符串会让 QQ 上只剩字面的「@名字」，不弹提醒也不亮蓝 |
+| **改结算公告与提醒** | ① `format_settlement_notice` 本次全部月份及每人合计 ② `_publish_settlement_notice` 当前 bot/self_id/群号与限时、失败分类 ③ `settlement_awards_changed` 仅控制群消息 @，写前读旧记录 ④ `settlement_announcement` 与 QQ 名称映射/去重 ⑤ 真实 handler 测试与文档帮助 | QQ 群公告每次成功提交都发一次；不能被名单未变化短路，失败不能误报结算失败，普通成员只读路径无副作用 |
 | **改「战队战绩」面板**（加行/改口径/换取值） | ① `stats._TEAM_PANEL_LABELS`（若加行）② `stats.build_team_panel` 的**返回值列表是手写的**，与 ① 顺序必须逐字一致 ③ `get_home_team_record` 是否已透传所需键（踢馆相关的键**只透传 `attack_points` 一个**，见 §7.3 第 19 条）④ `tests/test_stats.py` 的标签顺序用例 | 面板不走 `build_ranking_cells`，**改排行列的那套清单对它一个都不适用**；反过来把面板塞进 `build_ranking_cells` 会破坏 14/15 列契约 |
 | **改玩家名解析口径** | ① `get_player_ranking` 的 2 处 `COALESCE` ② `get_player_match_stats` 的 2 处 ③ `resolve_role` ④ 跨队同名三处（§5-M03） | 漏一处 → 同一个人出现两个名字 |
 | **改战队归属解析** | ① `_require_home`（**唯一**解析路径）② 所有聚合 SQL 的 `m.home_team = %s` ③ `backfill_group_home` ④ `/发送` 的绑定校验 | M-02：v1.13.0 起只有群绑定一条路径，别再引入配置兜底 |
@@ -1286,6 +1294,8 @@ v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选�
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
 
+v1.22.0 验证：**875 项测试通过，1 项跳过**。覆盖多月/中文/逗号解析与去重、单一名次数、跨年/默认月、全批次当月拦截、各月独立积分/封顶/本队范围、空月跳过、普通成员只读、单条群公告含各月和每人合计、QQ/群号限定、重复结算公告与群内 @ 去重、API 失败/超时/失败封包及 QQ 查询失败降级。SQLite 事务适配验证跨队跨月隔离、第二月失败和取消全部回滚；另新增独立 MySQL 集成用例但本次未启用。平台调用均为模拟，未在 QQ 实机发布公告。
+
 v1.21.3 验证：**845 项测试通过，1 项跳过**。覆盖独立/内嵌趋势的单点居中、两点与整月点位的两端对称留白、等距排列、日期与累计场次曲线横向对齐；已检查图片预览。MySQL 集成未启用，未进行 QQ 实机验证。
 
 v1.21.2 验证：**839 项测试通过，1 项跳过**。覆盖多个 ID 与综合列同图同指标行并排、七个 ID 在同图续排不遗漏、单图输出、下方趋势及名字空格保留；角色/我的战绩共用有场次 ID 的明细查询，汇总/趋势/绑定与标准回复链不变。已检查虚构数据预览；数据库集成未启用，QQ 实机展示需更新后确认。
@@ -1325,7 +1335,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.21.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.22.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

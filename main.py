@@ -137,30 +137,28 @@ def _strip_command(raw: str, cmds: tuple[str, ...]) -> str:
     return raw
 
 
-def _parse_settle_args(payload: str) -> tuple[int | None, int]:
-    """解析 `/结算` 的参数 → `(月份, 奖励名次数)`。
-
-    **不能直接用 `_parse_month_filter`** —— 它的正则锚定在**末尾**，而
-    `/结算 7月 12` 的月份在中间，会解析不出月份。这里改成逐个 token 试
-    `_TOKEN_MONTH_RE`（它认 `7月` / `七月` / `时间=7月`），纯数字的 token 当
-    名次数，所以 `7月 12` 与 `12 7月` 两种顺序都认。
-
-    名次数缺省 4。复用 parser 的月份正则而不是另写一套，免得两种写法逐渐走偏。
-    """
-    month: int | None = None
-    ranks = 4
-    for tok in payload.split():
+def _parse_settle_args(payload: str) -> tuple[list[int | None], int]:
+    """逐个解析月份与一个名次数；不写月份仍使用上个月。"""
+    months: list[int | None] = []
+    ranks = None
+    for tok in re.split(r"[\s,，、]+", payload.strip()):
+        if not tok:
+            continue
         if tok.isdigit():
+            if ranks is not None:
+                raise ValueError("名次数只需填写一次喵。")
             ranks = int(tok)
             continue
-        m = _TOKEN_MONTH_RE.match(tok)
+        m = _TOKEN_MONTH_RE.fullmatch(tok)
         if m:
             month = _cn_to_int(m.group(1) or m.group(2))
             if month is None or not 1 <= month <= 12:
                 raise ValueError("月份要在 1~12 之间喵。")
+            if month not in months:
+                months.append(month)
             continue
-        raise ValueError(f"无法识别参数「{tok}」喵，请用：/结算 [月份] [名次数]。")
-    return month, ranks
+        raise ValueError(f"无法识别参数「{tok}」喵，请用：/结算 [月份...] [名次数]。")
+    return months or [None], ranks if ranks is not None else 4
 
 
 def _is_report_text(text: str) -> bool:
@@ -184,7 +182,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.21.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.22.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1719,116 +1717,120 @@ class BattleReportPlugin(Star):
         if commentary:
             yield event.plain_result(commentary)
 
+    async def _publish_settlement_notice(
+        self, event: AstrMessageEvent, home_team: str, settlements: list[tuple[str, list[dict]]]
+    ) -> None:
+        """结算提交后发布本群公告；调用失败交给独立通知分支处理，不重试。"""
+        bot = getattr(event, "bot", None)
+        platform = getattr(event, "get_platform_name", None)
+        if bot is None or (callable(platform) and platform() != "aiocqhttp"):
+            raise ValueError("当前平台不支持 QQ 群公告")
+        params = dict(group_id=int(event.get_group_id()),
+                      content=stats.format_settlement_notice(home_team, settlements),
+                      pinned=0, is_show_edit_card=0, tip_window_type=0, confirm_required=1)
+        get_self_id = getattr(event, "get_self_id", None)
+        if callable(get_self_id):
+            params["self_id"] = int(get_self_id())
+        result = await asyncio.wait_for(bot.call_action("_send_group_notice", **params), timeout=20)
+        if isinstance(result, dict) and (result.get("status") == "failed"
+                                        or result.get("retcode") not in (None, 0)):
+            raise RuntimeError("平台返回群公告发布失败")
+
     @filter.command("结算", alias={"/结算"})
     async def settle(self, event: AstrMessageEvent):
-        """月度结算：给该月积分榜前 N 名发奖金。
-
-        管理/群主 = **结算并写库**（该月第一次结算 / 获奖名次变了时，顺带 @ 获奖
-        成员发公告）；其他人 = **只读查询**已结算的结果（见下）。
-        """
+        """管理人员按月批量结算并发布汇总群公告；其他成员只读查询。"""
         err, home_team = await self._require_home(event)
         if err:
             yield event.plain_result(err)
             return
-        # 权限在这里取一次，但**不再直接拦掉非管理员** —— 它现在只决定走
-        # 「写」还是「读」两条路（v1.15.0）。检查顺序仍照抄 /绑定战队：
-        # 权限先于业务参数（参数错也要先告诉非管理员他没有写权限）。
         is_admin = await self._is_manager(event)
-
         try:
-            month, reward_ranks = _parse_settle_args(
-                _strip_command(event.get_message_str(), _SETTLE_CMDS)
-            )
+            months, reward_ranks = _parse_settle_args(
+                _strip_command(event.get_message_str(), _SETTLE_CMDS))
         except ValueError as e:
             yield event.plain_result(f"❌ {e}")
             return
         if not 1 <= reward_ranks <= stats.MAX_REWARD_RANKS:
-            yield event.plain_result(
-                f"❌ 名次数要在 1~{stats.MAX_REWARD_RANKS} 之间喵。"
-            )
+            yield event.plain_result(f"❌ 名次数要在 1~{stats.MAX_REWARD_RANKS} 之间喵。")
             return
 
-        # month 缺省（`/结算` 不带月份）= **上个月**，见 settle_month_range。
-        # 年月一律从 key 反解出来用，这样回执上写的年月与真正查库/写库的那个月
-        # **必然是同一个**（跨年回退也在 key 里定死了），不会出现「说 12 月、
-        # 其实查的是去年 12 月」这种对不上的文案。
-        date_from, date_to, key = settle_month_range(month)
-        year, mon = int(key[:4]), int(key[5:7])
-
+        # 共用原来的上个月缺省/跨年规则，去重后按实际年月排列。
+        periods = sorted({settle_month_range(month) for month in months}, key=lambda p: p[2])
         if not is_admin:
-            # 只读查询：**只查 settlements 表**，不碰任何排行榜数字、不写库。
-            # 没结算过就直说，不展示「如果现在结算会发多少」——那会让人误以为
-            # 钱已经发出去了。
             try:
-                entries = await self.db.get_settlement_entries(home_team, key)
-                if not entries:
-                    yield event.plain_result(
-                        f"📋 {home_team} {year}年{mon}月：这个月还没结算呢喵。\n"
-                        f"请联系本队管理员结算喵。"
-                    )
-                    return
-                yield event.plain_result(
-                    stats.format_settlement_view(home_team, year, mon, entries)
-                )
+                receipts = []
+                for _, _, key in periods:
+                    year, mon = int(key[:4]), int(key[5:7])
+                    entries = await self.db.get_settlement_entries(home_team, key)
+                    receipts.append(stats.format_settlement_view(home_team, year, mon, entries)
+                                    if entries else f"📋 {home_team} {year}年{mon}月：这个月还没结算呢喵。\n请联系本队管理员结算喵。")
+                yield event.plain_result("\n\n".join(receipts))
             except Exception:
                 logger.exception("结算查询失败")
                 yield event.plain_result(_ERR_QUERY)
             return
 
-        # 「指定月份必须已经结束」：settle_month_range 会把本年尚未到来的月份回退
-        # 一年，所以这里只剩「当前月」这一种未结束的情况 —— 它必须挡掉，否则
-        # 9 月跑 /结算 9月 会静默结掉一个还在进行中的月份。
-        # 只挡写路径：查询当前月没有意义也没有危险，回「尚未结算」更贴切。
-        if date_to >= datetime.now().date().isoformat():
-            yield event.plain_result(f"❌ {mon} 月还没过完喵，结算不了。")
-            return
-
+        # 所有月份都通过校验后才读榜/写库，防止有效月份先被部分结算。
+        for _, date_to, key in periods:
+            if date_to >= datetime.now().date().isoformat():
+                yield event.plain_result(f"❌ {int(key[5:7])} 月还没过完喵，结算不了。")
+                return
         try:
+            settlements, receipts, changed_names = [], [], []
             min_games = int(self.config.get("min_games", 1) or 1)
-            # limit=None + team=home_team：结算属于**本战队**，不跨队发给别人；
-            # 名次用 stats.ranks_for 取，与 /排行 表格里显示的名次同一份实现。
-            rows = await self.db.get_player_ranking(
-                home_team, date_from, date_to, min_games, None, team=home_team
-            )
-            if not rows:
-                yield event.plain_result(f"❌ {mon} 月没有能结算的战绩喵。")
-                return
-            ranks = stats.ranks_for(rows)
-            entries = [
-                {
-                    "rank_no": ranks[i],
-                    "player": r["player"],
-                    "total_points": r.get("total_points") or 0,
-                    "bonus": stats.rank_bonus(ranks[i], r.get("total_points") or 0),
-                }
-                for i, r in enumerate(rows[:reward_ranks])
-            ]
-            # 覆盖写之前先读旧记录：**只有「该月第一次结算」或「获奖名次变了」
-            # 才 @ 全群**（重跑但名单没变就只提示，不打扰人）。读必须放在写前面，
-            # 写完再读拿到的是自己刚写进去的，永远比不出变化。
-            old_entries = await self.db.get_settlement_entries(home_team, key)
-            await self.db.set_settlement(home_team, key, entries)
-            receipt = stats.format_settlement(
-                home_team, year, mon, entries, reward_ranks
-            )
-            if not stats.settlement_awards_changed(old_entries, entries):
-                yield event.plain_result(receipt + stats.format_settlement_repeat())
-                return
-            # @ 获奖成员。绑定了 QQ 的发真 At（QQ 上会弹提醒），没绑定的退化成
-            # 字面「@名字」—— @ 不出来好过整条公告不发。
-            names = [e["player"] for e in entries]
-            qq_of = await self.db.get_qq_ids_by_names(home_team, names)
-            chain: list = [Plain(receipt + "\n\n")]
-            for kind, value in stats.settlement_announcement(names):
-                if kind == "at":
-                    qq = qq_of.get(value)
-                    chain.append(At(qq=qq) if qq else Plain(f"@{value}"))
+            for date_from, date_to, key in periods:
+                year, mon = int(key[:4]), int(key[5:7])
+                rows = await self.db.get_player_ranking(
+                    home_team, date_from, date_to, min_games, None, team=home_team)
+                if not rows:
+                    receipts.append(f"📋 {year}年{mon}月没有能结算的战绩喵，已跳过。")
+                    continue
+                ranks = stats.ranks_for(rows)
+                entries = [dict(rank_no=ranks[i], player=row["player"],
+                                total_points=row.get("total_points") or 0,
+                                bonus=stats.rank_bonus(ranks[i], row.get("total_points") or 0))
+                           for i, row in enumerate(rows[:reward_ranks])]
+                old_entries = await self.db.get_settlement_entries(home_team, key)
+                receipt = stats.format_settlement(home_team, year, mon, entries, reward_ranks)
+                if stats.settlement_awards_changed(old_entries, entries):
+                    changed_names.extend(e["player"] for e in entries)
                 else:
-                    chain.append(Plain(value))
-            yield event.chain_result(chain)
+                    receipt += stats.format_settlement_repeat()
+                receipts.append(receipt)
+                settlements.append((key, entries))
+            if not settlements:
+                yield event.plain_result("\n\n".join(receipts))
+                return
+            await self.db.set_settlements(home_team, settlements)
         except Exception:
             logger.exception("结算失败")
             yield event.plain_result("❌ 结算出错了喵…稍后再试一次嘛 (；・∀・)")
+            return
+
+        # 群公告发布与 @ 查询独立于数据库事务，失败不能谎报结算失败。
+        try:
+            await self._publish_settlement_notice(event, home_team, settlements)
+            notice_result = "📢 本次奖励已发布群公告，请获奖成员领取喵～"
+        except asyncio.TimeoutError:
+            logger.warning("结算已保存，群公告发布超时，结果未确认")
+            notice_result = "⚠️ 结算已保存，群公告发布结果未确认喵，请查看群公告。"
+        except Exception:
+            logger.exception("结算已保存，群公告发布失败")
+            notice_result = "⚠️ 结算已保存，群公告发布失败喵，请检查机器人群管理权限并手动提醒领取。"
+        chain = [Plain("\n\n".join(receipts) + "\n\n" + notice_result)]
+        names = list(dict.fromkeys(changed_names))
+        if names:
+            try:
+                qq_of = await self.db.get_qq_ids_by_names(home_team, names)
+            except Exception:
+                logger.exception("结算领奖提醒获取 QQ 失败")
+                qq_of = {}
+            chain.append(Plain("\n\n"))
+            period_text = "、".join(f"{int(key[:4])}年{int(key[5:7])}月" for key, _ in settlements)
+            for kind, value in stats.settlement_announcement(names, period_text):
+                chain.append(At(qq=qq_of[value]) if kind == "at" and qq_of.get(value)
+                             else Plain(f"@{value}" if kind == "at" else value))
+        yield event.chain_result(chain)
 
     @filter.command("重置结算", alias={"/重置结算"})
     async def reset_settle(self, event: AstrMessageEvent):
@@ -1848,13 +1850,16 @@ class BattleReportPlugin(Star):
         # 复用 `/结算` 的参数解析（月份在中/在末尾都认）。名次数对重置没有意义，
         # 解析出来直接丢掉 —— `/重置结算 7月 12` 与 `/重置结算 7月` 等价。
         try:
-            month, _ = _parse_settle_args(
+            months, _ = _parse_settle_args(
                 _strip_command(event.get_message_str(), _RESET_SETTLE_CMDS)
             )
         except ValueError as e:
             yield event.plain_result(f"❌ {e}")
             return
-        _, _, key = settle_month_range(month)
+        if len(months) != 1:
+            yield event.plain_result("❌ 重置结算每次只指定一个月份喵。")
+            return
+        _, _, key = settle_month_range(months[0])
         year, mon = int(key[:4]), int(key[5:7])
 
         try:

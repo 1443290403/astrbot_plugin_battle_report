@@ -1875,3 +1875,202 @@ def test_private_help_is_general_and_cannot_submit(plugin_module,tmp_path):
     response = asyncio.run(collect(obj.help_cmd(event('/帮助',group=''))))
     assert '请到' in response[0] and '私聊不能提交' in response[0]
     assert '友谊群操作流程预览' in response[1]
+
+
+@pytest.fixture
+def settlement_batch(plugin_module, tmp_path, monkeypatch):
+    from datetime import datetime
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 2)
+    monkeypatch.setattr(plugin_module, 'datetime', Clock)
+    monkeypatch.setattr(sys.modules[plugin_module.settle_month_range.__module__], 'datetime', Clock)
+    obj = plugin(plugin_module, tmp_path)
+    obj._require_home = AsyncMock(return_value=(None, 'a队'))
+    obj._is_manager = AsyncMock(return_value=True)
+    obj.db.get_player_ranking = AsyncMock(return_value=[
+        dict(player='云玩家', total_points=100, wins=10, total=12),
+        dict(player='萌新', total_points=20, wins=8, total=12)])
+    obj.db.get_settlement_entries = AsyncMock(return_value=[])
+    obj.db.set_settlements = AsyncMock()
+    obj.db.get_qq_ids_by_names = AsyncMock(return_value={'云玩家': '10001'})
+    ev = event('/结算 7月 8月 7月 2')
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    ev.get_self_id = lambda: '10002'
+    return obj, ev
+
+
+@pytest.mark.parametrize('payload,months,ranks', [
+    ('', [None], 4), ('七月 八月', [7, 8], 4), ('7月,8月、九月，7月 12', [7, 8, 9], 12),
+    ('12 时间=7月 8月', [7, 8], 12)])
+def test_settlement_multiple_month_argument_parsing(plugin_module, payload, months, ranks):
+    assert plugin_module._parse_settle_args(payload) == (months, ranks)
+
+
+@pytest.mark.parametrize('payload', ['7月abc', '7月 4 8', '8月 13月', '7-9月'])
+def test_settlement_rejects_ambiguous_or_invalid_arguments(plugin_module, payload):
+    with pytest.raises(ValueError):
+        plugin_module._parse_settle_args(payload)
+
+
+def test_settlement_batch_saves_each_month_then_publishes_one_full_notice(settlement_batch):
+    obj, ev = settlement_batch
+    order = []
+    async def saved(*args):
+        order.append('saved')
+    async def published(*args, **kwargs):
+        order.append('notice')
+        return None
+    obj.db.set_settlements.side_effect = saved
+    ev.bot.call_action.side_effect = published
+    response = asyncio.run(collect(obj.settle(ev)))
+    assert order == ['saved', 'notice']
+    home, settlements = obj.db.set_settlements.await_args.args
+    assert home == 'a队'
+    assert [key for key, _ in settlements] == ['2026-07', '2026-08']
+    assert all([e['bonus'] for e in entries] == [130, 60] for _, entries in settlements)
+    assert [c.args for c in obj.db.get_player_ranking.await_args_list] == [
+        ('a队', '2026-07-01', '2026-07-31', 1, None),
+        ('a队', '2026-08-01', '2026-08-31', 1, None)]
+    assert all(c.kwargs == {'team': 'a队'} for c in obj.db.get_player_ranking.await_args_list)
+    ev.bot.call_action.assert_awaited_once()
+    assert ev.bot.call_action.await_args.args == ('_send_group_notice',)
+    params = ev.bot.call_action.await_args.kwargs
+    assert params['group_id'] == 100 and params['self_id'] == 10002
+    assert params['confirm_required'] == 1 and params['tip_window_type'] == 0
+    content = params['content']
+    assert all(s in content for s in ['2026年7月', '2026年8月', '云玩家  奖金260', '萌新  奖金120', '总计 380', '领取'])
+    assert sum(type(c).__name__ == 'At' for c in response[0]) == 1
+    obj.db.get_qq_ids_by_names.assert_awaited_once_with('a队', ['云玩家', '萌新'])
+
+
+def test_settlement_unchanged_months_still_included_in_real_group_notice(settlement_batch):
+    obj, ev = settlement_batch
+    obj.db.get_settlement_entries.return_value = [dict(rank_no=1, player='云玩家'), dict(rank_no=2, player='萌新')]
+    response = asyncio.run(collect(obj.settle(ev)))
+    ev.bot.call_action.assert_awaited_once()
+    assert '2026年7月' in ev.bot.call_action.await_args.kwargs['content']
+    assert all(type(c).__name__ != 'At' for c in response[0])
+    obj.db.get_qq_ids_by_names.assert_not_awaited()
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('permission denied'), asyncio.TimeoutError()])
+def test_settlement_notice_failure_does_not_undo_or_misreport_saved_result(settlement_batch, failure):
+    obj, ev = settlement_batch
+    ev.bot.call_action.side_effect = failure
+    response = asyncio.run(collect(obj.settle(ev)))
+    obj.db.set_settlements.assert_awaited_once()
+    ev.bot.call_action.assert_awaited_once()
+    text = ''.join(c.args[0] for c in response[0] if type(c).__name__ == 'Plain')
+    assert '结算完成' in text and '结算已保存' in text and '结算出错' not in text
+    assert ('未确认' if isinstance(failure, asyncio.TimeoutError) else '公告发布失败') in text
+
+
+def test_settlement_notice_error_envelope_is_not_reported_as_success(settlement_batch):
+    obj, ev = settlement_batch
+    ev.bot.call_action.return_value = {'status': 'failed', 'retcode': 100}
+    response = asyncio.run(collect(obj.settle(ev)))
+    assert '公告发布失败' in response[0][0].args[0]
+
+
+def test_settlement_current_month_rejects_entire_batch_before_queries(settlement_batch):
+    obj, ev = settlement_batch
+    ev.get_message_str = lambda: '/结算 7月 11月'
+    response = asyncio.run(collect(obj.settle(ev)))
+    assert '还没过完' in response[0]
+    obj.db.get_player_ranking.assert_not_awaited()
+    obj.db.set_settlements.assert_not_awaited()
+    ev.bot.call_action.assert_not_awaited()
+
+
+def test_settlement_nonadmin_multiple_months_only_reads_snapshots(settlement_batch):
+    obj, ev = settlement_batch
+    obj._is_manager.return_value = False
+    obj.db.get_settlement_entries.side_effect = [[dict(rank_no=1, player='云玩家', total_points=10, bonus=30)], []]
+    response = asyncio.run(collect(obj.settle(ev)))
+    assert '结算查询' in response[0] and '2026年8月' in response[0] and '还没结算' in response[0]
+    obj.db.set_settlements.assert_not_awaited()
+    obj.db.get_player_ranking.assert_not_awaited()
+    ev.bot.call_action.assert_not_awaited()
+
+
+@pytest.mark.parametrize('stage', ['query', 'save'])
+def test_settlement_batch_failure_never_publishes_notice(settlement_batch, stage):
+    obj, ev = settlement_batch
+    if stage == 'query':
+        obj.db.get_player_ranking.side_effect = [obj.db.get_player_ranking.return_value, RuntimeError('query failed')]
+    else:
+        obj.db.set_settlements.side_effect = RuntimeError('transaction failed')
+    response = asyncio.run(collect(obj.settle(ev)))
+    assert '结算出错' in response[0]
+    ev.bot.call_action.assert_not_awaited()
+    if stage == 'query':
+        obj.db.set_settlements.assert_not_awaited()
+
+
+@pytest.mark.parametrize('all_empty', [False, True])
+def test_settlement_empty_month_is_skipped_without_overwriting_old_snapshot(settlement_batch, all_empty):
+    obj, ev = settlement_batch
+    obj.db.get_player_ranking.side_effect = [[], [] if all_empty else obj.db.get_player_ranking.return_value]
+    response = asyncio.run(collect(obj.settle(ev)))
+    if all_empty:
+        obj.db.set_settlements.assert_not_awaited()
+        ev.bot.call_action.assert_not_awaited()
+        assert '已跳过' in response[0]
+    else:
+        assert [key for key, _ in obj.db.set_settlements.await_args.args[1]] == ['2026-08']
+        assert '2026年7月' not in ev.bot.call_action.await_args.kwargs['content']
+
+
+def test_reset_settlement_rejects_multiple_months_without_deleting(settlement_batch):
+    obj, ev = settlement_batch
+    obj.db.clear_settlement = AsyncMock()
+    ev.get_message_str = lambda: '/重置结算 7月 8月'
+    response = asyncio.run(collect(obj.reset_settle(ev)))
+    assert '只指定一个月份' in response[0]
+    obj.db.clear_settlement.assert_not_awaited()
+
+
+def test_settlement_reuses_previous_month_default_and_year_rollover(settlement_batch):
+    obj, ev = settlement_batch
+    ev.get_message_str = lambda: '/结算 12月'
+    asyncio.run(collect(obj.settle(ev)))
+    assert obj.db.set_settlements.await_args.args[1][0][0] == '2025-12'
+    ev.get_message_str = lambda: '/结算'
+    asyncio.run(collect(obj.settle(ev)))
+    assert obj.db.set_settlements.await_args.args[1][0][0] == '2026-10'
+
+
+def test_settlement_qq_lookup_failure_keeps_notice_and_receipt(settlement_batch):
+    obj, ev = settlement_batch
+    obj.db.get_qq_ids_by_names.side_effect = RuntimeError('lookup failed')
+    response = asyncio.run(collect(obj.settle(ev)))
+    ev.bot.call_action.assert_awaited_once()
+    assert '结算完成' in response[0][0].args[0]
+    assert any(type(c).__name__ == 'Plain' and '@云玩家' in c.args[0] for c in response[0])
+
+
+@pytest.mark.parametrize('blocked', ['private', 'disabled', 'unbound'])
+def test_settlement_original_group_guards_prevent_writes_and_notices(settlement_batch, blocked):
+    obj, ev = settlement_batch
+    del obj._require_home
+    if blocked == 'private':
+        ev.get_group_id = lambda: ''
+    elif blocked == 'disabled':
+        obj.db.get_group_ban.return_value = True
+    else:
+        obj.db.get_group_home.return_value = None
+    asyncio.run(collect(obj.settle(ev)))
+    obj.db.set_settlements.assert_not_awaited()
+    obj.db.get_player_ranking.assert_not_awaited()
+    ev.bot.call_action.assert_not_awaited()
+
+
+def test_settlement_non_onebot_platform_does_not_send_qq_action(settlement_batch):
+    obj, ev = settlement_batch
+    ev.get_platform_name = lambda: 'webchat'
+    response = asyncio.run(collect(obj.settle(ev)))
+    obj.db.set_settlements.assert_awaited_once()
+    ev.bot.call_action.assert_not_awaited()
+    assert '公告发布失败' in response[0][0].args[0]
