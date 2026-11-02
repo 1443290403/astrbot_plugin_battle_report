@@ -89,7 +89,8 @@ def _review_scope(event) -> tuple[str, str] | None:
 class OfficialQueueFilter(CustomFilter):
     def filter(self, event, cfg) -> bool:
         name = getattr(event, "get_platform_name", None)
-        return bool(callable(name) and name() in QUEUE_PLATFORMS
+        # OneBot 也接收明确的等车指令，仅用于静默终止，避免落入普通聊天。
+        return bool(callable(name) and name() in QUEUE_PLATFORMS | {'aiocqhttp'}
                     and parse_queue_command(event.get_message_str()))
 
 
@@ -191,7 +192,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -352,13 +353,13 @@ class BattleReportPlugin(Star):
                 if wins + losses else '暂无胜负场次')
         return display, rate
 
-    @filter.custom_filter(OfficialQueueFilter)
+    @filter.custom_filter(OfficialQueueFilter, priority=100)
     async def official_queue_cmd(self, event: AstrMessageEvent):
         """等车、加入、离开、发车和新增队列；仅 QQ 官方群聊。"""
-        if event.get_platform_name() not in QUEUE_PLATFORMS:
-            return
         event.stop_event()
         try:
+            if event.get_platform_name() not in QUEUE_PLATFORMS:
+                return
             if not self.config.get("official_queue_enabled", True):
                 await event.send(event.plain_result("等车功能尚未启用喵。"))
                 return
@@ -2623,6 +2624,11 @@ class BattleReportPlugin(Star):
     async def help_cmd(self, event: AstrMessageEvent, arg: str = ""):
         """按当前群用途展示流程，命令索引和跨群流程可显式查看。"""
         arg = arg.strip()
+        if arg == "等车" and (not callable(getattr(event, "get_platform_name", None))
+                            or event.get_platform_name() not in QUEUE_PLATFORMS):
+            event.stop_event()
+            event.clear_result()
+            return
         try:
             disabled = await self._check_enabled(event)
         except Exception:

@@ -243,6 +243,8 @@ def test_atomic_save_failure_rolls_back_queue_change(setup_queue, monkeypatch):
 
 @pytest.mark.parametrize('text,expected', [
     ('/等车', ('等车', '')), ('等车', ('等车', '')), ('/人齐了发车 ABC123 123456789', ('人齐了发车', 'ABC123 123456789')),
+    ('/帮助 等车', ('等车帮助', '')), ('战报帮助 等车', ('等车帮助', '')),
+    ('/帮助 等车 其他', None),
     ('今天等车很久', None), ('/等车天气', None), ('/我也要等车ABC', None)])
 def test_command_filter_is_strict(text, expected):
     assert queue.parse_command(text) == expected

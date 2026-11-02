@@ -152,7 +152,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 ## v1.24.0 QQ 官方等车
 
-- `OfficialQueueFilter` 仅 qq_official/qq_official_webhook 的明确等车指令；处理器另验 GroupMessage 的 group_openid，不接管 OneBot、频道、私聊、普通闲聊，不新增 LLM 工具。
+- `OfficialQueueFilter` 接收 qq_official/qq_official_webhook 与 aiocqhttp 的明确等车指令（含帮助别名），priority=100；OneBot 仅静默 stop_event + clear_result，不查服务、不发提示，避免转入聊天。队列操作仍仅官方平台，另验 GroupMessage 的 group_openid；不接管其他平台或普通闲聊，不新增 LLM 工具。
 - `official_queue.py` 的 WaitingQueues 按 platform_id/AppID/group_openid 隔离、成员用 OpenID。后台按原持久化截止处理，单群锁、多群并行；临时文件原子替换，失败不覆盖其他群的在途引用。
 - 队列 180 秒刷新，未满3人540秒、满3人重新900秒，持续满员不重置、降至2人重开540秒；个人 joined_at 不随刷新重置。独立多车、一人同时一车，已在车中再开创建空车。发车只允许本车成员、至少3人，@其他参加者；到期通知全部当时成员。
 - SDK直接发送 Markdown+键盘，发车按钮仅填输入框；C前缀车token避免未填群号误发车。旧车token不复用；公开战绩按本群home_team/北京时间当月，通过同份build_record_metrics得到胜率，不写统计/权限/原ID归属。

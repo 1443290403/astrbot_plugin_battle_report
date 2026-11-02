@@ -31,6 +31,8 @@ HELP = ('等车流程喵～\n/等车：开车或查看队列\n/再开一车：�
 
 
 def parse_command(text):
+    if re.fullmatch(r'\s*/?(?:帮助|战报帮助)\s+等车\s*', text):
+        return '等车帮助', ''
     match = re.fullmatch(r'\s*/?(' + '|'.join(COMMANDS) + r')(?:\s+(.*))?\s*', text, re.S)
     return (match[1], (match[2] or '').strip()) if match else None
 
