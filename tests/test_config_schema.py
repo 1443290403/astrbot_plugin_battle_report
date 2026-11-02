@@ -82,3 +82,12 @@ def test_plugin_persona_selector_defaults_to_no_commentary():
     assert item['type'] == 'string' and item['default'] == ''
     assert item['_special'] == 'select_persona'
     assert 'ranking_ai_provider_id' not in _schema()
+
+
+def test_official_waiting_defaults_and_markdown_settings():
+    schema = _schema()
+    assert schema['official_queue_enabled']['default'] is True
+    assert schema['official_queue_proactive']['default'] is True
+    assert schema['official_queue_markdown_template_id']['default'] == ''
+    assert schema['official_queue_markdown_param']['default'] == 'content'
+    assert '权限' in schema['official_queue_proactive']['hint']

@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.23.0`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
+> 对应版本：`1.24.0`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -37,6 +37,7 @@
 
 ```
 main.py                    命令入口 / 权限 / 平台消息收发 / 编排
+  ├── official_queue.py     QQ 官方等车、独立计时、按钮与待发提醒 ← 持久化 JSON
   ├── request_review.py     QQ 申请转发、审批与本地持久化 ← 不依赖 MySQL
   ├── help_guide.py         三类用途流程帮助 + 未完成配置的开通引导 ← 纯 Python
   ├── command_args.py       引号/空格/批量 ID 的命令参数解析        ← 纯 Python
@@ -409,6 +410,14 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **LLM 排表工具（v1.23.0）：** `@filter.llm_tool(name="battle_report_lineup")` 接收唯一的 `lineup_text:string` 参数，当前 event 由框架注入，不开放群号、日期、权限或 SQL 参数。工具与 `lineup_cmd` 共用 `_prepare_lineup`，沿用 `_group_check`、仅群聊、`parse_lineup`、`replace_teams`、默认规则与随机种子；不要求绑定战队或明确属性，不调用提交入口。错误返回文本供模型追问；成功通过 `_send_report_text` 直发原文、清空待处理结果并返回 None，按 AstrBot v4.27.3 本地工具执行器约定结束循环，防止模型重写、重复发送遗留消息。文档描述要求只使用用户给出的队名和名单，缺项先问、不编造；不修改会话人格或另发模型请求。
 
+**QQ 官方等车（v1.24.0）：** `OfficialQueueFilter` 严格匹配官方平台的等车命令，拒绝私聊/频道、群禁用和 DB 未就绪；不监听其他平台或普通闲聊。`WaitingQueues` 仅持久化队列及展示关联，不写比赛/统计/权限表。作用域为平台实例 ID + bot AppID + group_openid，成员取官方 member_openid；SDK `post_group_message` 直接发送 Markdown + 动态键盘，不能用 OneBot 或普通 At 组件替代。发车按钮 action.type=2、enter=false，填群号后发送；加入/离开/再开/帮助为 enter=true。按钮带不可复用的 C 前缀随机车 token，不接受其他群或其他机器人的车 token。
+
+- 每车初始 540 秒截止、每 180 秒刷新；从不足 3 到至少 3 时截止改为当前时刻 +900 秒，持续满员不重置；降至不足 3 时重新 +540 秒。每人 joined_at 独立、重复加入不改时间。允许多车及超过 3 人，一人在同群只能加入一车；已在车中的创建者另开空车。最后一人离开时移除空车。
+- 仅本车成员可发车，至少 3 人，目的群号为 5~12 位正数字；成功移除该车并通知除发车者外的成员，自动解散通知当时全车成员，其他车不变。每次操作先检查到期，禁止旧按钮复活旧车；消息 ID 去重最多保留最近 200 条。
+- 状态位于 data_dir/official_waiting_queues.json，临时文件 fsync + os.replace 原子落盘后才发送；文件损坏不覆盖。edit 内无 await，失败仅还原变化的群以免破坏别群的发送引用；每群异步锁，多群 tick 并发。刷新不追补离线历史面板，重启按原截止检查。initialize 启动后台任务、terminate 先取消任务再关闭 DB。
+- 集合/解散通知先存 outbox，API 确认 id 后删除；失败保留，180 秒后或新指令补发。接口有 20 秒限时，单次请求不自动重试；网络超时无法保证平台没有送达，因此补发采用至少一次通知语义。普通面板失败不回滚成员变更。被动回复仅使用 290 秒内且本模块未用满 4 次的 msg_id +递增 msg_seq；其余用已授权的主动消息，权限关闭/接口失败不得假报已送达。
+- 面板异步获取每人当月战绩，profile 单次限时 8 秒；月份按北京时间计算。本群 home_team 取原群绑定；展示关联或现有官方账号绑定得到角色全部 ID，去重后读取 get_player_record(with_raid=False)，胜率展示复用 build_record_metrics，平局不进入分母。未绑定/暂无胜负/暂不可用单独展示，不填 0%。`等车ID` 只查询公开角色/参赛 ID 并存到当前 scope，不修改 users/player_ids 或管理员身份，换队后旧关联失效。
+
 战报文本在群里"流浪"，读写消息是本插件的一大块隐式依赖：
 
 | 工具 | 用途 | 关键点 |
@@ -757,6 +766,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
 | **F-03** | `/记录 玩家名 比分 [对手]` | `record_cmd` / `lineup.record_from_info` | 找该选手**最后一场未记录**的 `0:0` 对阵填入比分；指定对手且无未记录对阵时，在最新轮次插入新对阵。比分支持 `2:0` 或紧凑 `20` | M-04、M-10、队对齐(见下) | 无 |
 | **F-38** | LLM 工具 `battle_report_lineup(lineup_text)` | `lineup_tool` / `_prepare_lineup` | 与 F-01 共用完整排表流程；按当前群保存名单，成功只直发一份原文并返回 None，错误文本交回模型。仅在用户明确要求并给出双方名单时调用；私聊/禁用/数据库检查不可绕过 | M-01、M-03、M-10、M-11 | `teams`（覆盖式，不写战报） |
+| **F-39** | QQ 官方群 `/等车`、`/蹲车`、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/等车帮助` | `official_queue_cmd` / `WaitingQueues` | 官方群按钮及多车独立计时，3分钟刷新、9/15分钟解散，发车定向提醒；公开战绩展示关联与等待时长 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON，不改 schema v19 |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -959,13 +969,14 @@ year = now.year - 1 if month > now.month else now.year
 
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
+| **改 QQ 官方等车** | ① OfficialQueueFilter 平台/指令/群检查 ② WaitingQueues 状态、作用域锁、计时/出发/outbox/存档 ③ _send_waiting_message 的 SDK 参数/模板/被动额度及主动权限 ④ _waiting_profile 的 home_team、北京时间当月和公开展示关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **改战绩卡片** | ① record/my_record 与 `_record_results` 的范围和趋势分流 ② `stats.build_record_metrics` ③ `chart.make_record_images` 与共享 `_trend_image` ④ handler/渲染/指标/集合踢馆结果回归 ⑤ 帮助、预览与 README | 不把个人对局与战队整场混算、不吞掉长 ID 或截掉明细、不把趋势失败变成战绩查询失败；保留标准响应链 |
 | **改排行图片发送** | ① `ranking` 的标准 yield 响应链 ② 图片生成失败回退与点评展示行一致 ③ `tests/test_main.py` 图片先输出/点评后生成、不调用 stop_event/event.send、独立请求测试 ④ README/M-09 | 不绕开 AstrBot 回复装饰/发送阶段，不修改 DNS、不把网络故障宣称已修复、不将排行测试等同普通聊天全链路验证 |
 | **改排行点评** | ① `ranking` 的先发榜单/后点评路径及 `_ranking_commentary` ② `_ai_persona_prompt` 的插件统一人格解析 ③ `ranking_ai_comment`/`ai_persona_id` 配置四处 ④ `tests/test_main.py`、主群帮助与预览 | 复用本次查询的月份、范围与展示函数；不因图片提前 return 漏点评，不把 LLM 失败报成数据库查询失败，不另算积分或导入聊天历史 |
 | **改战报原文输出** | ① 排表/记录/轮次三个 handler 的 `_send_report_text` ② `lineup.normalize_duel_spacing` ③ handler 与格式保留测试 ④ README/M-10 | 成功正文不得回到回复整理流程；错误提示正常保留，禁群/私聊/参数检查不能绕过；只规范比分外部分隔，不压缩 ID 内空格 |
-| **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段 ③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
+| **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段（官方专用等车使用独立 HELP 和 `/帮助 等车`，不混入 OneBot 索引）③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
 | **对局加一个属性**（如 出场序号/时长） | ① `Duel` dataclass ② `parse_battle_report` ③ `duels` 表 + 迁移 ④ `insert_report` ⑤ **所有读出 duels 的 SELECT**：`get_export_rows`、`get_reports_for_export`、`get_player_match_stats` ⑥ dict 组装处（`get_reports_for_export` 逐字段手写）⑦ `format_duels_block` 还原 ⑧ CSV 列 | ⑤⑥ 是"逐字段罗列"的写法，**漏一个字段就是静默丢数据** |
 | **改胜负判定** | ① `determine_match_winner` + 两个 winner 函数 ② 历史 `matches.winner` 回填脚本 ③ 战队战绩/对战记录 ④ 导出胜负过滤 ⑤ `compute_match_stats` 的 winner 守卫 ⑥ 提交时的拒录分支 | M-07：**历史数据不会自动重算** |
@@ -1250,6 +1261,10 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `min_games` | 1 | F-05 入榜最低场次（SQL `HAVING total >=`，口径见 §10-2） |
 | `min_duels` | 3 | F-04 单份战报最少对局数，低于即拒收。**与 `min_games` 是两件事**：一个是提交前置条件，一个是排名门槛 |
 | `trend_chart_width` / `height` | 960 / 480 | F-07 图片尺寸 |
+| `official_queue_enabled` | true | F-39 仅 QQ 官方群等车指令及后台定时任务 |
+| `official_queue_proactive` | true | F-39 超过被动时限/额度时用已授权的主动消息 |
+| `official_queue_markdown_template_id` | 空 | F-39 留空为原生 Markdown，否则为审核模板 ID |
+| `official_queue_markdown_param` | content | F-39 审核模板正文变量名 |
 | `default_rule` | `2/3【KOF】` | F-01 未指定规则时的默认值；**同时决定 M-07 走哪个判定分支** |
 | `super_admin` | 空 | F-20/F-21/F-22/F-23 权限，留空时不授予超管 |
 | `pairing_seed` | 空 | F-01/F-02 随机种子（填空则固定，便于复现） |
@@ -1266,6 +1281,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
+| `test_official_queue.py` | 独立队列、180/540/900秒边界、重启/待发/原子写回滚、作用域、旧按钮/去重、跨群并发、填群号保护和按钮参数；不连接 QQ |
 | `test_request_review.py` | 事件/卡片筛选、JSON/URL/序号边界、卡片 msgseq 审批、同群新邀请/重复/乱序隔离、旧标识保留、QQ 已同意同步与拒绝冲突；文本通知、四种审批、重启/并发/选单、跨连接隔离、引用兼容/核验、错误及存储失败；可选真实 aiocqhttp 响应/异常回归，不建立 QQ 连接 |
 | `test_qq_request_diagnostics.py` | 诊断报告脱敏、审批类型/序号保留、旧记录缺字段/错误 JSON/超大文件、精确编号和最新记录选择、只读校验、Docker 定位/失败输出隔离、worker 不递归枚举容器 |
 | `test_main.py` | 真实 handler + 框架桩；好友/群邀请监听、超管私聊审批与列表、原始引用/组件变化恢复、编号失败原因回执及 AstrBot 日志、越权/群内/其他事件拒绝、数据库不可用时审批；轮次命令补齐空闲存活选手且不入库；私聊/非战报群拒收、战队授权隔离、超管豁免设置限制、重绑、继承管理权限、含空格 ID 绑定/解绑/管理/查询、旧命令与结算等；新增三类帮助、部分配置引导、设置后发流程、只读预览、离线/禁群帮助及导出共用设置检查；发送状态分包/组合筛选/单个截止 ID 范围标记/恢复/无效参数/权限；不代表真实 QQ 联调 |
@@ -1297,6 +1313,8 @@ v1.19.0 验证：**654 项通过、1 项跳过**。新增 `/排行` 各分支和
 v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选择、缺失/空白配置使用全局默认、跨群同人格、内置 default/禁用/失效人格、当前会话模型继续调用、仅传选中人格而无额外提示、全部展示条目与长文本不截断。保留模型失败/超时取消、先发榜单及数据口径回归；模型使用模拟接口，数据库测试未启用。
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
+
+v1.24.0 验证：**940 项测试通过，1 项跳过**。覆盖官方/Webhook 指令隔离与私聊/频道/禁群/DB拦截、SDK Markdown/审核模板/动态键盘参数、发车仅填输入框、未填群号不发车、180/540/900秒边界、超3人/重复加入不重置、降至不足3人重计时、多车/一人一车、发车排除本人提及与解散全员提及、旧按钮/事件去重、按平台/AppID/群隔离、存档损坏和原子写失败、跨群并发、重启保留截止及待发提醒、主动权限关闭后的补发、等待时长与资料错误降级、公开战绩关联不改归属、北京时间当月同队去重ID胜率且排除平局、任务卸载取消和配置默认值。全部 QQ 接口与时钟为模拟，MySQL 集成未启用，未向真实官方机器人发送消息。
 
 v1.23.0 验证：**892 项测试通过，1 项跳过**。覆盖仅排表工具注册、单文本参数、命令/工具同名单同种子输出一致、默认及指定规则、引号空格 ID、命令前缀与同名前缀队名保留、当前群名单保存、TK、无比赛结果入库、原文只发送一次、无参数/不完整名单错误、私聊/禁用/数据库拦截、发送失败无自动重试。另用 AstrBot v4.27.3 实际注册方法与本地工具执行器进行隔离模拟，校验 schema、None 结束循环与 clear_result 防止遗留消息重发。MySQL 集成未启用，未连接真实 LLM 或 QQ 验证自然语言触发。
 
@@ -1341,7 +1359,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.23.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.24.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

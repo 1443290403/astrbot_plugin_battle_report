@@ -2182,3 +2182,150 @@ def test_llm_lineup_preserves_team_names_starting_with_command_word(plugin_modul
     asyncio.run(obj.lineup_tool(ev, f'{team}:云玩家\nb队:萌新'))
     assert obj.db.replace_teams.await_args.args[1][0][0] == team
     assert f'战队: {team} VS B队' in ev.send.await_args.args[0]
+
+
+@pytest.fixture
+def official_waiting(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.get_group_home.return_value = None
+    api = SimpleNamespace(post_group_message=AsyncMock(return_value={'id': 'sent'}))
+    platform = SimpleNamespace(appid='app-A', meta=lambda: SimpleNamespace(name='qq_official'),
+                               client=SimpleNamespace(api=api))
+    obj.context = SimpleNamespace(get_platform_inst=Mock(return_value=platform))
+    ev = event('/等车', group='group-openid')
+    ev.get_platform_name = lambda: 'qq_official'
+    ev.get_platform_id = lambda: 'platform-A'
+    ev.get_sender_id = lambda: 'member-openid'
+    ev.get_sender_name = lambda: '云玩家'
+    ev.message_obj = SimpleNamespace(raw_message=SimpleNamespace(group_openid='group-openid'), message_id='incoming-1')
+    return obj, ev, api, platform
+
+
+@pytest.mark.parametrize('platform,expected', [('qq_official', True), ('qq_official_webhook', True), ('aiocqhttp', False), ('webchat', False)])
+def test_waiting_filter_only_handles_official_commands(plugin_module, platform, expected):
+    ev = event('/等车')
+    ev.get_platform_name = lambda: platform
+    assert plugin_module.OfficialQueueFilter().filter(ev, {}) is expected
+    ev.get_message_str = lambda: '今天等车有点久'
+    assert not plugin_module.OfficialQueueFilter().filter(ev, {})
+
+
+def test_official_waiting_posts_real_sdk_markdown_and_keyboard_payload(official_waiting):
+    obj, ev, api, _ = official_waiting
+    asyncio.run(obj.official_queue_cmd(ev))
+    api.post_group_message.assert_awaited_once()
+    params = api.post_group_message.await_args.kwargs
+    assert params['group_openid'] == 'group-openid' and params['msg_type'] == 2
+    assert params['msg_id'] == 'incoming-1' and params['msg_seq'] == 1
+    assert '1号车' in params['markdown']['content']
+    assert '未绑定战队' in params['markdown']['content']
+    assert params['keyboard']['content']['rows'][1]['buttons'][0]['action']['enter'] is False
+    ev.send.assert_not_awaited()
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+    obj.db.insert_report.assert_not_awaited()
+
+
+def test_official_waiting_uses_approved_markdown_template_when_configured(official_waiting):
+    obj, ev, api, _ = official_waiting
+    obj.config.update(official_queue_markdown_template_id='approved-template', official_queue_markdown_param='body')
+    asyncio.run(obj.official_queue_cmd(ev))
+    md = api.post_group_message.await_args.kwargs['markdown']
+    assert md['custom_template_id'] == 'approved-template'
+    assert md['params'][0]['key'] == 'body' and md['params'][0]['values']
+    assert 'content' not in md
+
+
+@pytest.mark.parametrize('blocked', ['private', 'guild', 'banned', 'database', 'disabled'])
+def test_official_waiting_rejects_ineligible_contexts_without_mutating_state(official_waiting, blocked):
+    obj, ev, api, _ = official_waiting
+    if blocked in ('private', 'guild'):
+        ev.message_obj.raw_message = SimpleNamespace()
+        if blocked == 'private':
+            ev.get_group_id = lambda: ''
+    elif blocked == 'banned':
+        obj.db.get_group_ban.return_value = True
+    elif blocked == 'database':
+        obj.db_ready = False
+    else:
+        obj.config['official_queue_enabled'] = False
+    asyncio.run(obj.official_queue_cmd(ev))
+    api.post_group_message.assert_not_awaited()
+    assert not (obj.data_dir / 'official_waiting_queues.json').exists()
+
+
+def test_waiting_sender_cannot_reuse_another_bot_connection(official_waiting):
+    obj, _, api, _ = official_waiting
+    with pytest.raises(RuntimeError, match='原 QQ 官方机器人连接不可用'):
+        asyncio.run(obj._send_waiting_message(('platform-A', 'different-app', 'group-openid'), 'test', None, {}))
+    api.post_group_message.assert_not_awaited()
+
+
+def test_official_waiting_api_failure_does_not_claim_panel_success(official_waiting):
+    obj, ev, api, _ = official_waiting
+    api.post_group_message.return_value = None
+    asyncio.run(obj.official_queue_cmd(ev))
+    assert '发送失败' in ev.send.await_args.args[0]
+    assert obj._get_waiting_queues().room(('platform-A', 'app-A', 'group-openid'))['cars']
+
+
+def test_waiting_public_stat_link_preserves_spaces_and_does_not_claim_existing_id(official_waiting):
+    obj, _, _, _ = official_waiting
+    obj.db.get_group_home.return_value = 'a队'
+    obj.db.resolve_role = AsyncMock(return_value=None)
+    obj.db.get_player_binding = AsyncMock(return_value={'player_name': '示例 玩家'})
+    obj.db.bind_player_to_user = AsyncMock()
+    binding = asyncio.run(obj._bind_waiting_id(('platform-A', 'app-A', 'group-openid'), 'member-openid', '示例 玩家'))
+    assert binding == dict(home_team='a队', query='示例 玩家')
+    obj.db.get_player_binding.assert_awaited_once_with('a队', '示例 玩家')
+    obj.db.bind_player_to_user.assert_not_awaited()
+
+
+def test_waiting_win_rate_uses_same_team_current_beijing_month_and_excludes_draws(official_waiting, plugin_module, monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    obj, _, _, _ = official_waiting
+    class Clock:
+        @staticmethod
+        def now(tz):
+            assert tz.utcoffset(None) == timedelta(hours=8)
+            return datetime(2026, 11, 1, 0, 1, tzinfo=timezone(timedelta(hours=8)))
+    monkeypatch.setattr(plugin_module, 'datetime', Clock)
+    obj.db.get_group_home.return_value = 'a队'
+    obj.db.resolve_role = AsyncMock(return_value=dict(user_name='云玩家', players=['示例 玩家', '萌新', '萌新']))
+    obj.db.get_player_record = AsyncMock(side_effect=[dict(wins=1, losses=0, draws=7), dict(wins=0, losses=1, draws=9)])
+    assert asyncio.run(obj._waiting_profile(('p', 'a', 'g'), 'u', dict(home_team='a队', query='云玩家'))) == ('云玩家', '50%')
+    assert [call.args for call in obj.db.get_player_record.await_args_list] == [
+        ('a队', '示例 玩家', '2026-11-01', '2026-11-30'), ('a队', '萌新', '2026-11-01', '2026-11-30')]
+    assert all(call.kwargs == dict(with_raid=False) for call in obj.db.get_player_record.await_args_list)
+
+
+def test_waiting_without_id_does_not_fabricate_a_zero_win_rate(official_waiting):
+    obj, _, _, _ = official_waiting
+    obj.db.get_group_home.return_value = 'a队'
+    obj.db.get_user_by_qq = AsyncMock(return_value=None)
+    assert asyncio.run(obj._waiting_profile(('p', 'app', 'g'), 'official-openid', None)) == ('', '未绑定')
+    obj.db.get_user_by_qq.assert_awaited_once_with('a队', 'official-openid')
+
+
+def test_waiting_changed_team_does_not_reuse_old_stat_identity(official_waiting):
+    obj, _, _, _ = official_waiting
+    obj.db.get_group_home.return_value = 'b队'
+    assert asyncio.run(obj._waiting_profile(('p', 'app', 'g'), 'u', dict(home_team='a队', query='云玩家'))) == ('', '未绑定')
+
+
+def test_waiting_timer_task_is_cancelled_before_plugin_database_closes(plugin_module, tmp_path, monkeypatch):
+    obj = plugin(plugin_module, tmp_path)
+    obj._friendly_round_display = Mock()
+    db = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(plugin_module, 'Database', Mock(return_value=db))
+    queues = SimpleNamespace(tick=AsyncMock())
+    obj._get_waiting_queues = Mock(return_value=queues)
+    async def scenario():
+        await obj.initialize()
+        await asyncio.sleep(0)
+        task = obj._waiting_task
+        queues.tick.assert_awaited_once()
+        await obj.terminate()
+        assert task.done()
+        db.close.assert_awaited_once()
+    asyncio.run(scenario())

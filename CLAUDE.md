@@ -149,3 +149,11 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 仅注册 `battle_report_lineup`，Args 描述为 `lineup_text(string)`；event 由 AstrBot 注入，不向模型开放群号/权限参数。使用 `filter.llm_tool`，不依赖全局人格配置或单独请求模型。
 - 命令与工具共用 `_prepare_lineup` 的群禁用/DB/私聊检查、名单解析、名单保存及模板生成，保留引号空格 ID、默认规则、种子、TK 与双空格。工具失败返回错误文本，成功 `_send_report_text` 直发后 clear_result 并返回 None，防止执行器重发遗留结果或模型改写正文；不自动重试发送。
 - 排表仍不要求群绑定/属性，不写比赛结果；仅当前群、仅用户明确给出的名单，缺项应追问。不能把其他命令顺便注册为工具。
+
+## v1.24.0 QQ 官方等车
+
+- `OfficialQueueFilter` 仅 qq_official/qq_official_webhook 的明确等车指令；处理器另验 GroupMessage 的 group_openid，不接管 OneBot、频道、私聊、普通闲聊，不新增 LLM 工具。
+- `official_queue.py` 的 WaitingQueues 按 platform_id/AppID/group_openid 隔离、成员用 OpenID。后台按原持久化截止处理，单群锁、多群并行；临时文件原子替换，失败不覆盖其他群的在途引用。
+- 队列 180 秒刷新，未满3人540秒、满3人重新900秒，持续满员不重置、降至2人重开540秒；个人 joined_at 不随刷新重置。独立多车、一人同时一车，已在车中再开创建空车。发车只允许本车成员、至少3人，@其他参加者；到期通知全部当时成员。
+- SDK直接发送 Markdown+键盘，发车按钮仅填输入框；C前缀车token避免未填群号误发车。旧车token不复用；公开战绩按本群home_team/北京时间当月，通过同份build_record_metrics得到胜率，不写统计/权限/原ID归属。
+- 存档 official_waiting_queues.json；终态提醒先落outbox再发送，确认id才移除，失败延后补发。主动推送权限由用户确认已具备，默认开启；保留5分钟被动限制，不能伪报成功。卸载先取消任务再关DB，schema v19保持。

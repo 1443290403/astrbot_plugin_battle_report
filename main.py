@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import calendar
 import csv
 import io
 import json
@@ -28,6 +29,7 @@ from astrbot.api.message_components import At, File, Image, Node, Nodes, Plain, 
 from astrbot.api.star import Star, StarTools, register
 
 from . import chart, help_guide, lineup, stats
+from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
@@ -82,6 +84,13 @@ def _review_scope(event) -> tuple[str, str] | None:
     if not platform_id or not self_id.isascii() or not self_id.isdigit() or int(self_id) <= 0:
         return None
     return platform_id, self_id
+
+
+class OfficialQueueFilter(CustomFilter):
+    def filter(self, event, cfg) -> bool:
+        name = getattr(event, "get_platform_name", None)
+        return bool(callable(name) and name() in QUEUE_PLATFORMS
+                    and parse_queue_command(event.get_message_str()))
 
 
 class RequestReviewFilter(CustomFilter):
@@ -182,7 +191,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.23.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.24.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -190,6 +199,8 @@ class BattleReportPlugin(Star):
         self.db: Database | None = None
         self.db_ready = False
         self._review_inbox: ReviewInbox | None = None
+        self._waiting_queues: WaitingQueues | None = None
+        self._waiting_task: asyncio.Task | None = None
         try:
             self.data_dir = StarTools.get_data_dir()
         except Exception as e:
@@ -214,6 +225,11 @@ class BattleReportPlugin(Star):
         except Exception as e:
             logger.error(f"战报插件数据库连接失败: {e}")
             self.db_ready = False
+        try:
+            self._get_waiting_queues()
+            self._waiting_task = asyncio.create_task(self._waiting_loop())
+        except Exception:
+            logger.exception("QQ 官方等车模块初始化失败，原战报功能继续运行")
 
     def _friendly_round_display(self):
         """覆写 /第N轮 处理器在仪表盘的显示名（函数名 round_cmd 不变）。
@@ -235,8 +251,143 @@ class BattleReportPlugin(Star):
             logger.warning(f"设置 /第N轮 显示名失败: {e}")
 
     async def terminate(self):
+        task = getattr(self, "_waiting_task", None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         if self.db:
             await self.db.close()
+
+    # ---------- QQ 官方机器人等车 ----------
+
+    def _get_waiting_queues(self):
+        if getattr(self, "_waiting_queues", None) is None:
+            self._waiting_queues = WaitingQueues(
+                self.data_dir / "official_waiting_queues.json", self._send_waiting_message,
+                self._waiting_profile, self._bind_waiting_id,
+                proactive=bool(self.config.get("official_queue_proactive", True)), log=logger)
+        self._waiting_queues.proactive = bool(self.config.get("official_queue_proactive", True))
+        return self._waiting_queues
+
+    async def _waiting_loop(self):
+        while True:
+            try:
+                if self.config.get("official_queue_enabled", True):
+                    queues = self._get_waiting_queues()
+                    await queues.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("QQ 官方等车定时处理失败")
+            await asyncio.sleep(15)
+
+    async def _send_waiting_message(self, scope, text, keyboard, reply):
+        platform_id, appid, group_id = scope
+        platform = self.context.get_platform_inst(platform_id)
+        if (platform is None or platform.meta().name not in QUEUE_PLATFORMS
+                or str(platform.appid) != appid):
+            raise RuntimeError("原 QQ 官方机器人连接不可用")
+        if self._check_db() or await self.db.get_group_ban(group_id):
+            raise RuntimeError("本群等车推送暂不可用")
+        template = str(self.config.get("official_queue_markdown_template_id", "") or "").strip()
+        markdown = ({"custom_template_id": template, "params": [
+            {"key": str(self.config.get("official_queue_markdown_param", "content") or "content"),
+             "values": [text]}]} if template else {"content": text})
+        params = dict(msg_type=2, markdown=markdown, **reply)
+        if keyboard:
+            params["keyboard"] = keyboard
+        result = await asyncio.wait_for(platform.client.api.post_group_message(
+            group_openid=group_id, **params), timeout=20)
+        if not isinstance(result, dict) or not result.get("id"):
+            raise RuntimeError("QQ 官方消息发送未确认")
+        return result
+
+    async def _bind_waiting_id(self, scope, uid, query):
+        home = await self.db.get_group_home(scope[2])
+        if not home:
+            raise ValueError("请先联系管理员为本群绑定战队喵。")
+        role = await self.db.resolve_role(home, query)
+        player = None if role else await self.db.get_player_binding(home, query)
+        if not role and not player:
+            raise ValueError("查不到这个参赛ID或角色喵。")
+        # 只关联公开战绩展示，不修改原 QQ/角色归属、授权或参赛ID绑定。
+        return {"home_team": home, "query": query}
+
+    async def _waiting_profile(self, scope, uid, binding):
+        if self._check_db():
+            return '', '暂不可用'
+        home = await self.db.get_group_home(scope[2])
+        if not home:
+            return '', '未绑定战队'
+        if binding:
+            if binding.get("home_team") != home:
+                return '', '未绑定'
+            query = binding["query"]
+            role = await self.db.resolve_role(home, query)
+            if role:
+                display, players = role['user_name'], role['players']
+            elif await self.db.get_player_binding(home, query):
+                display, players = query, [query]
+            else:
+                return '', '未绑定'
+        else:
+            user = await self.db.get_user_by_qq(home, uid)
+            if not user:
+                return '', '未绑定'
+            display = user['name']
+            players = await self.db.get_user_players(home, user['id'])
+        now = datetime.now(timezone(timedelta(hours=8)))
+        date_from = f"{now.year}-{now.month:02}-01"
+        date_to = f"{now.year}-{now.month:02}-{calendar.monthrange(now.year, now.month)[1]:02}"
+        wins = losses = 0
+        for player in dict.fromkeys(players):
+            rec = await self.db.get_player_record(home, player, date_from, date_to, with_raid=False)
+            wins += int(rec.get('wins') or 0)
+            losses += int(rec.get('losses') or 0)
+        rate = (dict(stats.build_record_metrics(dict(wins=wins, losses=losses)))['胜率']
+                if wins + losses else '暂无胜负场次')
+        return display, rate
+
+    @filter.custom_filter(OfficialQueueFilter())
+    async def official_queue_cmd(self, event: AstrMessageEvent):
+        """等车、加入、离开、发车和新增队列；仅 QQ 官方群聊。"""
+        if event.get_platform_name() not in QUEUE_PLATFORMS:
+            return
+        event.stop_event()
+        try:
+            if not self.config.get("official_queue_enabled", True):
+                await event.send(event.plain_result("等车功能尚未启用喵。"))
+                return
+            source = getattr(event.message_obj, "raw_message", None)
+            group = getattr(source, "group_openid", None)
+            if isinstance(source, dict):
+                group = source.get("group_openid")
+            if not group or str(group) != str(event.get_group_id()):
+                await event.send(event.plain_result("等车要在 QQ 官方机器人的群聊里用喵。"))
+                return
+            err = await self._group_check(event)
+            if err:
+                await event.send(event.plain_result(err))
+                return
+            platform_id = event.get_platform_id()
+            platform = self.context.get_platform_inst(platform_id)
+            if platform is None or platform.meta().name not in QUEUE_PLATFORMS:
+                raise RuntimeError("QQ 官方机器人连接不可用")
+            scope = (str(platform_id), str(platform.appid), str(group))
+            action, raw = parse_queue_command(event.get_message_str())
+            uid = str(event.get_sender_id())
+            name = str(event.get_sender_name() or '')
+            await self._get_waiting_queues().execute(
+                scope, action, raw, uid, '' if name == uid else name,
+                str(event.message_obj.message_id or ''))
+        except Exception:
+            logger.exception("QQ 官方等车操作或面板发送失败")
+            await event.send(event.plain_result("等车操作或面板发送失败喵，请 /等车 查看当前队列。"))
+        finally:
+            event.clear_result()
 
     # ---------- 内部工具 ----------
 
@@ -2402,6 +2553,9 @@ class BattleReportPlugin(Star):
             settings_readable = self.db_ready and self.db is not None
         if disabled:
             yield event.plain_result(disabled)
+            return
+        if arg == "等车" and callable(getattr(event, "get_platform_name", None)) and event.get_platform_name() in QUEUE_PLATFORMS:
+            yield event.plain_result(OFFICIAL_QUEUE_HELP)
             return
         if arg == "超管":
             yield event.plain_result(stats.render_help(["超级管理"]))
