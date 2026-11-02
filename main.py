@@ -184,7 +184,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.20.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.21.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1176,59 +1176,31 @@ class BattleReportPlugin(Star):
         if err:
             yield event.plain_result(err)
             return
-        qq = event.get_sender_id()
-        user = await self.db.get_user_by_qq(home, qq)
-        if not user:
-            yield event.plain_result(_NEED_BIND)
+        try:
+            user = await self.db.get_user_by_qq(home, event.get_sender_id())
+            if not user:
+                yield event.plain_result(_NEED_BIND)
+                return
+            players = await self.db.get_user_players(home, user["id"])
+            if not players:
+                yield event.plain_result(f"喵…用户「{user['name']}」还没绑任何参赛ID呢。")
+                return
+            _, month = _parse_month_filter(
+                _strip_command(event.get_message_str(), ("我的战绩", "/我的战绩")))
+            date_from, date_to = month_range(month)
+            agg = await self.db.get_players_aggregate(home, players, date_from, date_to)
+            details = []
+            if len(players) > 1:
+                for player in players:
+                    rec = await self.db.get_player_record(home, player, date_from, date_to)
+                    details.append((player, stats.build_record_metrics(rec)))
+        except Exception:
+            logger.exception("我的战绩查询失败")
+            yield event.plain_result(_ERR_QUERY)
             return
-        players = await self.db.get_user_players(home, user["id"])
-        if not players:
-            yield event.plain_result(f"喵…用户「{user['name']}」还没绑任何参赛ID呢。")
-            return
-        _, month = _parse_month_filter(
-            _strip_command(event.get_message_str(), ("我的战绩", "/我的战绩"))
-        )
-        date_from, date_to = month_range(month)
-        agg = await self.db.get_players_aggregate(
-            home, players, date_from, date_to
-        )
-        wins = int(agg["wins"])
-        losses = int(agg["losses"])
-        total = int(agg["total"])
-        wr = round(wins * 100.0 / (wins + losses), 1) if (wins + losses) else 0.0
-        raid_pts = int(agg.get("raid_points", 0))
-
-        lines = [
-            f"👤 {user['name']}（{home}）喵～",
-            f"📌 参赛ID：{'、'.join(players)}",
-        ]
-        if len(players) == 1:
-            # 只有一个ID：汇总即该ID明细，无需再列
-            lines.append(
-                f"📊 战绩喵～ 胜{wins} 负{losses} 平{agg['draws']}  总{total}  "
-                f"友谊{agg.get('friendship', 0)}  积分{stats._points(wins, losses)}  "
-                f"踢馆积分{raid_pts}  总积分{stats.total_points(stats._points(wins, losses), raid_pts)}  "
-                f"胜率{wr}%"
-            )
-        else:
-            lines.append(
-                f"📊 汇总战绩喵～ 胜{wins} 负{losses} 平{agg['draws']}  总{total}  "
-                f"友谊{agg.get('friendship', 0)}  积分{stats._points(wins, losses)}  "
-                f"踢馆积分{raid_pts}  总积分{stats.total_points(stats._points(wins, losses), raid_pts)}  "
-                f"胜率{wr}%"
-            )
-            for p in players:
-                rec = await self.db.get_player_record(home, p, date_from, date_to)
-                w = int(rec.get("wins", 0))
-                l = int(rec.get("losses", 0))
-                d = int(rec.get("draws", 0))
-                t = int(rec.get("total", 0))
-                wr2 = round(w * 100.0 / (w + l), 1) if (w + l) else 0.0
-                lines.append(
-                    f"  · {p}：胜{w} 负{l} 平{d} 总{t} 友谊{rec.get('friendship', 0)} "
-                    f"踢馆{rec.get('raid_points', 0)} 胜率{wr2}%"
-                )
-        yield event.plain_result("\n".join(lines))
+        async for result in self._record_results(
+                event, user["name"], home, agg, date_from, date_to, players=players, details=details):
+            yield result
 
     @filter.command("改名", alias={"/改名"})
     async def rename_me(self, event: AstrMessageEvent, name: str = ""):
@@ -1902,6 +1874,45 @@ class BattleReportPlugin(Star):
             logger.exception("重置结算失败")
             yield event.plain_result("❌ 重置出错了喵…稍后再试一次嘛 (；・∀・)")
 
+    async def _record_results(self, event, display, home_team, agg, date_from, date_to,
+                              *, players=None, details=None, team=False):
+        """战绩统计与同范围趋势同图展示，使用标准响应链，不接管发送阶段。"""
+        metrics = stats.build_record_metrics(agg, team=team)
+        period = f"{date_from} 至 {date_to}"
+        trend_note = None
+        points = []
+        try:
+            if team:
+                raw = await self.db.get_team_trend(home_team, home_team, date_from, date_to)
+            elif players is not None:
+                raw = await self.db.get_players_trend(home_team, players, date_from, date_to)
+            else:
+                raw = await self.db.get_player_trend(
+                    home_team, display, date_from, date_to, side_team=home_team)
+            points = stats.compute_cumulative([(d, w, l) for d, w, l in raw if int(w) + int(l) > 0])
+        except Exception:
+            logger.exception("战绩趋势查询失败")
+            trend_note = "趋势暂时不可用"
+        try:
+            out = self.data_dir / "records" / f"record_{uuid4().hex}.png"
+            paths = await asyncio.to_thread(
+                chart.make_record_images, display, home_team, period, metrics, points, out,
+                team=team, players=players, details=details, trend_note=trend_note)
+        except Exception:
+            logger.exception("战绩图片生成失败，回退文字")
+            lines = [f"📊 {display}（{home_team}）战绩喵～", period]
+            if players:
+                lines += ["参赛 ID："] + list(players)
+            lines += [f"{label}：{value}" for label, value in metrics]
+            lines += [trend_note or ("友谊累计胜率：" if points else "本期暂无友谊胜负记录")]
+            lines += [f"{p['date']}  {p['win_rate']:g}%" for p in points]
+            for name, data in details or []:
+                lines += [f"参赛 ID：{name}"] + [f"{label}：{value}" for label, value in data]
+            yield event.plain_result("\n".join(lines))
+            return
+        for path in paths:
+            yield event.chain_result([Image.fromFileSystem(str(path))])
+
     @filter.command("战绩", alias={"/战绩", "战报战绩", "/战报战绩"})
     async def record(self, event: AstrMessageEvent):
         """个人战绩，默认本月，末尾可加 X月"""
@@ -1918,26 +1929,26 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"❌ {e}")
             return
         date_from, date_to = month_range(month)
-        suffix = f"（{month}月）" if month else "（本月）"
+        players = None
+        display = name or home_team
         try:
             if not name:
-                # 本战队总体战绩（默认）
-                record = await self.db.get_home_team_record(home_team, date_from, date_to)
-                yield event.plain_result(stats.format_team_record(home_team, record, suffix))
-                return
-            role = await self.db.resolve_role(home_team, name)
-            if role:
-                # 绑定角色：聚合该角色全部参赛ID，显示角色名
-                agg = await self.db.get_players_aggregate(
-                    home_team, role["players"], date_from, date_to
-                )
-                yield event.plain_result(stats.format_player_record(role["user_name"], agg))
+                agg = await self.db.get_home_team_record(home_team, date_from, date_to)
             else:
-                agg = await self.db.get_player_record(home_team, name, date_from, date_to)
-                yield event.plain_result(stats.format_player_record(name, agg))
+                role = await self.db.resolve_role(home_team, name)
+                if role:
+                    players = role["players"]
+                    display = role["user_name"]
+                    agg = await self.db.get_players_aggregate(home_team, players, date_from, date_to)
+                else:
+                    agg = await self.db.get_player_record(home_team, name, date_from, date_to)
         except Exception:
             logger.exception("战绩查询失败")
             yield event.plain_result(_ERR_QUERY)
+            return
+        async for result in self._record_results(
+                event, display, home_team, agg, date_from, date_to, players=players, team=not name):
+            yield result
 
     @filter.command("踢馆", alias={"/踢馆", "战报踢馆", "/战报踢馆"})
     async def raid(self, event: AstrMessageEvent):

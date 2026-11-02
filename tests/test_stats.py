@@ -7,7 +7,25 @@ from stats import (
     raid_defense_points,
     render_help,
     total_points,
+    build_record_metrics,
 )
+
+
+def test_record_metrics_keep_draws_out_of_rate_and_raid_out_of_friendly_points():
+    agg = dict(wins=8, losses=2, draws=7, total=17, friendship=4,
+               raid_points=5, raid_success=2, hold=3, first_round=1)
+    result = dict(build_record_metrics(agg))
+    assert result == {'胜率': '80%', '总积分': '11.4', '胜场': '8', '负场': '2',
+                      '平场': '7', '总场次': '17', '友谊积分': '6.4', '踢馆积分': '5',
+                      '友谊次数': '4', '踢馆成功': '2', '守馆成功': '3', '守馆首轮': '1'}
+    team = dict(build_record_metrics(agg, team=True))
+    assert '友谊次数' not in team and team['胜率'] == '80%'
+    assert dict(build_record_metrics({}))['胜率'] == '0%'
+
+
+def test_record_metrics_do_not_truncate_large_point_values():
+    values = dict(build_record_metrics(dict(wins=12345678, losses=0, raid_points=5)))
+    assert values['友谊积分'] == '12345678' and values['总积分'] == '12345683'
 
 
 def test_all_sections_excludes_super():

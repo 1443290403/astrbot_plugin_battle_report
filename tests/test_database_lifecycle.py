@@ -140,6 +140,20 @@ def test_export_queries_return_persisted_status_in_both_paths():
     assert all('m.export_sent' in call.args[0] for call in db._query.await_args_list)
 
 
+def test_role_aggregate_preserves_raid_counts_from_single_shared_calculation():
+    db = Database('localhost', 3306, 'root', '', 'test')
+    db.get_player_record = AsyncMock(side_effect=[
+        dict(wins=2, losses=1, draws=0, total=3), dict(wins=1, losses=0, draws=1, total=2)])
+    db._query = AsyncMock(return_value=[{'friendship': 2}])
+    db.get_raid_stats_for_players = AsyncMock(return_value=dict(
+        raid_points=5, raid_success=2, hold=3, first_round=1))
+    result = asyncio.run(db.get_players_aggregate('a队', ['云玩家', '萌新'], '2026-07-01', '2026-07-31'))
+    assert result == dict(wins=3, losses=1, draws=1, total=5, friendship=2,
+                          raid_points=5, raid_success=2, hold=3, first_round=1)
+    db.get_raid_stats_for_players.assert_awaited_once_with('a队', ['云玩家', '萌新'], '2026-07-01', '2026-07-31')
+    assert all(call.kwargs == {'with_raid': False} for call in db.get_player_record.await_args_list)
+
+
 def test_each_teams_export_mark_is_independent_in_executed_sql():
     """实际执行标记 SQL，验证 A 队标记/恢复均不改 B 队。
 

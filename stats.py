@@ -660,6 +660,26 @@ def format_home_team_vs(home_team: str, rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def build_record_metrics(agg: dict, *, team: bool = False) -> list[tuple[str, str]]:
+    """战绩卡片及其文字回退共用的指标，不改变现有积分/胜率定义。"""
+    wins, losses, draws = (int(agg.get(key, 0) or 0) for key in ("wins", "losses", "draws"))
+    total = int(agg.get("total", wins + losses + draws) or 0)
+    rate = round(wins * 100.0 / (wins + losses), 1) if wins + losses else 0.0
+    points = _points(wins, losses)
+    raid = int(agg.get("raid_points", 0) or 0)
+    metrics = [
+        ("胜率", f"{rate:g}%"), ("总积分", f"{total_points(points, raid):.2f}".rstrip("0").rstrip(".")),
+        ("胜场", str(wins)), ("负场", str(losses)),
+        ("平场", str(draws)), ("总场次", str(total)),
+        ("友谊积分", f"{points:.2f}".rstrip("0").rstrip(".")), ("踢馆积分", str(raid)),
+    ]
+    if not team:
+        metrics.append(("友谊次数", str(int(agg.get("friendship", 0) or 0))))
+    metrics += [(label, str(int(agg.get(key, 0) or 0))) for label, key in (
+        ("踢馆成功", "raid_success"), ("守馆成功", "hold"), ("守馆首轮", "first_round"))]
+    return metrics
+
+
 def format_player_record(player: str, agg: dict) -> str:
     """单个玩家战绩文本。
 
@@ -859,6 +879,7 @@ HELP_SECTIONS = {
         "/标记已发送 <截止战报ID>  管理员标记本队此 ID 及之前全部战报\n"
         "/标记未发送 <截止战报ID>  管理员将同一范围改回未发送\n"
         "/我的战绩 [X月]   我的总战绩\n"
+        "战绩以图片展示，附同月份趋势图喵\n"
         "/踢馆 [玩家名] [X月]  个人或本队踢馆成绩\n"
     ),
     "用户与参赛ID": (

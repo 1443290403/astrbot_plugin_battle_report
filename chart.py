@@ -102,22 +102,14 @@ def _win_rate_ticks(rates: list[float]) -> list[int]:
     return list(range(start, stop + 1, step))
 
 
-def make_trend_chart(
+def _trend_image(
     points: list[dict],
     title: str,
-    out_path: Path,
     width: int = 960,
     height: int = 480,
-) -> Path:
-    """绘制胜率走势图并保存。
-
-    Args:
-        points: compute_cumulative 的输出，含 date/win_rate/total。
-        out_path: PNG 保存路径（目录自动创建）。
-
-    Returns:
-        保存后的绝对路径。
-    """
+    scale: float = 1,
+):
+    """生成内存中的趋势图，坐标轴由独立趋势图与战绩卡共用。"""
     from PIL import Image, ImageDraw
 
     if not points:
@@ -126,15 +118,15 @@ def make_trend_chart(
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
-    font_title = _load_font(20)
-    font_small = _load_font(12)
+    font_title = _load_font(round(20 * scale))
+    font_small = _load_font(round(12 * scale))
 
-    margin_left, margin_right = 80, 90
-    margin_top, margin_bottom = 50, 55
+    margin_left, margin_right = round(80 * scale), round(90 * scale)
+    margin_top, margin_bottom = round(50 * scale), round(55 * scale)
     plot_w = width - margin_left - margin_right
     plot_h = height - margin_top - margin_bottom
 
-    draw.text((width / 2, 22), title, font=font_title, fill="black", anchor="mm")
+    draw.text((width / 2, round(22 * scale)), title, font=font_title, fill="black", anchor="mm")
 
     n = len(points)
     ticks = _win_rate_ticks([p["win_rate"] for p in points])
@@ -178,12 +170,34 @@ def make_trend_chart(
                          fill="#999999")
 
     # 点位标注使用实际胜率；白色描边保证与灰色场次线交叉时仍可辨认。
+    label_boxes = []
     for point, (x, y) in zip(points, coords):
-        draw.text((x, y - 8), f"{point['win_rate']:g}%", font=font_small,
+        text = f"{point['win_rate']:g}%"
+        label_y = y - 8
+        if scale != 1:
+            # 嵌入手机卡片时，密集/恒定胜率的标签上下错开，仍保留每个点的百分比。
+            offsets = [0] + [delta * direction for delta in (24, 48, 72, 96) for direction in (-1, 1)]
+            for offset in offsets:
+                candidate = y - 8 + offset
+                box = draw.textbbox((x, candidate), text, font=font_small, anchor="ms", stroke_width=2)
+                if box[1] < margin_top - 20 or box[3] > height - margin_bottom:
+                    continue
+                if not any(box[0] < b[2] + 3 and box[2] > b[0] - 3
+                           and box[1] < b[3] + 3 and box[3] > b[1] - 3 for b in label_boxes):
+                    label_y = candidate
+                    label_boxes.append(box)
+                    break
+            if label_y != y - 8:
+                draw.line([(x, y), (x, box[3] + 2 if label_y < y else box[1] - 2)],
+                          fill="#bad0fa", width=1)
+        draw.text((x, label_y), text, font=font_small,
                   fill="#2f6fed", anchor="ms", stroke_width=2, stroke_fill="white")
 
     # x 轴日期标签（抽样，显示 MM-DD）
     step = max(1, n // 10)
+    if scale != 1:
+        slots = max(2, int(plot_w / (draw.textlength("00-00", font=font_small) + 16)))
+        step = max(1, (n + slots - 1) // slots)
     for i in range(0, n, step):
         x = px(i)
         draw.text((x, height - margin_bottom + 8), _short_date(points[i]["date"]),
@@ -197,13 +211,142 @@ def make_trend_chart(
     draw.text((width - margin_right, height - 14), "-- 累计场次",
               font=font_small, fill="#999999", anchor="rm")
 
+    return img
+
+
+def make_trend_chart(points: list[dict], title: str, out_path: Path,
+                     width: int = 960, height: int = 480) -> Path:
+    """保存独立趋势图；与战绩卡片复用同一绘图和坐标轴逻辑。"""
+    img = _trend_image(points, title, width, height)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out_path))
+    img.close()
     return out_path.resolve()
 
 
 # ---------- 排行表格图片 ----------
+
+def _wrap_card_text(text: str, font, width: int) -> list[str]:
+    """按实际字宽换行，保留名字中的空格，不截断长 ID。"""
+    lines = []
+    for paragraph in str(text).split("\n"):
+        current = ""
+        for char in paragraph:
+            if current and font.getlength(current + char) > width:
+                lines.append(current)
+                current = ""
+            current += char
+        lines.append(current)
+    return lines
+
+
+def make_record_images(title: str, home_team: str, period: str,
+                       metrics: list[tuple[str, str]], points: list[dict], out_path: Path,
+                       *, team: bool = False, players: list[str] | None = None,
+                       details: list[tuple[str, list[tuple[str, str]]]] | None = None,
+                       trend_note: str | None = None) -> list[Path]:
+    """手机竖版战绩卡：指标与趋势同图，多 ID 明细每页最多三个，不丢条目。"""
+    from PIL import Image, ImageDraw
+
+    width, pad, gap = 900, 32, 16
+    content_w = width - pad * 2
+    title_font, body_font = _load_font(40, True), _load_font(24)
+    small_font, value_font = _load_font(22), _load_font(40, True)
+    blue, ink, muted = "#2f6fed", "#17243b", "#63718a"
+    players, details = players or [], details or []
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def header_lines(detail_page=None):
+        scope = "战队战绩" if team else "个人战绩"
+        result = [(scope if detail_page is None else f"参赛 ID 明细 · {detail_page}", body_font, blue)]
+        result += [(line, title_font, ink) for line in _wrap_card_text(title, title_font, content_w)]
+        for text in (f"战队：{home_team}", period):
+            result += [(line, small_font, muted) for line in _wrap_card_text(text, small_font, content_w)]
+        if players and detail_page is None:
+            text = "参赛 ID：" + "、".join(players[:4])
+            if len(players) > 4:
+                text += f" 等 {len(players)} 个，完整列表见明细"
+            result += [(line, small_font, muted) for line in _wrap_card_text(text, small_font, content_w)]
+        return result
+
+    def text_height(lines):
+        return sum(font.size + 14 for _, font, _ in lines)
+
+    def draw_header(draw, lines):
+        y = pad
+        for text, font, color in lines:
+            draw.text((pad, y), text, font=font, fill=color)
+            y += font.size + 14
+        return y + 12
+
+    def draw_metrics(draw, data, y, *, compact=False):
+        cell_w = (content_w - gap) // 2
+        cell_h = 96 if compact else 108
+        label_font = small_font if compact else body_font
+        number_font = _load_font(32, True) if compact else value_font
+        for i, (label, value) in enumerate(data):
+            x = pad + (i % 2) * (cell_w + gap)
+            top = y + (i // 2) * cell_h
+            draw.rounded_rectangle((x, top, x + cell_w, top + cell_h - gap), radius=14,
+                                   fill="#eaf1ff" if i < 2 and not compact else "white")
+            draw.text((x + 18, top + 8), label, font=label_font, fill=muted)
+            # 极端大数也不会越过单元格；只缩小数值字号，不修改数值文本。
+            fitting = number_font
+            while fitting.getlength(value) > cell_w - 36 and fitting.size > 12:
+                fitting = _load_font(fitting.size - 2, True)
+            draw.text((x + 18, top + (35 if compact else 40)), value, font=fitting,
+                      fill=blue if label in ("胜率", "总积分") else ink)
+        return y + ((len(data) + 1) // 2) * cell_h
+
+    lines = header_lines()
+    chart_h = 450 if points and not trend_note else 200
+    header_h = pad + text_height(lines) + 12
+    metrics_h = ((len(metrics) + 1) // 2) * 108
+    height = header_h + metrics_h + chart_h + 76
+    img = Image.new("RGB", (width, height), "#f3f6fc")
+    draw = ImageDraw.Draw(img)
+    y = draw_metrics(draw, metrics, draw_header(draw, lines)) + 8
+    if points and not trend_note:
+        trend = _trend_image(points, "友谊赛整场累计胜率" if team else "友谊对局累计胜率",
+                             content_w, chart_h, scale=1.4)
+        img.paste(trend, (pad, y))
+        trend.close()
+    else:
+        draw.rounded_rectangle((pad, y, width - pad, y + chart_h), radius=16, fill="white")
+        draw.text((width // 2, y + chart_h // 2), trend_note or "本期暂无友谊胜负记录",
+                  font=body_font, fill=muted, anchor="mm")
+    draw.text((pad, height - 40), "平局不计胜率 · 踢馆积分单独统计", font=small_font, fill=muted)
+    img.save(out_path)
+    img.close()
+    paths = [out_path.resolve()]
+
+    # 不把所有 ID 塞进宽表；按三张竖向明细块分页，长名字完整换行。
+    pages = (len(details) + 2) // 3
+    detail_labels = {"胜率", "总积分", "胜场", "负场", "平场", "总场次", "友谊积分", "踢馆积分", "友谊次数"}
+    for page in range(pages):
+        lines = header_lines(f"{page + 1}/{pages}")
+        blocks = []
+        for name, data in details[page * 3:page * 3 + 3]:
+            names = _wrap_card_text(name, body_font, content_w)
+            cells = [(label, value) for label, value in data if label in detail_labels]
+            blocks.append((names, cells))
+        height = pad * 2 + text_height(lines) + 12 + sum(
+            len(names) * 38 + ((len(cells) + 1) // 2) * 96 + 24 for names, cells in blocks)
+        img = Image.new("RGB", (width, height), "#f3f6fc")
+        draw = ImageDraw.Draw(img)
+        y = draw_header(draw, lines)
+        for names, cells in blocks:
+            for name in names:
+                draw.text((pad, y), name, font=body_font, fill=blue)
+                y += 38
+            y = draw_metrics(draw, cells, y, compact=True) + 24
+        target = out_path.with_name(f"{out_path.stem}_ids_{page + 1}.png")
+        img.save(target)
+        img.close()
+        paths.append(target.resolve())
+    return paths
 
 # 浅色简洁配色
 _HEADER_BG = "#2f6fed"     # 表头蓝

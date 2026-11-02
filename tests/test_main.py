@@ -1265,6 +1265,125 @@ def test_player_queries_keep_full_id(plugin_module, tmp_path, handler, command):
     obj.db.resolve_role.assert_awaited_once_with('KC', 'ice boundary')
 
 
+def record_image_fixture(mod, tmp_path, monkeypatch):
+    obj = plugin(mod, tmp_path)
+    obj.db.get_group_home.return_value = 'a队'
+    agg = dict(wins=3, losses=1, draws=1, total=5, friendship=2,
+               raid_points=4, raid_success=1, hold=2, first_round=1)
+    obj.db.resolve_role = AsyncMock(return_value=None)
+    obj.db.get_home_team_record = AsyncMock(return_value=agg)
+    obj.db.get_player_record = AsyncMock(return_value=agg)
+    obj.db.get_players_aggregate = AsyncMock(return_value=agg)
+    obj.db.get_user_by_qq = AsyncMock(return_value={'id': 9, 'name': '云玩家'})
+    obj.db.get_user_players = AsyncMock(return_value=['示例 玩家'])
+    for name in ('get_player_trend', 'get_players_trend', 'get_team_trend'):
+        setattr(obj.db, name, AsyncMock(return_value=[('2026-07-02', 1, 1), ('2026-07-03', 2, 0)]))
+    renderer = Mock(return_value=[tmp_path / 'record.png'])
+    monkeypatch.setattr(mod.chart, 'make_record_images', renderer)
+    obj.context = SimpleNamespace(llm_generate=AsyncMock())
+    return obj, renderer, agg
+
+
+@pytest.mark.parametrize('scope', ['team', 'player', 'role', 'self', 'multi_self'])
+def test_record_images_embed_same_period_and_correct_subject_trend(plugin_module, tmp_path, monkeypatch, scope):
+    obj, renderer, agg = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    if scope == 'role':
+        obj.db.resolve_role.return_value = {'user_name': '云玩家', 'players': ['示例 玩家', '萌新']}
+    if scope == 'multi_self':
+        obj.db.get_user_players.return_value = ['示例 玩家', '萌新']
+        renderer.return_value = [tmp_path / 'summary.png', tmp_path / 'ids.png']
+    if scope in ('self', 'multi_self'):
+        ev = event('/我的战绩 七月')
+        response = asyncio.run(collect(obj.my_record(ev)))
+    else:
+        name = '' if scope == 'team' else ' "示例 玩家"'
+        ev = event('/战绩'+name+' 七月')
+        response = asyncio.run(collect(obj.record(ev)))
+    args, kw = renderer.call_args
+    assert args[1:3] == ('a队', '2026-07-01 至 2026-07-31')
+    assert args[3] == plugin_module.stats.build_record_metrics(agg, team=scope == 'team')
+    assert args[4][-1]['win_rate'] == 75 and args[4][-1]['total'] == 4
+    assert args[5].parent == tmp_path / 'records'
+    if scope == 'team':
+        obj.db.get_team_trend.assert_awaited_once_with('a队', 'a队', '2026-07-01', '2026-07-31')
+        obj.db.get_home_team_record.assert_awaited_once_with('a队', '2026-07-01', '2026-07-31')
+    elif scope == 'player':
+        assert args[0] == '示例 玩家'
+        obj.db.get_player_record.assert_awaited_once_with('a队', '示例 玩家', '2026-07-01', '2026-07-31')
+        obj.db.get_player_trend.assert_awaited_once_with('a队', '示例 玩家', '2026-07-01', '2026-07-31', side_team='a队')
+    else:
+        ids = ['示例 玩家', '萌新'] if scope in ('role', 'multi_self') else ['示例 玩家']
+        assert args[0] == '云玩家' and kw['players'] == ids
+        obj.db.get_players_aggregate.assert_awaited_once_with('a队', ids, '2026-07-01', '2026-07-31')
+        obj.db.get_players_trend.assert_awaited_once_with('a队', ids, '2026-07-01', '2026-07-31')
+        if scope == 'multi_self':
+            assert [d[0] for d in kw['details']] == ids
+            assert [c.args[1] for c in obj.db.get_player_record.await_args_list] == ids
+        else:
+            obj.db.get_player_record.assert_not_awaited()
+    assert len(response) == (2 if scope == 'multi_self' else 1)
+    assert all(isinstance(chain[0], plugin_module.Image) for chain in response)
+    ev.stop_event.assert_not_called()
+    ev.send.assert_not_awaited()
+    obj.context.llm_generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize('command,handler', [('/战报战绩 七月', 'record'), ('/我的战绩 七月', 'my_record')])
+def test_record_render_failure_keeps_readable_stats_and_trend_text(plugin_module, tmp_path, monkeypatch, command, handler):
+    obj, renderer, _ = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    renderer.side_effect = OSError('image render failed')
+    response = asyncio.run(collect(getattr(obj, handler)(event(command))))
+    assert len(response) == 1 and isinstance(response[0], str)
+    assert '胜率：75%' in response[0] and '总积分：6.25' in response[0]
+    assert '2026-07-02  50%' in response[0] and '2026-07-03  75%' in response[0]
+    assert '查询出错' not in response[0]
+
+
+def test_record_trend_failure_keeps_card_and_identifies_unavailable_trend(plugin_module, tmp_path, monkeypatch):
+    obj, renderer, agg = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    obj.db.get_team_trend.side_effect = RuntimeError('trend query failed')
+    response = asyncio.run(collect(obj.record(event('/战绩 七月'))))
+    assert isinstance(response[0][0], plugin_module.Image)
+    assert renderer.call_args.kwargs['trend_note'] == '趋势暂时不可用'
+    assert renderer.call_args.args[3] == plugin_module.stats.build_record_metrics(agg, team=True)
+
+
+def test_record_draw_only_and_raid_only_have_no_fabricated_trend(plugin_module, tmp_path, monkeypatch):
+    obj, renderer, _ = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    obj.db.get_player_record.return_value = dict(wins=0, losses=0, draws=2, total=2, raid_points=5)
+    obj.db.get_player_trend.return_value = [('2026-07-01', 0, 0)]
+    asyncio.run(collect(obj.record(event('/战绩 云玩家 七月'))))
+    assert renderer.call_args.args[4] == [] and renderer.call_args.kwargs['trend_note'] is None
+    assert dict(renderer.call_args.args[3])['踢馆积分'] == '5'
+
+
+@pytest.mark.parametrize('case', ['no_user', 'no_ids', 'banned', 'unbound', 'query_failed'])
+def test_my_record_preconditions_and_query_errors_do_not_render(plugin_module, tmp_path, monkeypatch, case):
+    obj, renderer, _ = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    if case == 'no_user':
+        obj.db.get_user_by_qq.return_value = None
+    elif case == 'no_ids':
+        obj.db.get_user_players.return_value = []
+    elif case == 'banned':
+        obj.db.get_group_ban.return_value = True
+    elif case == 'unbound':
+        obj.db.get_group_home.return_value = None
+    else:
+        obj.db.get_players_aggregate.side_effect = RuntimeError('stats query failed')
+    response = asyncio.run(collect(obj.my_record(event('/我的战绩'))))
+    assert response and isinstance(response[0], str)
+    renderer.assert_not_called()
+    obj.db.get_players_trend.assert_not_awaited()
+
+
+def test_record_images_use_unique_paths_for_concurrent_requests(plugin_module, tmp_path, monkeypatch):
+    obj, renderer, _ = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    async def run():
+        await asyncio.gather(collect(obj.record(event('/战绩 七月'))), collect(obj.record(event('/战绩 七月'))))
+    asyncio.run(run())
+    assert renderer.call_args_list[0].args[5] != renderer.call_args_list[1].args[5]
+
+
 def test_unclosed_quote_does_not_partially_bind(plugin_module, tmp_path):
     obj = plugin(plugin_module, tmp_path)
     obj._require_home = AsyncMock(return_value=(None, 'KC'))

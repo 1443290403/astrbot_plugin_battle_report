@@ -7,6 +7,77 @@ import pytest
 from stats import build_ranking_cells, rank_aligns
 
 
+@pytest.mark.parametrize('count', [0, 2, 7])
+def test_record_images_are_portrait_include_trend_and_paginate_all_ids(tmp_path, monkeypatch, count):
+    from PIL import ImageDraw
+    from stats import build_record_metrics
+    texts = []
+    original = ImageDraw.ImageDraw.text
+    def capture(self, xy, text, *args, **kwargs):
+        texts.append(str(text))
+        return original(self, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    players = [f'示例 玩家{i}' for i in range(count)]
+    metrics = build_record_metrics(dict(wins=7, losses=3, draws=1, total=11, raid_points=2))
+    points = [dict(date='2026-07-01', win_rate=70, total=10)]
+    paths = chart.make_record_images('云玩家', 'a队', '2026-07-01 至 2026-07-31', metrics,
+                                    points, tmp_path / 'nested' / 'card.png', players=players,
+                                    details=[(p, metrics) for p in players])
+    assert len(paths) == 1 + (count + 2) // 3
+    for index, path in enumerate(paths):
+        with Image.open(path) as img:
+            assert img.width == 900 and img.height > 600
+            if index == 0:
+                assert img.height > img.width
+            assert img.height < 2200  # ID 明细不会无限堆叠在同一页。
+            assert img.mode == 'RGB'
+    assert '友谊对局累计胜率' in texts and '70%' in texts
+    assert all(name in texts for name in players)
+    assert points == [dict(date='2026-07-01', win_rate=70, total=10)]
+
+
+def test_card_name_wrap_preserves_every_character_and_space():
+    name = '示例  玩家' * 40
+    font = chart._load_font(24)
+    lines = chart._wrap_card_text(name, font, 300)
+    assert ''.join(lines) == name
+    assert len(lines) > 1 and all(font.getlength(line) <= 300 for line in lines)
+
+
+def test_embedded_trend_keeps_daily_labels_readable_for_constant_month(monkeypatch):
+    from PIL import ImageDraw
+    boxes = []
+    original = ImageDraw.ImageDraw.text
+    def capture(self, xy, text, *args, **kwargs):
+        if kwargs.get('anchor') == 'ms' and kwargs.get('fill') == '#2f6fed':
+            boxes.append(self.textbbox(xy, text, font=kwargs['font'], anchor='ms', stroke_width=2))
+        return original(self, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    points = [dict(date=f'2026-07-{d:02}', win_rate=60, total=d * 5) for d in range(1, 32)]
+    img = chart._trend_image(points, '友谊对局累计胜率', 836, 450, scale=1.4)
+    img.close()
+    assert len(boxes) == 31
+    for i, a in enumerate(boxes):
+        assert 50 <= a[1] < a[3] <= 373
+        assert not any(a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+                       for b in boxes[:i])
+
+
+@pytest.mark.parametrize('note', [None, '趋势暂时不可用'])
+def test_empty_record_card_distinguishes_no_trend_from_query_failure(tmp_path, monkeypatch, note):
+    from PIL import ImageDraw
+    texts = []
+    original = ImageDraw.ImageDraw.text
+    def capture(self, xy, text, *args, **kwargs):
+        texts.append(str(text))
+        return original(self, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    chart.make_record_images('a队', 'a队', '2026-07-01 至 2026-07-31', [('胜率', '0%')],
+                             [], tmp_path / 'empty.png', team=True, trend_note=note)
+    assert (note or '本期暂无友谊胜负记录') in texts
+    assert '友谊对局累计胜率' not in texts
+
+
 @pytest.mark.parametrize("rates", [
     [55, 57, 60], [55, 55.1, 55.2], [60], [60, 60],
     [0], [100], [0, 0], [100, 100], [0, 1], [99, 100], [0, 100],

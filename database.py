@@ -1059,7 +1059,7 @@ class Database:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> dict:
-        """多个参赛ID合并战绩统计（按战队跨群）。"""
+        """多个参赛ID合并战绩（按战队跨群），踢馆积分与三项次数共用集合重算结果。"""
         total = {"wins": 0, "losses": 0, "draws": 0, "total": 0}
         for p in players:
             rec = await self.get_player_record(
@@ -1088,9 +1088,9 @@ class Database:
             )
             total["friendship"] = int(frows[0]["friendship"] or 0)
         # 踢馆积分在**合并后的ID集合**上按同一套规则重算（不是各ID相加）
-        total["raid_points"] = int((
-            await self.get_raid_stats_for_players(home_team, players, date_from, date_to)
-        )["raid_points"])
+        raid = await self.get_raid_stats_for_players(home_team, players, date_from, date_to)
+        for key in ("raid_points", "raid_success", "hold", "first_round"):
+            total[key] = int(raid.get(key, 0) or 0)
         return total
 
     # ---------- 聚合统计 ----------
