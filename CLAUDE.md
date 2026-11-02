@@ -163,3 +163,8 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - `/等车ID` 申请给原角色关联 OpenID，原 QQ `/确认关联` 一次后生效。schema v20 新增 official_user_accounts / official_link_requests，保留 users.qq_id 和 users.id，不创建替代用户、不移动参赛 ID。只存10分钟一次性码的哈希，已有映射不覆盖；原QQ可解除自己的全部关联。
 - `_identity_qq` 是平台身份统一入口：OneBot用原QQ，官方用AppID隔离的已验证OpenID映射到原QQ。所有 own-ID、改名、我的战绩及超管/战队管理判断共用；`_is_super_admin` 现为异步，全部调用必须await。按用户最新要求继承原QQ已有全部插件权限，不改event.role或QQ服务器权限。
 - 验证前不能写 users.qq_id=OpenID，不信任公开角色名和旧JSON展示别名授权。源角色QQ归属变化立刻失效，AppID跨连接切换可复用，同名其他bot不共用。未绑定官方群可只为认证找唯一原QQ，不自动设置群战队或兜底统计。
+
+## v1.25.1 自定义过滤器注册
+
+- 单个过滤器用 `@filter.custom_filter(OfficialQueueFilter)` 传类，不要传实例；v4.27.3 内部自行用 raise_error 构造。RoundCommandFilter 和 RequestReviewFilter 同样传类，审批优先级100保留。
+- tests/test_main 的桩必须在装饰阶段实例化并校验 CustomFilter，禁止退回无操作 lambda；新增“旧实例写法必须报错”与三处过滤器构造参数回归。发布包除 metadata 检查外，使用目标 AstrBot 实际注册函数做全插件模块导入检查，不将这个隔离检查当作 QQ 实机验证。

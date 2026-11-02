@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.25.0`｜数据库 `SCHEMA_VERSION = 20`｜最后核对：2026-11-02
+> 对应版本：`1.25.1`｜数据库 `SCHEMA_VERSION = 20`｜最后核对：2026-11-02
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -422,6 +422,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 **可复制战报直发（v1.19.3）：** `/排表`、`/记录`、`/第N轮` 成功时统一调用 `_send_report_text`。先由 `lineup.normalize_duel_spacing` 仅规范轮次内对局行的左右分隔为两个 ASCII 空格，保留 ID 内空格、标记、比分原写法、头部与换行；再 stop_event 并 await event.send(plain_result(text))，不 yield 战报到回复装饰/分段/转图阶段。成功后记录不含正文的 INFO，部分失败提示也通过 event.send 直接在战报后发送。原权限/禁群/参数校验在直发之前保留；发送失败不通过普通回复重试，避免不确定结果下重复发送。此处不改 OneBot 适配器或战报解析/入库口径，其他命令仍用原发送流程。现场证据为生成器及部署文件均保留双空格，但 Prepare to send 日志已变单空格；具体修改正文的处理器尚未确认，新路径需 QQ 端验证。
 
 **LLM 排表工具（v1.23.0）：** `@filter.llm_tool(name="battle_report_lineup")` 接收唯一的 `lineup_text:string` 参数，当前 event 由框架注入，不开放群号、日期、权限或 SQL 参数。工具与 `lineup_cmd` 共用 `_prepare_lineup`，沿用 `_group_check`、仅群聊、`parse_lineup`、`replace_teams`、默认规则与随机种子；不要求绑定战队或明确属性，不调用提交入口。错误返回文本供模型追问；成功通过 `_send_report_text` 直发原文、清空待处理结果并返回 None，按 AstrBot v4.27.3 本地工具执行器约定结束循环，防止模型重写、重复发送遗留消息。文档描述要求只使用用户给出的队名和名单，缺项先问、不编造；不修改会话人格或另发模型请求。
+
+**注册边界（v1.25.1）：** 单独的 `filter.custom_filter` 参数传过滤器类（如 `OfficialQueueFilter`），v4.27.3 内部会调用 `custom_filter(raise_error)`；不能提前实例化。RequestReviewFilter/OfficialQueueFilter/RoundCommandFilter 均按此契约注册，审批保留 priority=100。测试桩也必须实例化、校验类型和 raise_error，不能让装饰器无操作返回而跳过导入错误；安装包元数据检查与 Python 插件模块导入检查分别执行。组合过滤器实例遵循上游另行处理的 API，不在这次修改范围。
 
 **QQ 官方等车（v1.24.0）：** `OfficialQueueFilter` 严格匹配官方平台的等车命令，拒绝私聊/频道、群禁用和 DB 未就绪；不监听其他平台或普通闲聊。`WaitingQueues` 仅持久化队列及展示关联，不写比赛/统计/权限表。作用域为平台实例 ID + bot AppID + group_openid，成员取官方 member_openid；SDK `post_group_message` 直接发送 Markdown + 动态键盘，不能用 OneBot 或普通 At 组件替代。发车按钮 action.type=2、enter=false，填群号后发送；加入/离开/再开/帮助为 enter=true。按钮带不可复用的 C 前缀随机车 token，不接受其他群或其他机器人的车 token。
 
@@ -1330,6 +1332,8 @@ v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选�
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
 
+v1.25.1 验证：**975 项测试通过，1 项跳过**。过滤器测试桩按框架契约构造，覆盖旧实例写法导入即失败、三种过滤器的类型/raise_error与审批优先级。另使用 AstrBot v4.27.3 实际 CustomFilter、register_custom_filter 和 register_llm_tool 代码对整个插件模块执行隔离导入：原 v1.25.0 ZIP 复现同一 TypeError，修复版三个自定义过滤器及 LLM 工具均注册成功。其余框架服务仍为隔离替身，未登录真实 QQ，也未在此补丁重复运行不涉及变更的数据库集成。
+
 v1.25.0 验证：**973 项测试通过，1 项跳过**。覆盖 QQ/OpenID 同用户查询、自己的 ID 绑定/解绑/改名/我的战绩、原QQ超管/战队管理/AstrBot权限继承及无额外授权、战队/AppID范围和撤销生效、官方端不得冒充原QQ确认、未验证不得直接认领、公开展示别名不授予权限、首次无群设置时唯一原QQ定位、角色改名稳定。SQLite事务执行真实查询/写入校验仅存码哈希、原QQ验证、一次性/过期/重发、归属变化失效、唯一关联、写入回滚、撤销不删用户/ID；另在独立 MySQL 8.4 容器实测新表创建、迁移重放、原QQ确认、保留QQ及撤销，1项通过；测试容器已清理，未使用生产库。未接入真实 QQ / 官方机器人，平台权限和发送需部署验证。
 
 v1.24.0 验证：**940 项测试通过，1 项跳过**。覆盖官方/Webhook 指令隔离与私聊/频道/禁群/DB拦截、SDK Markdown/审核模板/动态键盘参数、发车仅填输入框、未填群号不发车、180/540/900秒边界、超3人/重复加入不重置、降至不足3人重计时、多车/一人一车、发车排除本人提及与解散全员提及、旧按钮/事件去重、按平台/AppID/群隔离、存档损坏和原子写失败、跨群并发、重启保留截止及待发提醒、主动权限关闭后的补发、等待时长与资料错误降级、公开战绩关联不改归属、北京时间当月同队去重ID胜率且排除平局、任务卸载取消和配置默认值。全部 QQ 接口与时钟为模拟，MySQL 集成未启用，未向真实官方机器人发送消息。
@@ -1377,7 +1381,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.25.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.25.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

@@ -191,7 +191,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -352,7 +352,7 @@ class BattleReportPlugin(Star):
                 if wins + losses else '暂无胜负场次')
         return display, rate
 
-    @filter.custom_filter(OfficialQueueFilter())
+    @filter.custom_filter(OfficialQueueFilter)
     async def official_queue_cmd(self, event: AstrMessageEvent):
         """等车、加入、离开、发车和新增队列；仅 QQ 官方群聊。"""
         if event.get_platform_name() not in QUEUE_PLATFORMS:

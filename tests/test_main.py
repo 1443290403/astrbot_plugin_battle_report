@@ -38,6 +38,20 @@ def plugin_module(monkeypatch):
             return fn
         return decorate
 
+    class CustomFilter:
+        def __init__(self, raise_error=True):
+            self.raise_error = raise_error
+
+    def custom_filter(filter_type, raise_error=True, **kwargs):
+        # AstrBot 4.27.3 在注册时调用工厂，不能让桩跳过这个导入边界。
+        instance = filter_type(raise_error)
+        assert isinstance(instance, CustomFilter)
+        def decorate(fn):
+            fn.custom_filter = instance
+            fn.filter_options = kwargs
+            return fn
+        return decorate
+
     class Component:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -50,8 +64,8 @@ def plugin_module(monkeypatch):
     module('astrbot')
     module('astrbot.api', AstrBotConfig=dict, logger=logging.getLogger('test_plugin'))
     module('astrbot.api.event', AstrMessageEvent=object, filter=SimpleNamespace(
-        command=command, llm_tool=llm_tool, custom_filter=lambda *a, **kw: lambda fn: fn))
-    module('astrbot.api.event.filter', CustomFilter=object)
+        command=command, llm_tool=llm_tool, custom_filter=custom_filter))
+    module('astrbot.api.event.filter', CustomFilter=CustomFilter)
     module('astrbot.api.message_components', **{
         name: type(name, (Component,), {}) for name in ['At', 'File', 'Image', 'Node', 'Nodes', 'Plain', 'Reply']})
     module('astrbot.api.star', Star=object, StarTools=object, register=lambda *a: lambda cls: cls)
@@ -2514,3 +2528,18 @@ def test_unlinked_official_never_checks_an_empty_team_admin_subject(official_wai
     obj.db.is_team_admin.return_value = True
     assert asyncio.run(obj._has_team_permission(ev, 'a队')) is False
     obj.db.is_team_admin.assert_not_awaited()
+
+
+def test_all_custom_filters_are_instantiated_by_registration_with_framework_options(plugin_module):
+    cls = plugin_module.BattleReportPlugin
+    assert isinstance(cls.official_queue_cmd.custom_filter, plugin_module.OfficialQueueFilter)
+    assert isinstance(cls.review_request.custom_filter, plugin_module.RequestReviewFilter)
+    assert isinstance(cls.round_cmd.custom_filter, plugin_module.RoundCommandFilter)
+    assert cls.review_request.filter_options == {'priority': 100}
+    assert all(fn.custom_filter.raise_error is True for fn in
+               (cls.official_queue_cmd, cls.review_request, cls.round_cmd))
+
+
+def test_custom_filter_regression_harness_rejects_the_previous_instance_registration(plugin_module):
+    with pytest.raises(TypeError, match='not callable'):
+        plugin_module.filter.custom_filter(plugin_module.OfficialQueueFilter())
