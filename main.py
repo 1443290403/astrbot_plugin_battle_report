@@ -322,7 +322,7 @@ class BattleReportPlugin(Star):
             return '', '暂不可用'
         home = await self.db.get_group_home(scope[2])
         if not home:
-            return '', '未绑定战队'
+            return '', '未绑定角色'
         identity = await self.db.get_official_identity(scope[1], uid)
         user = await self.db.get_user_by_qq(home, identity['qq_id']) if identity else None
         if user:

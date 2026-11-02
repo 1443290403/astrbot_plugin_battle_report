@@ -425,7 +425,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **注册边界（v1.25.1）：** 单独的 `filter.custom_filter` 参数传过滤器类（如 `OfficialQueueFilter`），v4.27.3 内部会调用 `custom_filter(raise_error)`；不能提前实例化。RequestReviewFilter/OfficialQueueFilter/RoundCommandFilter 均按此契约注册，审批保留 priority=100。测试桩也必须实例化、校验类型和 raise_error，不能让装饰器无操作返回而跳过导入错误；安装包元数据检查与 Python 插件模块导入检查分别执行。组合过滤器实例遵循上游另行处理的 API，不在这次修改范围。
 
-**友谊等车命名（v1.25.4）：** 对外主入口 `/友谊等车`，帮助 `/友谊等车帮助`、`/帮助 友谊等车`；原 `/等车`、`/蹲车`、`/等车帮助` 及旧帮助主题兼容。parse_command 将新入口归一到已有内部动作，不改存档文件、作用域、车 token 或配置键；原队列和旧按钮继续生效。面板标题、帮助按钮、引导统一新名称，加入/离队/发车/等车ID 命令名保留；OneBot 对新旧入口同样静默终止。
+**友谊等车命名（v1.25.4）：** 对外主入口 `/友谊等车`，帮助 `/友谊等车帮助`、`/帮助 友谊等车`；原 `/等车`、`/蹲车`、`/等车帮助` 及旧帮助主题兼容。parse_command 将新入口归一到已有内部动作，不改存档文件、作用域、车 token 或配置键；原队列和旧按钮继续生效。面板标题、帮助按钮、引导统一新名称，加入/离队/发车/等车ID 命令名保留；OneBot 对新旧入口同样静默终止。当月胜率原“未绑定战队”状态文案改为“未绑定角色”，只改展示，不改变本群战队校验或身份关联逻辑。
 
 **QQ 官方等车（v1.24.0）：** `OfficialQueueFilter` 严格匹配官方平台和 aiocqhttp 的等车命令（含 `/帮助 等车`、`/战报帮助 等车`），priority=100。aiocqhttp 仅 stop_event + clear_result 静默终止，不发送提示、不查 DB、不读写队列，防止继续触发普通聊天；其他平台和普通闲聊不接管。实际队列操作仅官方平台允许，拒绝私聊/频道、群禁用和 DB 未就绪；定时发送另验原连接的平台类型和 AppID，不能通过 OneBot 发送。`WaitingQueues` 仅持久化队列及展示关联，不写比赛/统计/权限表。作用域为平台实例 ID + bot AppID + group_openid，成员取官方 member_openid；SDK `post_group_message` 直接发送 Markdown + 动态键盘，不能用 OneBot 或普通 At 组件替代。发车按钮 action.type=2、enter=false，填群号后发送；加入/离开/再开/帮助为 enter=true。按钮带不可复用的 C 前缀随机车 token，不接受其他群或其他机器人的车 token。
 

@@ -2284,9 +2284,9 @@ def test_official_waiting_posts_real_sdk_markdown_and_keyboard_payload(official_
     assert params['group_openid'] == 'group-openid' and params['msg_type'] == 2
     assert params['msg_id'] == 'incoming-1' and params['msg_seq'] == 1
     assert '1号车' in params['markdown']['content']
-    assert '未绑定战队' in params['markdown']['content']
+    assert '未绑定角色' in params['markdown']['content']
     assert '![头像 #32px #32px](https://q.qlogo.cn/qqapp/app-A/member-openid/100)' in params['markdown']['content']
-    assert '> 当月胜率：未绑定战队' in params['markdown']['content']
+    assert '> 当月胜率：未绑定角色' in params['markdown']['content']
     assert params['keyboard']['content']['rows'][1]['buttons'][0]['action']['enter'] is False
     ev.send.assert_not_awaited()
     ev.stop_event.assert_called_once()
