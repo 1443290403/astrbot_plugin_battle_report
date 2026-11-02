@@ -184,7 +184,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.21.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.21.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1190,11 +1190,7 @@ class BattleReportPlugin(Star):
             date_from, date_to = month_range(month)
             agg = await self.db.get_players_aggregate(home, players, date_from, date_to)
             visible_players = agg["active_players"]
-            details = []
-            if len(visible_players) > 1:
-                for player in visible_players:
-                    rec = await self.db.get_player_record(home, player, date_from, date_to)
-                    details.append((player, stats.build_record_metrics(rec)))
+            details = await self._record_id_details(home, visible_players, date_from, date_to)
         except Exception:
             logger.exception("我的战绩查询失败")
             yield event.plain_result(_ERR_QUERY)
@@ -1876,6 +1872,15 @@ class BattleReportPlugin(Star):
             logger.exception("重置结算失败")
             yield event.plain_result("❌ 重置出错了喵…稍后再试一次嘛 (；・∀・)")
 
+    async def _record_id_details(self, home_team, players, date_from, date_to):
+        """两个战绩入口共用有场次 ID 的明细，单个 ID 不重复查询。"""
+        details = []
+        if len(players) > 1:
+            for player in players:
+                rec = await self.db.get_player_record(home_team, player, date_from, date_to)
+                details.append((player, stats.build_record_metrics(rec)))
+        return details
+
     async def _record_results(self, event, display, home_team, agg, date_from, date_to,
                               *, players=None, visible_players=None, details=None, team=False):
         """战绩统计与同范围趋势同图展示，使用标准响应链，不接管发送阶段。"""
@@ -1934,6 +1939,7 @@ class BattleReportPlugin(Star):
         date_from, date_to = month_range(month)
         players = None
         visible_players = None
+        details = []
         display = name or home_team
         try:
             if not name:
@@ -1945,6 +1951,7 @@ class BattleReportPlugin(Star):
                     display = role["user_name"]
                     agg = await self.db.get_players_aggregate(home_team, players, date_from, date_to)
                     visible_players = agg["active_players"]
+                    details = await self._record_id_details(home_team, visible_players, date_from, date_to)
                 else:
                     agg = await self.db.get_player_record(home_team, name, date_from, date_to)
         except Exception:
@@ -1953,7 +1960,7 @@ class BattleReportPlugin(Star):
             return
         async for result in self._record_results(
                 event, display, home_team, agg, date_from, date_to, players=players,
-                visible_players=visible_players, team=not name):
+                visible_players=visible_players, details=details, team=not name):
             yield result
 
     @filter.command("踢馆", alias={"/踢馆", "战报踢馆", "/战报踢馆"})

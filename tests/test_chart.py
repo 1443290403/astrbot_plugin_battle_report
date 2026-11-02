@@ -8,7 +8,7 @@ from stats import build_ranking_cells, rank_aligns
 
 
 @pytest.mark.parametrize('count', [0, 2, 7])
-def test_record_images_are_portrait_include_trend_and_paginate_all_ids(tmp_path, monkeypatch, count):
+def test_record_images_include_summary_all_ids_and_trend_in_one_image(tmp_path, monkeypatch, count):
     from PIL import ImageDraw
     from stats import build_record_metrics
     texts = []
@@ -23,13 +23,13 @@ def test_record_images_are_portrait_include_trend_and_paginate_all_ids(tmp_path,
     paths = chart.make_record_images('云玩家', 'a队', '2026-07-01 至 2026-07-31', metrics,
                                     points, tmp_path / 'nested' / 'card.png', players=players,
                                     details=[(p, metrics) for p in players])
-    assert len(paths) == 1 + (count + 2) // 3
+    assert len(paths) == 1
     for index, path in enumerate(paths):
         with Image.open(path) as img:
             assert img.width == 900 and img.height > 600
             if index == 0:
                 assert img.height > img.width
-            assert img.height < 2200  # ID 明细不会无限堆叠在同一页。
+            assert img.height < 4000  # 多组 ID 在单图内纵向续接，宽度保持适合手机。
             assert img.mode == 'RGB'
     assert '友谊对局累计胜率' in texts and '70%' in texts
     assert all(name in texts for name in players)
@@ -44,7 +44,28 @@ def test_card_name_wrap_preserves_every_character_and_space():
     assert len(lines) > 1 and all(font.getlength(line) <= 300 for line in lines)
 
 
-def test_role_summary_without_detail_pages_has_no_dangling_detail_hint(tmp_path, monkeypatch):
+def test_multiple_id_columns_are_beside_summary_and_above_the_trend(tmp_path, monkeypatch):
+    from PIL import ImageDraw
+    from stats import build_record_metrics
+    placed = []
+    original = ImageDraw.ImageDraw.text
+    def capture(self, xy, text, *args, **kwargs):
+        placed.append((str(text), xy, kwargs.get('anchor')))
+        return original(self, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    metrics = build_record_metrics(dict(wins=7, losses=3))
+    paths = chart.make_record_images('云玩家', 'a队', '七月', metrics,
+                                    [dict(date='2026-07-01', win_rate=70, total=10)],
+                                    tmp_path / 'combined.png', details=[('萌新', metrics), ('遗老', metrics)])
+    assert len(paths) == 1
+    positions = {text: xy for text, xy, _ in placed if text in ('综合战绩', '萌新', '遗老')}
+    assert positions['综合战绩'][0] < positions['萌新'][0] < positions['遗老'][0]
+    assert len({xy[1] for xy in positions.values()}) == 1
+    assert sum(text == '70%' and anchor == 'mm' for text, _, anchor in placed) == 3
+    assert sum(text == '70%' and anchor == 'ms' for text, _, anchor in placed) == 1
+
+
+def test_role_summary_without_details_has_no_dangling_detail_hint(tmp_path, monkeypatch):
     from PIL import ImageDraw
     texts = []
     original = ImageDraw.ImageDraw.text

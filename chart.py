@@ -246,7 +246,7 @@ def make_record_images(title: str, home_team: str, period: str,
                        *, team: bool = False, players: list[str] | None = None,
                        details: list[tuple[str, list[tuple[str, str]]]] | None = None,
                        trend_note: str | None = None) -> list[Path]:
-    """手机竖版战绩卡：指标与趋势同图，多 ID 明细每页最多三个，不丢条目。"""
+    """战绩与趋势同图，多 ID 时综合战绩与各 ID 横向对照，始终输出一张图。"""
     from PIL import Image, ImageDraw
 
     width, pad, gap = 900, 32, 16
@@ -258,13 +258,13 @@ def make_record_images(title: str, home_team: str, period: str,
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def header_lines(detail_page=None):
+    def header_lines():
         scope = "战队战绩" if team else "个人战绩"
-        result = [(scope if detail_page is None else f"参赛 ID 明细 · {detail_page}", body_font, blue)]
+        result = [(scope, body_font, blue)]
         result += [(line, title_font, ink) for line in _wrap_card_text(title, title_font, content_w)]
         for text in (f"战队：{home_team}", period):
             result += [(line, small_font, muted) for line in _wrap_card_text(text, small_font, content_w)]
-        if players and detail_page is None:
+        if players:
             text = "参赛 ID：" + "、".join(players[:4])
             if len(players) > 4:
                 text += f" 等 {len(players)} 个"
@@ -283,33 +283,74 @@ def make_record_images(title: str, home_team: str, period: str,
             y += font.size + 14
         return y + 12
 
-    def draw_metrics(draw, data, y, *, compact=False):
+    def draw_metrics(draw, data, y):
         cell_w = (content_w - gap) // 2
-        cell_h = 96 if compact else 108
-        label_font = small_font if compact else body_font
-        number_font = _load_font(32, True) if compact else value_font
+        cell_h = 108
+        label_font = body_font
+        number_font = value_font
         for i, (label, value) in enumerate(data):
             x = pad + (i % 2) * (cell_w + gap)
             top = y + (i // 2) * cell_h
             draw.rounded_rectangle((x, top, x + cell_w, top + cell_h - gap), radius=14,
-                                   fill="#eaf1ff" if i < 2 and not compact else "white")
+                                   fill="#eaf1ff" if i < 2 else "white")
             draw.text((x + 18, top + 8), label, font=label_font, fill=muted)
             # 极端大数也不会越过单元格；只缩小数值字号，不修改数值文本。
             fitting = number_font
             while fitting.getlength(value) > cell_w - 36 and fitting.size > 12:
                 fitting = _load_font(fitting.size - 2, True)
-            draw.text((x + 18, top + (35 if compact else 40)), value, font=fitting,
+            draw.text((x + 18, top + 40), value, font=fitting,
                       fill=blue if label in ("胜率", "总积分") else ink)
         return y + ((len(data) + 1) // 2) * cell_h
+
+    # 多 ID 列与综合列共用指标行；每组最多三个 ID，组间纵向衔接在同一张图内。
+    label_w, summary_w = 148, 176
+    table_groups = []
+    for offset in range(0, len(details), 3):
+        group = details[offset:offset + 3]
+        id_w = (content_w - label_w - summary_w) // len(group)
+        headers = [("指标", label_w), ("综合战绩", summary_w)] + [(name, id_w) for name, _ in group]
+        wrapped = [(_wrap_card_text(name, body_font, cell_w - 24), cell_w) for name, cell_w in headers]
+        head_h = max(76, max(len(names) for names, _ in wrapped) * 34 + 24)
+        table_groups.append((group, wrapped, head_h))
+
+    def draw_tables(draw, y):
+        for group, headers, head_h in table_groups:
+            x = pad
+            for column, (names, cell_w) in enumerate(headers):
+                draw.rectangle((x, y, x + cell_w, y + head_h), fill="#dce8ff" if column == 1 else "#eaf1ff")
+                text_y = y + (head_h - len(names) * 34) / 2
+                for name in names:
+                    draw.text((x + cell_w / 2, text_y + 17), name, font=body_font, fill=blue, anchor="mm")
+                    text_y += 34
+                x += cell_w
+            y += head_h
+            values = [dict(data) for _, data in group]
+            for row, (label, summary) in enumerate(metrics):
+                x = pad
+                row_values = [label, summary] + [data.get(label, "—") for data in values]
+                for column, ((_, cell_w), value) in enumerate(zip(headers, row_values)):
+                    fill = "#eaf1ff" if column == 1 else ("white" if row % 2 == 0 else "#f8faff")
+                    draw.rectangle((x, y, x + cell_w, y + 58), fill=fill)
+                    font = body_font if column == 0 else _load_font(32, True)
+                    while font.getlength(value) > cell_w - 24 and font.size > 12:
+                        font = _load_font(font.size - 2, column != 0)
+                    draw.text((x + cell_w / 2, y + 29), value, font=font,
+                              fill=muted if column == 0 else ink, anchor="mm")
+                    x += cell_w
+                y += 58
+            y += 24
+        return y
 
     lines = header_lines()
     chart_h = 450 if points and not trend_note else 200
     header_h = pad + text_height(lines) + 12
-    metrics_h = ((len(metrics) + 1) // 2) * 108
+    metrics_h = (sum(head_h + len(metrics) * 58 + 24 for _, _, head_h in table_groups)
+                 if details else ((len(metrics) + 1) // 2) * 108)
     height = header_h + metrics_h + chart_h + 76
     img = Image.new("RGB", (width, height), "#f3f6fc")
     draw = ImageDraw.Draw(img)
-    y = draw_metrics(draw, metrics, draw_header(draw, lines)) + 8
+    y = draw_header(draw, lines)
+    y = (draw_tables(draw, y) if details else draw_metrics(draw, metrics, y)) + 8
     if points and not trend_note:
         trend = _trend_image(points, "友谊赛整场累计胜率" if team else "友谊对局累计胜率",
                              content_w, chart_h, scale=1.4)
@@ -322,33 +363,7 @@ def make_record_images(title: str, home_team: str, period: str,
     draw.text((pad, height - 40), "平局不计胜率 · 踢馆积分单独统计", font=small_font, fill=muted)
     img.save(out_path)
     img.close()
-    paths = [out_path.resolve()]
-
-    # 不把所有 ID 塞进宽表；按三张竖向明细块分页，长名字完整换行。
-    pages = (len(details) + 2) // 3
-    detail_labels = {"胜率", "总积分", "胜场", "负场", "平场", "总场次", "友谊积分", "踢馆积分", "友谊次数"}
-    for page in range(pages):
-        lines = header_lines(f"{page + 1}/{pages}")
-        blocks = []
-        for name, data in details[page * 3:page * 3 + 3]:
-            names = _wrap_card_text(name, body_font, content_w)
-            cells = [(label, value) for label, value in data if label in detail_labels]
-            blocks.append((names, cells))
-        height = pad * 2 + text_height(lines) + 12 + sum(
-            len(names) * 38 + ((len(cells) + 1) // 2) * 96 + 24 for names, cells in blocks)
-        img = Image.new("RGB", (width, height), "#f3f6fc")
-        draw = ImageDraw.Draw(img)
-        y = draw_header(draw, lines)
-        for names, cells in blocks:
-            for name in names:
-                draw.text((pad, y), name, font=body_font, fill=blue)
-                y += 38
-            y = draw_metrics(draw, cells, y, compact=True) + 24
-        target = out_path.with_name(f"{out_path.stem}_ids_{page + 1}.png")
-        img.save(target)
-        img.close()
-        paths.append(target.resolve())
-    return paths
+    return [out_path.resolve()]
 
 # 浅色简洁配色
 _HEADER_BG = "#2f6fed"     # 表头蓝

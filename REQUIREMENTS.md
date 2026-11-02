@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.21.1`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
+> 对应版本：`1.21.2`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -377,17 +377,17 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | 合并转发 | `_send_responses`（≥2 条时封装 Node） | 提交结果、导出 |
 | 文件 | `File` 组件 + `data_dir/exports/` | `/导出 csv/json`、`/导出群成员` |
 
-**战绩图片（v1.21.0）：** F-06/F-09 默认生成 900px 宽、两列指标的手机竖版卡片；`stats.build_record_metrics` 同时提供图与文字回退的值，复用 `_points` / `total_points`，胜率排除平局。`chart.make_record_images` 由 `asyncio.to_thread` 渲染，首图包含汇总及同范围趋势，多 ID 的我的战绩另发明细页（每页最多 3 个、不丢 ID），长名按实际字宽换行并保留空格。仅首图展示前 4 个 ID 的概要，完整 ID 在明细中逐个展示。
+**战绩图片（v1.21.2）：** F-06/F-09 默认生成 900px 宽的单张战绩卡；单 ID/战队使用两列指标，多 ID 将综合战绩与各 ID 按相同指标行并排展示，`stats.build_record_metrics` 同时提供图与文字回退的值，复用 `_points` / `total_points`，胜率排除平局。`chart.make_record_images` 由 `asyncio.to_thread` 渲染，综合与 ID 明细在同张图内对照，下方包含同范围趋势；每组三个 ID 横向排列，更多 ID 在图内纵向续排，长名按实际字宽换行并保留空格。顶部只列前 4 个 ID 概要，完整明细仍全部保留。`make_record_images` 保持列表返回接口，但仅返回一张图片路径。
 
 趋势沿用 `compute_cumulative` 与抽取的 `_trend_image`，共享 `_win_rate_ticks`、整数等距刻度和点位百分比；嵌入图对密集标签错位避让，独立 `/趋势` 保留原渲染尺寸与行为。只绘制有胜负场次的日期，无友谊胜负数据时明确显示暂无趋势，不绘制虚构的 0% 线；只有踢馆/平局仍显示相应统计。
 
 无名字的 `/战绩` 使用 `get_home_team_record` + `get_team_trend(home,home)` 的友谊整场口径。未绑定角色的指定玩家用 `get_player_record` + `get_player_trend(..., side_team=home)`；角色/我的战绩用 ID 集合聚合及 `get_players_trend`。统计与趋势传入完全相同的 home_team/date_from/date_to，保留跨群、同名队伍隔离与月份解析。`get_players_aggregate` 复用已经计算的集合踢馆结果，补回 raid_success/hold/first_round，不能把各 ID 的踢馆积分或次数直接相加。
 
-趋势查询失败保留战绩卡并显示「趋势暂时不可用」；图片生成失败逐行回退同份数据与日期胜率，统计查询失败维持原错误。PNG 使用 UUID 独立路径，多页全部生成后才 yield，每页一条 Image 标准回复；不直接 event.send、不 stop_event、不新增模型调用或图片上传重试，数据库 schema 与配置不变。
+趋势查询失败保留战绩卡并显示「趋势暂时不可用」；图片生成失败逐行回退同份数据与日期胜率，统计查询失败维持原错误。PNG 使用 UUID 独立路径，完整单图生成后 yield 一条 Image 标准回复；不直接 event.send、不 stop_event、不新增模型调用或图片上传重试，数据库 schema 与配置不变。
 
-**零场次 ID 展示过滤（v1.21.1）：** `get_players_aggregate` 在原有逐 ID 查询中收集 total>0 的 `active_players`，沿用友谊总场次口径，非零平局计入，0:0 占位不计。只影响角色/我的战绩图片中的 ID 列表和明细以及文字回退；全部为零时隐藏 ID 列表但仍保留汇总卡。只有一个活跃 ID 时不重复生成明细。仅有踢馆、友谊总场次为零的 ID 也不列入此展示列表，但原集合的踢馆汇总仍保留。
+**零场次 ID 展示过滤（v1.21.1）：** `get_players_aggregate` 在原有逐 ID 查询中收集 total>0 的 `active_players`，沿用友谊总场次口径，非零平局计入，0:0 占位不计。只影响角色/我的战绩图片中的 ID 列表和明细以及文字回退；全部为零时隐藏 ID 列表但仍保留汇总卡。只有一个活跃 ID 时不重复生成明细列。仅有踢馆、友谊总场次为零的 ID 也不列入此展示列表，但原集合的踢馆汇总仍保留。
 
-`players` 始终保留完整绑定集用于汇总和趋势；`visible_players` 单独传入展示，不能把筛选当成解绑或改变统计范围。筛选复用 get_player_record 已有结果，不增加 SQL 查询；角色汇总卡原本不发逐 ID 明细，继续保持。
+`players` 始终保留完整绑定集用于汇总和趋势；`visible_players` 单独传入展示，不能把筛选当成解绑或改变统计范围。筛选复用 get_player_record 已有结果，不增加 SQL 查询；v1.21.2 角色查询与我的战绩共用 `_record_id_details`，多个活跃 ID 均提供并排明细。
 
 **排行标准发送（v1.20.4）：** 图片生成成功后，通过 `yield event.chain_result([Plain, Image])` 交给 AstrBot 标准回复阶段；点评同样 yield 普通文本。排行不能调用 stop_event 或直接 event.send 来接管响应阶段，以保留第三方回复装饰、TTS 与持久化的框架接入流程。v1.20.3 的 `_send_ranking_image` 与上传失败文字替代已撤回；仅图片生成失败沿用文字回退，上传异常由平台/响应阶段记录，不能伪装为成功。此修改恢复框架路径，不代表已验证所有第三方插件兼容或普通聊天已恢复。
 
@@ -793,7 +793,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-06** | `/战绩 [玩家名] [X月]` | `record` | v1.21.0 竖版图片与内嵌同月份趋势（见 M-09）；无名字 → **战队总战绩**（`get_home_team_record`，按 `winner`；另附踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮）；有名字 → `resolve_role` 命中则聚合该角色全部参赛ID，否则按单个参赛ID（同上一组字段，走 `get_player_record(with_raid=True)`）。三条次数与排行末三列同源，在卡片中分别展示 |
 | **F-07** | `/趋势 <玩家名\|队伍> [最近N天\|X月]` | `trend` | 三级回退：角色聚合 → 单个参赛ID → **按队名查**。默认无参数时展示**本战队**；左轴胜率按数据自动缩放（M-09），右轴累计场次独立 |
 | **F-08** | `/导出 [已发送\|未发送] [踢馆] [玩家名] [胜场\|负场\|全部] [X月\|最近N天] [csv\|json]` | `export` | 见下方详解 |
-| **F-09** | `/我的战绩 [X月]` | `my_record` | v1.21.0 先发汇总与内嵌趋势卡，多 ID 明细每页最多 3 个；按自己绑定的全部参赛ID汇总（含踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮） |
+| **F-09** | `/我的战绩 [X月]` | `my_record` | v1.21.2 综合、多个有场次 ID 明细及内嵌趋势均在同一张图中；按自己绑定的全部参赛ID汇总（含踢馆积分 / 总积分 / 踢馆成功 / 守馆成功 / 守馆首轮） |
 | **F-27** | `/踢馆 [玩家名] [X月]` | `raid` | 无名字 → 本战队踢馆卡（踢馆成功 / 守馆成功 / 守馆首轮 / 踢馆成功含馆主 + 徽章 + 积分明细 + 合计）；有名字 → 该选手的踢馆卡。alias `/踢馆`、`/战报踢馆`。入口 `_require_home` → `get_raid_team_stats` / `get_raid_stats_for_players` → `stats.format_raid_record` |
 | **F-28** | `/结算 <月份> [名次数]` | `settle` | **双模式**（v1.15.0）。入口统一 `_require_home`（含 `_group_check` + 必须已绑定战队）→ `_is_manager`，此后分叉：<br>**管理/群主 = 写** —— 给该月榜单前 N 名（默认 4，上限 12）按 §5-M14 发奖金并覆盖写入 `settlements`。顺序：`_parse_settle_args`（**不是** `_parse_month_filter`，见 §5-M14）→ `settle_month_range` → 当月未结束则拒 → `get_player_ranking(…, limit=None, team=home_team)` → `ranks_for` + `rank_bonus` → **`get_settlement_entries`（读旧记录，供公告判定）** → `set_settlement` → `format_settlement` → 获奖名次变了就 `get_qq_ids_by_names` + `At` 发公告（见 §5-M14「结算公告」）。<br>**其他人 = 只读查询** —— `get_settlement_entries` → 有记录 `format_settlement_view`、无记录回「该月尚未结算」。**不跑写路径的任何一步**，见 §5-M14「只读查询」。<br>**月份缺省 = 上个月**（`settle_month_range(None)`） |
 | **F-29** | `/重置结算 [月份]` | `reset_settle` | **管理/群主**（非管理员硬拒）。把该月恢复成**未结算**：`_require_home` → `_is_manager` → `_parse_settle_args`（名次数丢掉）→ `settle_month_range` → `clear_settlement`。删掉 0 行回「无需重置」而非报错；**没有「当月未结束」校验**（那是写路径独有）。见 §5-M14「重置结算」 |
@@ -1286,6 +1286,8 @@ v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选�
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
 
+v1.21.2 验证：**839 项测试通过，1 项跳过**。覆盖多个 ID 与综合列同图同指标行并排、七个 ID 在同图续排不遗漏、单图输出、下方趋势及名字空格保留；角色/我的战绩共用有场次 ID 的明细查询，汇总/趋势/绑定与标准回复链不变。已检查虚构数据预览；数据库集成未启用，QQ 实机展示需更新后确认。
+
 v1.21.1 验证：**838 项测试通过，1 项跳过**。覆盖角色/我的战绩在零个、一个、多个活跃 ID 时的图片与文字回退过滤、明细去重、原集合汇总和趋势不变，以及同月份总场次/平局判断和无额外 SQL 查询。schema v19 不变；数据库集成未启用，QQ 实机展示需更新后确认。
 
 v1.21.0 验证：**825 项测试通过，1 项跳过**。新增五类战绩主体/月份/ID 集合与趋势路由、标准图片回复、多 ID 明细、零友谊/趋势不可用/生成失败回退、绑定与权限拦截、并发文件隔离；实际 Pillow 渲染验证竖版、分页不漏 ID、长名空格保留、密集整月点位标签避让，指标与集合踢馆次数同源及大积分完整显示。已人工检查虚构名称预览；MySQL 集成未启用，QQ 实机展示需安装后确认。
@@ -1321,7 +1323,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.21.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.21.2")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

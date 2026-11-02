@@ -103,14 +103,16 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 ## v1.21.0 手机战绩卡
 
 - `/战绩`、`/我的战绩` 走 `_record_results`：标准 yield Image，不直接发送/stop_event/调用 LLM。统计与趋势同队同日期，本队用整场趋势，个人/角色用对应 ID 且限定本队。
-- `stats.build_record_metrics` 复用积分公式供图和文字回退；`chart.make_record_images` 以 900px 两列竖版展示主指标和内嵌趋势。多 ID 的我的战绩另页完整展示，每页最多 3 个 ID，不截长名/内部空格。
+- `stats.build_record_metrics` 复用积分公式供图和文字回退；`chart.make_record_images` 以 900px 两列竖版展示主指标和内嵌趋势。v1.21.2 多 ID 时综合战绩与各 ID 同指标行并排，只生成一张图；每组三个 ID、组间在图内续排，长名及内部空格保留。
 - `_trend_image` 与独立 `/趋势` 共用轴算法；嵌入图密集点位百分比错位避免重叠。空趋势与查询失败显示不同提示，图片生成失败才回退文字。
 - `get_players_aggregate` 的踢馆三项次数与积分从已有集合计算结果透传，不相加各 ID 的踢馆统计。保留 schema v19、已有配置与身份权限。
 
 ## v1.21.1 活跃 ID 展示
 
 - `get_players_aggregate.active_players` 复用已有逐 ID 的 total>0 判断，按所选月份的友谊总场次筛选，包含平局；不新增查询。
-- 用户卡的 ID 列表、我的战绩明细及文字回退使用 `visible_players`；汇总和趋势仍使用完整 `players`。不解绑 ID，不丢原集合的踢馆积分；零活跃仍显示汇总，只有一个活跃 ID 不重复发明细。
+- 用户卡的 ID 列表、我的战绩明细及文字回退使用 `visible_players`；汇总和趋势仍使用完整 `players`。不解绑 ID，不丢原集合的踢馆积分；零活跃仍显示汇总，只有一个活跃 ID 不重复展示明细列。
+
+- v1.21.2：`record` 角色查询和 `my_record` 共用 `_record_id_details`，只查有场次 ID 的明细。`make_record_images` 始终返回一个路径，综合与各 ID 横向对照、趋势位于下方，不再生成 `_ids_N` 文件。
 
 ## 安装包交付
 

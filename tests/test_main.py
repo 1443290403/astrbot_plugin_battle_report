@@ -1293,7 +1293,6 @@ def test_record_images_embed_same_period_and_correct_subject_trend(plugin_module
         obj.db.resolve_role.return_value = {'user_name': '云玩家', 'players': ['示例 玩家', '萌新']}
     if scope == 'multi_self':
         obj.db.get_user_players.return_value = ['示例 玩家', '萌新']
-        renderer.return_value = [tmp_path / 'summary.png', tmp_path / 'ids.png']
     if scope in ('self', 'multi_self'):
         ev = event('/我的战绩 七月')
         response = asyncio.run(collect(obj.my_record(ev)))
@@ -1318,12 +1317,12 @@ def test_record_images_embed_same_period_and_correct_subject_trend(plugin_module
         assert args[0] == '云玩家' and kw['players'] == ids
         obj.db.get_players_aggregate.assert_awaited_once_with('a队', ids, '2026-07-01', '2026-07-31')
         obj.db.get_players_trend.assert_awaited_once_with('a队', ids, '2026-07-01', '2026-07-31')
-        if scope == 'multi_self':
+        if scope in ('role', 'multi_self'):
             assert [d[0] for d in kw['details']] == ids
             assert [c.args[1] for c in obj.db.get_player_record.await_args_list] == ids
         else:
             obj.db.get_player_record.assert_not_awaited()
-    assert len(response) == (2 if scope == 'multi_self' else 1)
+    assert len(response) == 1
     assert all(isinstance(chain[0], plugin_module.Image) for chain in response)
     ev.stop_event.assert_not_called()
     ev.send.assert_not_awaited()
@@ -1403,12 +1402,9 @@ def test_user_record_only_displays_active_ids_without_changing_aggregate_or_tren
     response = asyncio.run(collect(getattr(obj, handler)(event(command))))
     assert renderer.call_args.kwargs['players'] == visible
     assert renderer.call_args.args[3] == plugin_module.stats.build_record_metrics(agg)
-    if handler == 'my_record':
-        expected = visible if len(visible) > 1 else []
-        assert [row[0] for row in renderer.call_args.kwargs['details']] == expected
-        assert [c.args[1] for c in obj.db.get_player_record.await_args_list] == expected
-    else:
-        obj.db.get_player_record.assert_not_awaited()
+    expected = visible if len(visible) > 1 else []
+    assert [row[0] for row in renderer.call_args.kwargs['details']] == expected
+    assert [c.args[1] for c in obj.db.get_player_record.await_args_list] == expected
     if text_fallback:
         assert '未出场示例' not in response[0]
         assert ('参赛 ID：' in response[0]) == bool(visible)
