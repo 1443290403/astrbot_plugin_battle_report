@@ -143,3 +143,9 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - `settle` 先校验所有日期、准备所有可结算月份，再由 `set_settlements` 在单一事务覆盖本队各月；空榜月份跳过、不删旧快照，错误/取消回滚全部。单月 `set_settlement` 委托同一实现，schema v19 不变。
 - 每次管理员成功提交后调用本群 `_send_group_notice` 一次（包括名单未变），正文由 `format_settlement_notice` 复用同份快照生成，含各月明细与每人合计。普通成员只读，不能发公告或写库。
 - 群公告使用当前事件机器人/群号，20 秒限时，无自动重试；需要机器人 QQ 自身公告权限。公告失败/超时与已保存结算分开回执，不伪装成结算失败。群消息 @ 继续按名次变化触发、同次按人去重，QQ 查询失败降级为文字提醒。
+
+## v1.23.0 LLM 排表工具
+
+- 仅注册 `battle_report_lineup`，Args 描述为 `lineup_text(string)`；event 由 AstrBot 注入，不向模型开放群号/权限参数。使用 `filter.llm_tool`，不依赖全局人格配置或单独请求模型。
+- 命令与工具共用 `_prepare_lineup` 的群禁用/DB/私聊检查、名单解析、名单保存及模板生成，保留引号空格 ID、默认规则、种子、TK 与双空格。工具失败返回错误文本，成功 `_send_report_text` 直发后 clear_result 并返回 None，防止执行器重发遗留结果或模型改写正文；不自动重试发送。
+- 排表仍不要求群绑定/属性，不写比赛结果；仅当前群、仅用户明确给出的名单，缺项应追问。不能把其他命令顺便注册为工具。

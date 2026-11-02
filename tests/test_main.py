@@ -32,6 +32,12 @@ def plugin_module(monkeypatch):
             return fn
         return decorate
 
+    def llm_tool(name):
+        def decorate(fn):
+            fn.llm_tool_name = name
+            return fn
+        return decorate
+
     class Component:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -44,7 +50,7 @@ def plugin_module(monkeypatch):
     module('astrbot')
     module('astrbot.api', AstrBotConfig=dict, logger=logging.getLogger('test_plugin'))
     module('astrbot.api.event', AstrMessageEvent=object, filter=SimpleNamespace(
-        command=command, custom_filter=lambda *a, **kw: lambda fn: fn))
+        command=command, llm_tool=llm_tool, custom_filter=lambda *a, **kw: lambda fn: fn))
     module('astrbot.api.event.filter', CustomFilter=object)
     module('astrbot.api.message_components', **{
         name: type(name, (Component,), {}) for name in ['At', 'File', 'Image', 'Node', 'Nodes', 'Plain', 'Reply']})
@@ -72,6 +78,7 @@ def event(text='', group='100', admin=False, messages=None):
         bot=SimpleNamespace(call_action=AsyncMock()),
         send=AsyncMock(),
         stop_event=Mock(),
+        clear_result=Mock(),
         is_at_or_wake_command=True,
     )
 
@@ -2074,3 +2081,104 @@ def test_settlement_non_onebot_platform_does_not_send_qq_action(settlement_batch
     obj.db.set_settlements.assert_awaited_once()
     ev.bot.call_action.assert_not_awaited()
     assert '公告发布失败' in response[0][0].args[0]
+
+
+def test_only_lineup_is_registered_as_an_llm_tool(plugin_module):
+    import inspect
+    tools = {name: method for name, method in vars(plugin_module.BattleReportPlugin).items()
+             if hasattr(method, 'llm_tool_name')}
+    assert list(tools) == ['lineup_tool']
+    assert tools['lineup_tool'].llm_tool_name == 'battle_report_lineup'
+    assert list(inspect.signature(tools['lineup_tool']).parameters) == ['self', 'event', 'lineup_text']
+    assert 'lineup_text(string)' in tools['lineup_tool'].__doc__
+    assert '不编造名单' in tools['lineup_tool'].__doc__
+
+
+@pytest.mark.parametrize('rule', ['', '人头赛\n'])
+@pytest.mark.parametrize('prefix', ['', '/排表 '])
+def test_llm_lineup_uses_command_pipeline_and_sends_unmodified_text_once(plugin_module, tmp_path, rule, prefix):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config.update(pairing_seed='same-lineup', default_rule='2/3【KOF】')
+    obj.db.replace_teams = AsyncMock()
+    payload = prefix + rule + 'a队:"示例 玩家" 萌新\nb队:遗老 鸽子'
+    ev = event('帮我根据这些名单排表')
+    original_text = ev.get_message_str()
+    assert asyncio.run(obj.lineup_tool(ev, payload)) is None
+    ev.send.assert_awaited_once()
+    actual = ev.send.await_args.args[0]
+    assert '示例 玩家  0:0  ' in actual and '地点: 100' in actual
+    assert '规则: ' + ('人头赛' if rule else '2/3【KOF】') in actual
+    assert len(re.findall(r'(?m)^.+  0:0  .+$', actual)) == 2
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+    assert ev.get_message_str() == original_text
+    obj.db.replace_teams.assert_awaited_once_with('100', [('A队', ['示例 玩家', '萌新']), ('B队', ['遗老', '鸽子'])])
+    obj.db.insert_report.assert_not_awaited()
+    # 同一规则、名单及种子下，手动 /排表 与工具得到逐字相同的正文。
+    command_event = event('/排表 ' + rule + 'a队:"示例 玩家" 萌新\nb队:遗老 鸽子')
+    assert asyncio.run(collect(obj.lineup_cmd(command_event))) == []
+    assert command_event.send.await_args.args[0] == actual
+
+
+@pytest.mark.parametrize('blocked', ['private', 'disabled', 'database'])
+def test_llm_lineup_cannot_bypass_group_and_database_guards(plugin_module, tmp_path, blocked):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.replace_teams = AsyncMock()
+    ev = event('帮我排表')
+    if blocked == 'private':
+        ev.get_group_id = lambda: ''
+    elif blocked == 'disabled':
+        obj.db.get_group_ban.return_value = True
+    else:
+        obj.db_ready = False
+    result = asyncio.run(obj.lineup_tool(ev, 'a队:云玩家\nb队:萌新'))
+    assert ('群里' if blocked == 'private' else '禁用' if blocked == 'disabled' else '数据库') in result
+    obj.db.replace_teams.assert_not_awaited()
+    ev.send.assert_not_awaited()
+    ev.stop_event.assert_not_called()
+    ev.clear_result.assert_not_called()
+
+
+@pytest.mark.parametrize('payload', ['', '人头赛', 'a队:云玩家', 'a队:"示例 玩家\nb队:萌新', '```\na队:云玩家\nb队:萌新\n```'])
+def test_llm_lineup_returns_missing_or_invalid_input_without_side_effects(plugin_module, tmp_path, payload):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.replace_teams = AsyncMock()
+    ev = event('帮我排表')
+    response = asyncio.run(obj.lineup_tool(ev, payload))
+    assert isinstance(response, str) and response
+    obj.db.replace_teams.assert_not_awaited()
+    ev.send.assert_not_awaited()
+    ev.stop_event.assert_not_called()
+
+
+def test_llm_lineup_does_not_require_team_binding_or_group_property(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.replace_teams = AsyncMock()
+    obj.db.get_group_home.return_value = None
+    obj.db.get_group_chat_type_setting.return_value = None
+    ev = event('排表')
+    asyncio.run(obj.lineup_tool(ev, 'a队:云玩家 萌新\nb队:遗老'))
+    assert 'TK' in ev.send.await_args.args[0]
+    obj.db.get_group_home.assert_not_awaited()
+    obj.db.get_group_chat_type_setting.assert_not_awaited()
+
+
+def test_llm_lineup_send_failure_is_not_retried(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.replace_teams = AsyncMock()
+    ev = event('帮我排表')
+    ev.send.side_effect = RuntimeError('upload failed')
+    with pytest.raises(RuntimeError, match='upload failed'):
+        asyncio.run(obj.lineup_tool(ev, 'a队:云玩家\nb队:萌新'))
+    ev.send.assert_awaited_once()
+    obj.db.replace_teams.assert_awaited_once()
+
+
+@pytest.mark.parametrize('team', ['排表队', '排表'])
+def test_llm_lineup_preserves_team_names_starting_with_command_word(plugin_module, tmp_path, team):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db.replace_teams = AsyncMock()
+    ev = event('帮忙排表')
+    asyncio.run(obj.lineup_tool(ev, f'{team}:云玩家\nb队:萌新'))
+    assert obj.db.replace_teams.await_args.args[1][0][0] == team
+    assert f'战队: {team} VS B队' in ev.send.await_args.args[0]

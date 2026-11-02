@@ -182,7 +182,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.22.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.23.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -557,45 +557,35 @@ class BattleReportPlugin(Star):
         await event.send(event.plain_result(text))
         logger.info("战报原文已按纯文本直接发送")
 
-    @filter.command("排表", alias={"/排表"})
-    async def lineup_cmd(self, event: AstrMessageEvent):
-        """排表：解析名单 → 存库 → 生成随机配对模板"""
+    async def _prepare_lineup(self, event: AstrMessageEvent, payload: str):
+        """命令与 LLM 工具共用群检查、名单解析、保存及模板生成。"""
         err = await self._group_check(event)
         if err:
-            yield event.plain_result(err + _HELP_HINT)
-            return
+            return [err + _HELP_HINT], None
         group_id = event.get_group_id()
         if not group_id:
-            yield event.plain_result("⚠️ 排表要在群里用喵。" + _HELP_HINT)
-            return
+            return ["⚠️ 排表要在群里用喵。" + _HELP_HINT], None
 
-        raw = event.get_message_str()
-        payload = _strip_command(raw, _LINEUP_CMDS)
         if not payload:
             # 未传任何参数：分两段发送排表使用指南
-            yield event.plain_result(
+            return [
                 "欢迎使用海马集团 智能排表秘书喵～ (=^･ω･^=)\n"
                 "指定规则：/排表 规则名称\n"
                 "更多功能请发送：/帮助\n"
-                "排表格式："
-            )
-            yield event.plain_result(
+                "排表格式：",
                 "/排表\n"
                 "a队:云玩家 萌新 遗老\n"
                 "b队:复读机 鸽子 柠檬"
-            )
-            return
+            ], None
         result = lineup.parse_lineup(payload, self.config.get("default_rule", "2/3【KOF】"))
         if result.errors:
-            yield event.plain_result(
+            return [
                 "❌ 排表没成功喵：\n" + "\n".join(result.errors)
                 + "\n\n格式长这样喵：\na队:云玩家 萌新 遗老\nb队:复读机 鸽子 柠檬"
                 + _HELP_HINT
-            )
-            return
+            ], None
         if len(result.teams) < 2:
-            yield event.plain_result("❌ 至少要两支队伍才排得起来喵。" + _HELP_HINT)
-            return
+            return ["❌ 至少要两支队伍才排得起来喵。" + _HELP_HINT], None
 
         await self.db.replace_teams(group_id, result.teams)
 
@@ -607,9 +597,49 @@ class BattleReportPlugin(Star):
             seed=(self.config.get("pairing_seed") or None),
         )
 
+        return [], gen
+
+    @filter.command("排表", alias={"/排表"})
+    async def lineup_cmd(self, event: AstrMessageEvent):
+        """排表：解析名单 → 存库 → 生成随机配对模板。"""
+        messages, gen = await self._prepare_lineup(
+            event, _strip_command(event.get_message_str(), _LINEUP_CMDS))
+        if gen is None:
+            for message in messages:
+                yield event.plain_result(message)
+            return
         await self._send_report_text(event, gen.template)
-        for w in gen.warnings:
-            await event.send(event.plain_result(w))
+        for warning in gen.warnings:
+            await event.send(event.plain_result(warning))
+
+    @filter.llm_tool(name="battle_report_lineup")
+    async def lineup_tool(self, event: AstrMessageEvent, lineup_text: str):
+        r"""根据双方名单随机排表，在当前群发送今日比赛的完整战报模板。
+
+        用户明确要求排表且提供双方队名、参赛 ID 后调用。只使用用户提供的名单，
+        缺少队名或选手时先询问，不编造名单。规则未指定时使用插件默认规则。
+        仅群聊可用，成功会直接发送战报并结束本轮回复，无需重写或重复发送；
+        只保存排表名单，不提交比赛结果。发送失败不要自动重试。
+
+        Args:
+            lineup_text(string): 排表文本，双方各占一行“队名:选手1 选手2”；指定规则时放在首行。
+                例如“a队:云玩家 萌新\nb队:遗老 鸽子”。含空格的完整 ID 用英文双引号包住，
+                例如“a队:"示例 玩家" 萌新\nb队:遗老 鸽子”。不要附加解释或 Markdown 代码块。
+        """
+        payload = lineup_text.strip()
+        # 工具参数通常没有命令词；别把“排表队:选手”中的队名前缀删掉。
+        if re.match(r"^/?排表(?:\s|$)", payload):
+            payload = _strip_command(payload, _LINEUP_CMDS)
+        messages, gen = await self._prepare_lineup(event, payload)
+        if gen is None:
+            return "\n\n".join(messages)
+        await self._send_report_text(event, gen.template)
+        for warning in gen.warnings:
+            await event.send(event.plain_result(warning))
+        # 工具已直发；清除待处理结果，防止 AstrBot 工具执行器再次发送遗留消息。
+        # stop_event 的强制停止标志仍保留，返回 None 使工具循环结束。
+        event.clear_result()
+        return None
 
     # ---------- 群战队绑定 ----------
 
