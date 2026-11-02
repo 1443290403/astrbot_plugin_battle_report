@@ -10,6 +10,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 try:
@@ -44,6 +45,12 @@ def safe(text):
 
 def mention(uid):
     return f'<qqbot-at-user id="{html.escape(str(uid), quote=True)}" />'
+
+
+def avatar(appid, uid):
+    """官方头像由同一应用的原始 OpenID 定位，不依赖 QQ 身份关联。"""
+    url = f'https://q.qlogo.cn/qqapp/{quote(str(appid), safe="")}/{quote(str(uid), safe="")}/100'
+    return f'![头像 #32px #32px]({url})'
 
 
 def keyboard(car):
@@ -227,13 +234,15 @@ class WaitingQueues:
                 display, rate = '', '暂不可用'
             name = display or member['name'] or f'车友{uid[-4:]}'
             waited = max(0, int(now - member['joined_at']))
-            return f'**{safe(name)}** ｜ 等待{waited // 60}分{waited % 60:02}秒\n当月胜率：{safe(rate)}'
+            return (f'{avatar(scope[1], uid)} {safe(name)} ｜ 已等待{waited // 60}分{waited % 60:02}秒\n\n'
+                    f'> 当月胜率：{safe(rate)}')
         rows = await asyncio.gather(*(row(uid, member) for uid, member in car['members'].items()))
         remaining = max(0, int(car['deadline'] - now))
-        state = '等待发车' if car['ready'] else '等待凑满3人'
+        cleanup = (f'{remaining // 60}分钟' if remaining % 60 == 0
+                   else f'{remaining // 60}分{remaining % 60:02}秒')
         text = (f'## {car["number"]}号车 · 当前等车列表 | {len(car["members"])}人\n'
-                f'{state}，剩余{remaining // 60}分{remaining % 60:02}秒\n每3分钟刷新\n\n'
-                + '\n\n'.join(rows or ['暂时还没有成员喵。']))
+                f'> 自动清理：{cleanup}\n> 广播间隔：{REFRESH // 60}分钟\n\n'
+                + '\n\n'.join(rows or ['> 暂时还没有成员喵。']))
         await self.emit(scope, room, text, keyboard(car))
 
     async def execute(self, scope, action, raw, uid, name, msg_id):

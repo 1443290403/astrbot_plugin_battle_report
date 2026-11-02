@@ -39,6 +39,45 @@ def test_buttons_use_scoped_car_tokens_and_departure_prefills_without_sending(se
     assert buttons[0]['action']['permission'] == {'type': 2}
 
 
+def test_panel_separates_avatar_name_and_wait_from_secondary_quote_lines(setup_queue):
+    service, _, send, act = setup_queue
+    service.profile.side_effect = lambda scope, uid, binding: ('示例 玩家', '60%')
+    asyncio.run(act(uid='official-member-openid'))
+    text = send.await_args.args[1]
+    assert ('![头像 #32px #32px](https://q.qlogo.cn/qqapp/app-a/official-member-openid/100) '
+            '示例 玩家 ｜ 已等待0分00秒') in text.splitlines()
+    assert '> 当月胜率：60%' in text.splitlines()
+    assert '> 自动清理：9分钟' in text.splitlines()
+    assert '> 广播间隔：3分钟' in text.splitlines()
+    assert all(line.startswith('> ') for line in text.splitlines()
+               if any(label in line for label in ('当月胜率：', '自动清理：', '广播间隔：')))
+    assert '每3分钟刷新' not in text and '剩余' not in text
+    assert '游戏中' not in text and '等级' not in text
+
+
+def test_panel_avatar_and_cleanup_remaining_survive_refresh_restart_and_ready_transition(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        original_deadline = service.room(SCOPE)['cars'][0]['deadline']
+        clock[0] = 180
+        restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
+        await restored.tick()
+        text = send.await_args.args[1]
+        assert 'https://q.qlogo.cn/qqapp/app-a/u1/100' in text
+        assert '已等待3分00秒' in text and '> 自动清理：6分钟' in text
+        assert restored.room(SCOPE)['cars'][0]['deadline'] == original_deadline
+        await restored.execute(SCOPE, '我也要等车', '', 'u2', '萌新', 'join-2')
+        await restored.execute(SCOPE, '我也要等车', '', 'u3', '遗老', 'join-3')
+        assert '> 自动清理：15分钟' in send.await_args.args[1]
+        assert send.await_args.args[1].count('![头像 #32px #32px]') == 3
+        clock[0] = 361
+        await restored.tick()
+        assert '> 自动清理：11分59秒' in send.await_args.args[1]
+        assert '> 广播间隔：3分钟' in send.await_args.args[1]
+    asyncio.run(scenario())
+
+
 def test_partial_car_refreshes_each_three_minutes_and_dissolves_at_nine(setup_queue):
     service, clock, send, act = setup_queue
     async def scenario():

@@ -168,3 +168,8 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 - 单个过滤器用 `@filter.custom_filter(OfficialQueueFilter)` 传类，不要传实例；v4.27.3 内部自行用 raise_error 构造。RoundCommandFilter 和 RequestReviewFilter 同样传类，审批优先级100保留。
 - tests/test_main 的桩必须在装饰阶段实例化并校验 CustomFilter，禁止退回无操作 lambda；新增“旧实例写法必须报错”与三处过滤器构造参数回归。发布包除 metadata 检查外，使用目标 AstrBot 实际注册函数做全插件模块导入检查，不将这个隔离检查当作 QQ 实机验证。
+
+## v1.25.3 等车面板
+
+- 头像只用 scope AppID + 原始 OpenID 的官方 CDN 地址，32px 内联图片，不要求先关联 QQ。姓名/已等待时间使用正文色，其余面板说明使用 Markdown 引用次级色，不写 HTML 字色标签。
+- 自动清理展示 deadline 的实际剩余时间，广播间隔展示 REFRESH；不能把文案调整变成计时或权限变更。

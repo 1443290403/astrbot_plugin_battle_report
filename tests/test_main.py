@@ -2281,6 +2281,8 @@ def test_official_waiting_posts_real_sdk_markdown_and_keyboard_payload(official_
     assert params['msg_id'] == 'incoming-1' and params['msg_seq'] == 1
     assert '1号车' in params['markdown']['content']
     assert '未绑定战队' in params['markdown']['content']
+    assert '![头像 #32px #32px](https://q.qlogo.cn/qqapp/app-A/member-openid/100)' in params['markdown']['content']
+    assert '> 当月胜率：未绑定战队' in params['markdown']['content']
     assert params['keyboard']['content']['rows'][1]['buttons'][0]['action']['enter'] is False
     ev.send.assert_not_awaited()
     ev.stop_event.assert_called_once()
@@ -2295,6 +2297,7 @@ def test_official_waiting_uses_approved_markdown_template_when_configured(offici
     md = api.post_group_message.await_args.kwargs['markdown']
     assert md['custom_template_id'] == 'approved-template'
     assert md['params'][0]['key'] == 'body' and md['params'][0]['values']
+    assert '![头像 #32px #32px](https://q.qlogo.cn/qqapp/app-A/member-openid/100)' in md['params'][0]['values'][0]
     assert 'content' not in md
 
 
