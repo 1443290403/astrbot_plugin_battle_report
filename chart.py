@@ -129,11 +129,16 @@ def _trend_image(
     draw.text((width / 2, round(22 * scale)), title, font=font_title, fill="black", anchor="mm")
 
     n = len(points)
+    # 首尾点与坐标轴边界留出等量空白，单点居中；两条曲线和日期共用。
+    x_padding = min(plot_w / 4, max(24 * scale, plot_w * 0.05))
+    data_w = plot_w - 2 * x_padding
     ticks = _win_rate_ticks([p["win_rate"] for p in points])
     y_min, y_max = ticks[0], ticks[-1]
 
     def px(i: int) -> float:
-        return margin_left + (i / max(n - 1, 1)) * plot_w
+        if n == 1:
+            return margin_left + plot_w / 2
+        return margin_left + x_padding + i / (n - 1) * data_w
 
     def py(v: float) -> float:
         return margin_top + plot_h * (1 - (v - y_min) / (y_max - y_min))
@@ -196,7 +201,7 @@ def _trend_image(
     # x 轴日期标签（抽样，显示 MM-DD）
     step = max(1, n // 10)
     if scale != 1:
-        slots = max(2, int(plot_w / (draw.textlength("00-00", font=font_small) + 16)))
+        slots = max(2, int(data_w / (draw.textlength("00-00", font=font_small) + 16)))
         step = max(1, (n + slots - 1) // slots)
     for i in range(0, n, step):
         x = px(i)

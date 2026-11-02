@@ -167,6 +167,38 @@ def test_trend_empty_data_raises(tmp_path):
         chart.make_trend_chart([], "示例趋势", tmp_path / "empty.png")
 
 
+@pytest.mark.parametrize('width,height,scale', [(960, 480, 1), (836, 450, 1.4)])
+@pytest.mark.parametrize('count', [1, 2, 31])
+def test_trend_points_have_symmetric_horizontal_space_and_aligned_dates(monkeypatch, width, height, scale, count):
+    from PIL import ImageDraw
+    dots, dates, games = [], [], []
+    original_ellipse = ImageDraw.ImageDraw.ellipse
+    original_text = ImageDraw.ImageDraw.text
+    def capture_ellipse(draw, xy, *args, **kwargs):
+        if kwargs.get('fill') == '#2f6fed':
+            dots.append((xy[0] + xy[2]) / 2)
+        return original_ellipse(draw, xy, *args, **kwargs)
+    def capture_text(draw, xy, text, *args, **kwargs):
+        if kwargs.get('anchor') == 'ma':
+            dates.append((xy[0], text))
+        return original_text(draw, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'ellipse', capture_ellipse)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture_text)
+    monkeypatch.setattr(chart, '_dashed_line', lambda draw, start, end: games.append((start[0], end[0])))
+    points = [dict(date=f'2026-07-{d:02}', win_rate=60, total=d) for d in range(1, count + 1)]
+    chart._trend_image(points, '示例趋势', width, height, scale).close()
+    left, right = round(80 * scale), width - round(90 * scale)
+    assert len(dots) == count
+    assert dots[0] - left == pytest.approx(right - dots[-1])
+    assert dots[0] - left >= 24 * scale
+    if count == 1:
+        assert dots == [(left + right) / 2]
+    else:
+        assert [end - start for start, end in zip(dots, dots[1:])] == pytest.approx([dots[1] - dots[0]] * (count - 1))
+        assert games == list(zip(dots, dots[1:]))
+    assert all(x == dots[int(date[-2:]) - 1] for x, date in dates)
+
+
 def test_trend_win_rate_zoom_does_not_change_games_axis(tmp_path, monkeypatch):
     lines = []
     monkeypatch.setattr(chart, "_dashed_line", lambda draw, start, end: lines.append((start, end)))
