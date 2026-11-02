@@ -192,7 +192,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.4")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -262,7 +262,7 @@ class BattleReportPlugin(Star):
         if self.db:
             await self.db.close()
 
-    # ---------- QQ 官方机器人等车 ----------
+    # ---------- QQ 官方机器人友谊等车 ----------
 
     def _get_waiting_queues(self):
         if getattr(self, "_waiting_queues", None) is None:
@@ -361,14 +361,14 @@ class BattleReportPlugin(Star):
             if event.get_platform_name() not in QUEUE_PLATFORMS:
                 return
             if not self.config.get("official_queue_enabled", True):
-                await event.send(event.plain_result("等车功能尚未启用喵。"))
+                await event.send(event.plain_result("友谊等车功能尚未启用喵。"))
                 return
             source = getattr(event.message_obj, "raw_message", None)
             group = getattr(source, "group_openid", None)
             if isinstance(source, dict):
                 group = source.get("group_openid")
             if not group or str(group) != str(event.get_group_id()):
-                await event.send(event.plain_result("等车要在 QQ 官方机器人的群聊里用喵。"))
+                await event.send(event.plain_result("友谊等车要在 QQ 官方机器人的群聊里用喵。"))
                 return
             err = await self._group_check(event)
             if err:
@@ -387,7 +387,7 @@ class BattleReportPlugin(Star):
                 str(event.message_obj.message_id or ''))
         except Exception:
             logger.exception("QQ 官方等车操作或面板发送失败")
-            await event.send(event.plain_result("等车操作或面板发送失败喵，请 /等车 查看当前队列。"))
+            await event.send(event.plain_result("友谊等车操作或面板发送失败喵，请 /友谊等车 查看当前队列。"))
         finally:
             event.clear_result()
 
@@ -2624,7 +2624,7 @@ class BattleReportPlugin(Star):
     async def help_cmd(self, event: AstrMessageEvent, arg: str = ""):
         """按当前群用途展示流程，命令索引和跨群流程可显式查看。"""
         arg = arg.strip()
-        if arg == "等车" and (not callable(getattr(event, "get_platform_name", None))
+        if arg in ("友谊等车", "等车") and (not callable(getattr(event, "get_platform_name", None))
                             or event.get_platform_name() not in QUEUE_PLATFORMS):
             event.stop_event()
             event.clear_result()
@@ -2640,7 +2640,7 @@ class BattleReportPlugin(Star):
         if disabled:
             yield event.plain_result(disabled)
             return
-        if arg == "等车" and callable(getattr(event, "get_platform_name", None)) and event.get_platform_name() in QUEUE_PLATFORMS:
+        if arg in ("友谊等车", "等车") and callable(getattr(event, "get_platform_name", None)) and event.get_platform_name() in QUEUE_PLATFORMS:
             yield event.plain_result(OFFICIAL_QUEUE_HELP)
             return
         if arg == "超管":

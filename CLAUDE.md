@@ -173,3 +173,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 - 头像只用 scope AppID + 原始 OpenID 的官方 CDN 地址，32px 内联图片，不要求先关联 QQ。姓名/已等待时间使用正文色，其余面板说明使用 Markdown 引用次级色，不写 HTML 字色标签。
 - 自动清理展示 deadline 的实际剩余时间，广播间隔展示 REFRESH；不能把文案调整变成计时或权限变更。
+
+## v1.25.4 友谊等车名称
+
+- 主入口 `/友谊等车`，帮助 `/友谊等车帮助` 和 `/帮助 友谊等车`；原入口与旧面板按钮保持兼容，解析归一到原内部动作。存档、scope、token、配置键不改；加入、离队、发车及等车ID 指令沿用原名。OneBot 对新旧命令均静默终止。

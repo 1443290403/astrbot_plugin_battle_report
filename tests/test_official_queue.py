@@ -32,7 +32,8 @@ def test_buttons_use_scoped_car_tokens_and_departure_prefills_without_sending(se
     assert '1号车' in text and '60%' in text and '等待0分00秒' in text
     assert '游戏中' not in text and '等级' not in text
     buttons = [b for row in buttons['content']['rows'] for b in row['buttons']]
-    assert [b['render_data']['label'] for b in buttons] == ['我也要等车', '跑路了再见', '人齐了发车', '再开一车', '等车帮助']
+    assert [b['render_data']['label'] for b in buttons] == ['我也要等车', '跑路了再见', '人齐了发车', '再开一车', '友谊等车帮助']
+    assert buttons[-1]['action']['data'] == '/友谊等车帮助'
     go = buttons[2]['action']
     assert go['data'] == f'/人齐了发车 {car["id"]} ' and go['enter'] is False
     assert buttons[0]['action']['enter'] is True
@@ -281,6 +282,9 @@ def test_atomic_save_failure_rolls_back_queue_change(setup_queue, monkeypatch):
 
 
 @pytest.mark.parametrize('text,expected', [
+    ('/友谊等车', ('等车', '')), ('友谊等车', ('等车', '')),
+    ('/友谊等车帮助', ('等车帮助', '')), ('/帮助 友谊等车', ('等车帮助', '')),
+    ('/战报帮助 友谊等车', ('等车帮助', '')), ('/友谊等车天气', None),
     ('/等车', ('等车', '')), ('等车', ('等车', '')), ('/人齐了发车 ABC123 123456789', ('人齐了发车', 'ABC123 123456789')),
     ('/帮助 等车', ('等车帮助', '')), ('战报帮助 等车', ('等车帮助', '')),
     ('/帮助 等车 其他', None),

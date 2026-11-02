@@ -1,4 +1,4 @@
-"""QQ 官方机器人等车队列：状态持久化、独立计时、按钮和可靠通知。"""
+"""QQ 官方机器人友谊等车：状态持久化、独立计时、按钮和可靠通知。"""
 import asyncio
 import copy
 import html
@@ -22,8 +22,8 @@ REFRESH = 180
 GATHER_TIMEOUT = 540
 READY_TIMEOUT = 900
 PLATFORMS = {'qq_official', 'qq_official_webhook'}
-COMMANDS = ('人齐了发车', '跑路了再见', '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
-HELP = ('等车流程喵～\n/等车：开车或查看队列\n/再开一车：新增独立队列\n'
+COMMANDS = ('友谊等车帮助', '友谊等车', '人齐了发车', '跑路了再见', '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
+HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看队列\n/再开一车：新增独立队列\n'
         '/我也要等车 [车号]：加入\n/跑路了再见 [车号]：离开\n'
         '/人齐了发车 [车号] 群号：至少3人可发车\n/等车ID 角色或参赛ID：关联原账号\n'
         '首次关联请用原 QQ 向原机器人发送 /确认关联 确认码，10分钟有效。\n'
@@ -32,10 +32,13 @@ HELP = ('等车流程喵～\n/等车：开车或查看队列\n/再开一车：�
 
 
 def parse_command(text):
-    if re.fullmatch(r'\s*/?(?:帮助|战报帮助)\s+等车\s*', text):
+    if re.fullmatch(r'\s*/?(?:帮助|战报帮助)\s+(?:友谊等车|等车)\s*', text):
         return '等车帮助', ''
     match = re.fullmatch(r'\s*/?(' + '|'.join(COMMANDS) + r')(?:\s+(.*))?\s*', text, re.S)
-    return (match[1], (match[2] or '').strip()) if match else None
+    if not match:
+        return None
+    action = {'友谊等车': '等车', '友谊等车帮助': '等车帮助'}.get(match[1], match[1])
+    return action, (match[2] or '').strip()
 
 
 def safe(text):
@@ -60,7 +63,7 @@ def keyboard(car):
          ('leave', '跑路了再见', f'/跑路了再见 {car["id"]}', True)],
         [('go', '人齐了发车', f'/人齐了发车 {car["id"]} ', False),
          ('new', '再开一车', '/再开一车', True)],
-        [('help', '等车帮助', '/等车帮助', True)],
+        [('help', '友谊等车帮助', '/友谊等车帮助', True)],
     ]:
         rows.append({'buttons': [
             {'id': f'{car["id"]}_{key}',
@@ -187,7 +190,7 @@ class WaitingQueues:
             if not found and len(room['cars']) == 1:
                 found = room['cars']
         if len(found) != 1:
-            raise ValueError('请 /等车 查看并选择车号喵。' if not target else '这辆车已经结束了喵，请 /等车 查看。')
+            raise ValueError('请 /友谊等车 查看并选择车号喵。' if not target else '这辆车已经结束了喵，请 /友谊等车 查看。')
         return found[0]
 
     async def emit(self, scope, room, text, buttons=None):
@@ -240,7 +243,7 @@ class WaitingQueues:
         remaining = max(0, int(car['deadline'] - now))
         cleanup = (f'{remaining // 60}分钟' if remaining % 60 == 0
                    else f'{remaining // 60}分{remaining % 60:02}秒')
-        text = (f'## {car["number"]}号车 · 当前等车列表 | {len(car["members"])}人\n'
+        text = (f'## {car["number"]}号车 · 当前友谊等车列表 | {len(car["members"])}人\n'
                 f'> 自动清理：{cleanup}\n> 广播间隔：{REFRESH // 60}分钟\n\n'
                 + '\n\n'.join(rows or ['> 暂时还没有成员喵。']))
         await self.emit(scope, room, text, keyboard(car))
@@ -283,7 +286,7 @@ class WaitingQueues:
                 with self.edit():
                     if action in ('等车', '蹲车', '再开一车'):
                         if args:
-                            raise ValueError('用 /等车 查看，或 /再开一车 新增队列喵。')
+                            raise ValueError('用 /友谊等车 查看，或 /再开一车 新增队列喵。')
                         if action == '再开一车' or not room['cars']:
                             own = any(uid in q['members'] for q in room['cars'])
                             now = self.clock()
@@ -326,7 +329,7 @@ class WaitingQueues:
                                     [user for user in car['members'] if user != uid])
                         selected = []
                     else:
-                        raise ValueError('请用 /等车帮助 查看指令喵。')
+                        raise ValueError('请用 /友谊等车帮助 查看指令喵。')
                 # 异常时对应群会还原；发送前重新取当前 room。
                 room = self.room(scope)
                 await self.flush(scope, room)

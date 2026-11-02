@@ -2226,6 +2226,7 @@ def test_waiting_filter_handles_official_commands_and_silent_onebot_guard(plugin
 
 
 @pytest.mark.parametrize('text', [
+    '/友谊等车', '友谊等车', '/友谊等车帮助', '/帮助 友谊等车', '/战报帮助 友谊等车',
     '/等车', '蹲车', '/我也要等车 C1_abcd1234', '/跑路了再见',
     '/人齐了发车 C1_abcd1234 123456789', '/再开一车',
     '/等车ID "示例 玩家"', '/等车帮助', '/帮助 等车', '帮助 等车',
@@ -2259,11 +2260,12 @@ def test_onebot_queue_guard_leaves_other_commands_and_chat_untouched(plugin_modu
     ev.stop_event.assert_not_called()
 
 
-def test_onebot_waiting_help_direct_handler_is_also_silent(plugin_module, tmp_path):
+@pytest.mark.parametrize('topic', ['友谊等车', '等车'])
+def test_onebot_waiting_help_direct_handler_is_also_silent(plugin_module, tmp_path, topic):
     obj = plugin(plugin_module, tmp_path)
     ev = event('/帮助 等车')
     ev.get_platform_name = lambda: 'aiocqhttp'
-    assert asyncio.run(collect(obj.help_cmd(ev, '等车'))) == []
+    assert asyncio.run(collect(obj.help_cmd(ev, topic))) == []
     ev.stop_event.assert_called_once()
     ev.clear_result.assert_called_once()
     ev.send.assert_not_awaited()
@@ -2271,9 +2273,11 @@ def test_onebot_waiting_help_direct_handler_is_also_silent(plugin_module, tmp_pa
 
 
 @pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])
-def test_official_waiting_posts_real_sdk_markdown_and_keyboard_payload(official_waiting, platform_name):
+@pytest.mark.parametrize('command', ['/友谊等车', '/等车'])
+def test_official_waiting_posts_real_sdk_markdown_and_keyboard_payload(official_waiting, platform_name, command):
     obj, ev, api, _ = official_waiting
     ev.get_platform_name = lambda: platform_name
+    ev.get_message_str = lambda: command
     asyncio.run(obj.official_queue_cmd(ev))
     api.post_group_message.assert_awaited_once()
     params = api.post_group_message.await_args.kwargs
