@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.25.4
+最新版本：v1.25.5
 
-- 文件：astrbot_plugin_battle_report-1.25.4.zip
-- 源码提交：2d4dbbcfbfae3de41ccaf25900637be26bdd7232
+- 文件：astrbot_plugin_battle_report-1.25.5.zip
+- 源码提交：de42e184fba02dc176e4cbad0bef4eecbd5967a0
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：a22e5c77093513f2ee92b9630082818b222b4298a935835ea7b8372ef98de01b
+- SHA256：18216d7cf0ff8abb00bb2b68f8033ad3bfc2519dbfbd946fd322bcecbcf5e638
 
 旧版本安装包保留，按文件名选择。
 
@@ -55,3 +55,9 @@ v1.25.3：新增成员 QQ 头像，名称及已等待时间用正文色，胜率
 v1.25.4：主入口改为 /友谊等车，同步面板、帮助按钮和引导；旧入口兼容原队列，SnowLuma 对新旧指令继续静默。当月胜率的未绑定战队提示改为未绑定角色。1049 项测试通过，安装包通过 v4.27.3 注册与管道隔离检查。
 
 - [v1.25.4 友谊等车与账号关联说明](OFFICIAL_QUEUE_GUIDE-1.25.4.md)
+
+## 官方机器人仅友谊等车
+
+v1.25.5：官方 WS/Webhook 仅执行友谊等车、队列操作、等车ID与等车帮助，其他指令和聊天静默忽略；排表 LLM 工具同样拒绝官方端调用。SnowLuma 保留原有战报及聊天功能，等车指令继续静默。1083 项测试通过，另通过 v4.27.3 注册与处理流程的44种隔离组合检查。
+
+- [v1.25.5 友谊等车与账号关联说明](OFFICIAL_QUEUE_GUIDE-1.25.5.md)
