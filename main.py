@@ -89,9 +89,13 @@ def _review_scope(event) -> tuple[str, str] | None:
 class OfficialQueueFilter(CustomFilter):
     def filter(self, event, cfg) -> bool:
         name = getattr(event, "get_platform_name", None)
-        # OneBot 也接收明确的等车指令，仅用于静默终止，避免落入普通聊天。
-        return bool(callable(name) and name() in QUEUE_PLATFORMS | {'aiocqhttp'}
-                    and parse_queue_command(event.get_message_str()))
+        if not callable(name):
+            return False
+        platform = name()
+        # 官方平台统一在此分流：只有等车指令可执行，其余静默终止。
+        # OneBot 仅拦截等车指令，原战报与聊天流程继续使用。
+        return platform in QUEUE_PLATFORMS or bool(
+            platform == 'aiocqhttp' and parse_queue_command(event.get_message_str() or ''))
 
 
 class RequestReviewFilter(CustomFilter):
@@ -192,7 +196,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.5")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -353,12 +357,15 @@ class BattleReportPlugin(Star):
                 if wins + losses else '暂无胜负场次')
         return display, rate
 
-    @filter.custom_filter(OfficialQueueFilter, priority=100)
+    @filter.custom_filter(OfficialQueueFilter, priority=10000)
     async def official_queue_cmd(self, event: AstrMessageEvent):
         """等车、加入、离开、发车和新增队列；仅 QQ 官方群聊。"""
         event.stop_event()
         try:
             if event.get_platform_name() not in QUEUE_PLATFORMS:
+                return
+            command = parse_queue_command(event.get_message_str() or '')
+            if command is None:
                 return
             if not self.config.get("official_queue_enabled", True):
                 await event.send(event.plain_result("友谊等车功能尚未启用喵。"))
@@ -379,7 +386,7 @@ class BattleReportPlugin(Star):
             if platform is None or platform.meta().name not in QUEUE_PLATFORMS:
                 raise RuntimeError("QQ 官方机器人连接不可用")
             scope = (str(platform_id), str(platform.appid), str(group))
-            action, raw = parse_queue_command(event.get_message_str())
+            action, raw = command
             uid = str(event.get_sender_id())
             name = str(event.get_sender_name() or '')
             await self._get_waiting_queues().execute(
@@ -846,12 +853,18 @@ class BattleReportPlugin(Star):
         缺少队名或选手时先询问，不编造名单。规则未指定时使用插件默认规则。
         仅群聊可用，成功会直接发送战报并结束本轮回复，无需重写或重复发送；
         只保存排表名单，不提交比赛结果。发送失败不要自动重试。
+        QQ 官方机器人仅提供友谊等车，不调用此工具。
 
         Args:
             lineup_text(string): 排表文本，双方各占一行“队名:选手1 选手2”；指定规则时放在首行。
                 例如“a队:云玩家 萌新\nb队:遗老 鸽子”。含空格的完整 ID 用英文双引号包住，
                 例如“a队:"示例 玩家" 萌新\nb队:遗老 鸽子”。不要附加解释或 Markdown 代码块。
         """
+        platform = getattr(event, 'get_platform_name', None)
+        if callable(platform) and platform() in QUEUE_PLATFORMS:
+            event.stop_event()
+            event.clear_result()
+            return None
         payload = lineup_text.strip()
         # 工具参数通常没有命令词；别把“排表队:选手”中的队名前缀删掉。
         if re.match(r"^/?排表(?:\s|$)", payload):

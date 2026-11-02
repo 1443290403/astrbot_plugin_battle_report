@@ -2222,7 +2222,45 @@ def test_waiting_filter_handles_official_commands_and_silent_onebot_guard(plugin
     ev.get_platform_name = lambda: platform
     assert plugin_module.OfficialQueueFilter().filter(ev, {}) is expected
     ev.get_message_str = lambda: '今天等车有点久'
-    assert not plugin_module.OfficialQueueFilter().filter(ev, {})
+    assert plugin_module.OfficialQueueFilter().filter(ev, {}) is (platform in plugin_module.QUEUE_PLATFORMS)
+
+
+@pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])
+@pytest.mark.parametrize('text', [
+    '/排行', '/我的战绩', '/我的ID', '/绑定ID 云玩家', '/改名 萌新',
+    '/绑定战队 a队', '/群聊属性 主群', '/结算', '/排表 a队:云玩家\nb队:萌新',
+    '/第二轮', '/帮助', '/确认关联 AABBCCDDEEFF0011', '/解除官方关联',
+    '普通聊天', '', '/未知指令',
+])
+def test_official_bot_silently_ignores_every_non_queue_message(official_waiting, plugin_module, platform_name, text):
+    obj, ev, api, _ = official_waiting
+    ev.get_platform_name = lambda: platform_name
+    ev.get_message_str = lambda: text
+    obj.config['official_queue_enabled'] = False
+    obj.db_ready = False
+    obj._get_waiting_queues = Mock(side_effect=AssertionError('non-queue message must not access queue'))
+    assert plugin_module.OfficialQueueFilter().filter(ev, {})
+    asyncio.run(obj.official_queue_cmd(ev))
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+    ev.send.assert_not_awaited()
+    api.post_group_message.assert_not_awaited()
+    obj._get_waiting_queues.assert_not_called()
+    obj.db.get_group_ban.assert_not_awaited()
+    assert not list(obj.data_dir.iterdir())
+
+
+@pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])
+def test_official_bot_cannot_bypass_queue_only_routing_via_llm_lineup_tool(official_waiting, platform_name):
+    obj, ev, api, _ = official_waiting
+    ev.get_platform_name = lambda: platform_name
+    obj._prepare_lineup = AsyncMock(side_effect=AssertionError('official bot must not generate lineup'))
+    assert asyncio.run(obj.lineup_tool(ev, 'a队:云玩家\nb队:萌新')) is None
+    obj._prepare_lineup.assert_not_awaited()
+    ev.send.assert_not_awaited()
+    api.post_group_message.assert_not_awaited()
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
 
 
 @pytest.mark.parametrize('text', [
@@ -2599,7 +2637,7 @@ def test_all_custom_filters_are_instantiated_by_registration_with_framework_opti
     assert isinstance(cls.review_request.custom_filter, plugin_module.RequestReviewFilter)
     assert isinstance(cls.round_cmd.custom_filter, plugin_module.RoundCommandFilter)
     assert cls.review_request.filter_options == {'priority': 100}
-    assert cls.official_queue_cmd.filter_options == {'priority': 100}
+    assert cls.official_queue_cmd.filter_options == {'priority': 10000}
     assert all(fn.custom_filter.raise_error is True for fn in
                (cls.official_queue_cmd, cls.review_request, cls.round_cmd))
 

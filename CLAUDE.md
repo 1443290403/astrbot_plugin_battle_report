@@ -177,3 +177,8 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 ## v1.25.4 友谊等车名称
 
 - 主入口 `/友谊等车`，帮助 `/友谊等车帮助` 和 `/帮助 友谊等车`；原入口与旧面板按钮保持兼容，解析归一到原内部动作。存档、scope、token、配置键不改；加入、离队、发车及等车ID 指令沿用原名。OneBot 对新旧命令均静默终止。
+
+## v1.25.5 官方端仅友谊等车
+
+- OfficialQueueFilter priority=10000 接收官方两种接入的全部消息；处理器白名单只执行等车相关命令，其他消息在服务检查前 stop_event + clear_result，避免转入原命令或默认聊天。OneBot 仍只静默拦等车消息，非等车原路径保留。
+- lineup_tool 对官方平台提前终止并返回 None；身份表、原账号权限数据与原队列不删除、不迁移，账号管理等原功能在 SnowLuma 使用。

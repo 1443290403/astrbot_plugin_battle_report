@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.25.4`｜数据库 `SCHEMA_VERSION = 20`｜最后核对：2026-11-03
+> 对应版本：`1.25.5`｜数据库 `SCHEMA_VERSION = 20`｜最后核对：2026-11-03
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -425,9 +425,11 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **注册边界（v1.25.1）：** 单独的 `filter.custom_filter` 参数传过滤器类（如 `OfficialQueueFilter`），v4.27.3 内部会调用 `custom_filter(raise_error)`；不能提前实例化。RequestReviewFilter/OfficialQueueFilter/RoundCommandFilter 均按此契约注册，审批保留 priority=100。测试桩也必须实例化、校验类型和 raise_error，不能让装饰器无操作返回而跳过导入错误；安装包元数据检查与 Python 插件模块导入检查分别执行。组合过滤器实例遵循上游另行处理的 API，不在这次修改范围。
 
+**官方端功能范围（v1.25.5）：** 官方机器人仅开放友谊等车、加入/离队/发车/新车、等车ID和对应新旧帮助入口；普通聊天、泛用帮助及其他业务/管理指令静默忽略，lineup_tool 对官方端也提前停止并返回 None。保留已有身份表、原账号授权和队列存档，ID 管理及其他功能在 SnowLuma 继续使用；原生 OneBot 的非等车指令与 LLM 工具不受这个平台限制。
+
 **友谊等车命名（v1.25.4）：** 对外主入口 `/友谊等车`，帮助 `/友谊等车帮助`、`/帮助 友谊等车`；原 `/等车`、`/蹲车`、`/等车帮助` 及旧帮助主题兼容。parse_command 将新入口归一到已有内部动作，不改存档文件、作用域、车 token 或配置键；原队列和旧按钮继续生效。面板标题、帮助按钮、引导统一新名称，加入/离队/发车/等车ID 命令名保留；OneBot 对新旧入口同样静默终止。当月胜率原“未绑定战队”状态文案改为“未绑定角色”，只改展示，不改变本群战队校验或身份关联逻辑。
 
-**QQ 官方等车（v1.24.0）：** `OfficialQueueFilter` 严格匹配官方平台和 aiocqhttp 的等车命令（含 `/帮助 等车`、`/战报帮助 等车`），priority=100。aiocqhttp 仅 stop_event + clear_result 静默终止，不发送提示、不查 DB、不读写队列，防止继续触发普通聊天；其他平台和普通闲聊不接管。实际队列操作仅官方平台允许，拒绝私聊/频道、群禁用和 DB 未就绪；定时发送另验原连接的平台类型和 AppID，不能通过 OneBot 发送。`WaitingQueues` 仅持久化队列及展示关联，不写比赛/统计/权限表。作用域为平台实例 ID + bot AppID + group_openid，成员取官方 member_openid；SDK `post_group_message` 直接发送 Markdown + 动态键盘，不能用 OneBot 或普通 At 组件替代。发车按钮 action.type=2、enter=false，填群号后发送；加入/离开/再开/帮助为 enter=true。按钮带不可复用的 C 前缀随机车 token，不接受其他群或其他机器人的车 token。
+**QQ 官方等车（v1.24.0）：** `OfficialQueueFilter` v1.25.5 起接收官方 WS/Webhook 全部消息，priority=10000；处理器先解析等车白名单，非等车消息在配置/DB/平台服务检查前 stop_event + clear_result 静默终止，拦住原命令处理器和默认聊天。aiocqhttp 仍只匹配等车命令（含新旧帮助主题）。aiocqhttp 仅 stop_event + clear_result 静默终止，不发送提示、不查 DB、不读写队列，防止继续触发普通聊天；OneBot 普通闲聊和其他平台不接管。实际队列操作仅官方平台允许，拒绝私聊/频道、群禁用和 DB 未就绪；定时发送另验原连接的平台类型和 AppID，不能通过 OneBot 发送。`WaitingQueues` 仅持久化队列及展示关联，不写比赛/统计/权限表。作用域为平台实例 ID + bot AppID + group_openid，成员取官方 member_openid；SDK `post_group_message` 直接发送 Markdown + 动态键盘，不能用 OneBot 或普通 At 组件替代。发车按钮 action.type=2、enter=false，填群号后发送；加入/离开/再开/帮助为 enter=true。按钮带不可复用的 C 前缀随机车 token，不接受其他群或其他机器人的车 token。
 
 - 每车初始 540 秒截止、每 180 秒刷新；从不足 3 到至少 3 时截止改为当前时刻 +900 秒，持续满员不重置；降至不足 3 时重新 +540 秒。每人 joined_at 独立、重复加入不改时间。允许多车及超过 3 人，一人在同群只能加入一车；已在车中的创建者另开空车。最后一人离开时移除空车。
 - 仅本车成员可发车，至少 3 人，目的群号为 5~12 位正数字；成功移除该车并通知除发车者外的成员，自动解散通知当时全车成员，其他车不变。每次操作先检查到期，禁止旧按钮复活旧车；消息 ID 去重最多保留最近 200 条。
@@ -989,7 +991,7 @@ year = now.year - 1 if month > now.month else now.year
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
-| **改 QQ 官方等车** | ① OfficialQueueFilter 平台/指令/群检查、OneBot 高优先级静默终止及帮助别名 ② WaitingQueues 状态、作用域锁、计时/出发/outbox/存档 ③ _send_waiting_message 的 SDK 参数/模板/被动额度及主动权限 ④ _waiting_profile 的 home_team、北京时间当月和公开展示关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
+| **改 QQ 官方等车** | ① OfficialQueueFilter 官方端白名单分流、OneBot 仅等车静默终止及帮助别名 ② WaitingQueues 状态、作用域锁、计时/出发/outbox/存档 ③ _send_waiting_message 的 SDK 参数/模板/被动额度及主动权限 ④ _waiting_profile 的 home_team、北京时间当月和公开展示关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **改战绩卡片** | ① record/my_record 与 `_record_results` 的范围和趋势分流 ② `stats.build_record_metrics` ③ `chart.make_record_images` 与共享 `_trend_image` ④ handler/渲染/指标/集合踢馆结果回归 ⑤ 帮助、预览与 README | 不把个人对局与战队整场混算、不吞掉长 ID 或截掉明细、不把趋势失败变成战绩查询失败；保留标准响应链 |
@@ -1335,6 +1337,8 @@ v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选�
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
 
+v1.25.5 验证：**1083 项测试通过，1 项跳过**。新增官方 WS/Webhook 的非等车命令、普通聊天、空消息、配置关闭/DB 未就绪时静默处理，以及官方排表工具绕过防护；原官方等车、OneBot 全部原命令/聊天边界与身份关联回归继续通过。另用 v4.27.3 真实注册、事件终止、处理器调用及调度/处理/回复阶段做隔离检查，44 种平台/消息组合均无误发、LLM 请求、后续处理器或队列访问；未登录真实 QQ。
+
 v1.25.4 验证：**1049 项测试通过，1 项跳过**。覆盖新旧入口解析到同一内部动作、官方双接入发送、友谊等车帮助按钮、新旧帮助主题与 OneBot 静默处理；v4.27.3 实际注册/管道隔离检查的 28 种新旧指令形式均无 OneBot 回复或 LLM 调用。存档格式与 schema v20 保持兼容，未登录真实 QQ。
 
 v1.25.3 验证：**1025 项测试通过，1 项跳过**。覆盖原始 OpenID 头像与已解析角色名分离、32px 图文排列、胜率/计时次级引用样式、重启刷新后头像与实际剩余时间、满3人15分钟切换，以及官方原生/模板 Markdown 参数；原队列计时、权限和 SnowLuma 静默回归继续通过。未登录真实 QQ，颜色最终由客户端主题渲染。
@@ -1390,7 +1394,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.25.4")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.25.5")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
