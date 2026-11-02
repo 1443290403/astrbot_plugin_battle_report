@@ -44,6 +44,20 @@ def test_card_name_wrap_preserves_every_character_and_space():
     assert len(lines) > 1 and all(font.getlength(line) <= 300 for line in lines)
 
 
+def test_role_summary_without_detail_pages_has_no_dangling_detail_hint(tmp_path, monkeypatch):
+    from PIL import ImageDraw
+    texts = []
+    original = ImageDraw.ImageDraw.text
+    def capture(self, xy, text, *args, **kwargs):
+        texts.append(str(text))
+        return original(self, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    paths = chart.make_record_images('云玩家', 'a队', '七月', [('胜率', '0%')], [],
+                                    tmp_path / 'role.png', players=[f'示例选手{i}' for i in range(7)])
+    assert len(paths) == 1
+    assert '等 7 个' in ''.join(texts) and '见明细' not in ''.join(texts)
+
+
 def test_embedded_trend_keeps_daily_labels_readable_for_constant_month(monkeypatch):
     from PIL import ImageDraw
     boxes = []

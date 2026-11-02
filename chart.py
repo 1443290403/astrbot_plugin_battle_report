@@ -267,7 +267,9 @@ def make_record_images(title: str, home_team: str, period: str,
         if players and detail_page is None:
             text = "参赛 ID：" + "、".join(players[:4])
             if len(players) > 4:
-                text += f" 等 {len(players)} 个，完整列表见明细"
+                text += f" 等 {len(players)} 个"
+                if details:
+                    text += "，完整列表见明细"
             result += [(line, small_font, muted) for line in _wrap_card_text(text, small_font, content_w)]
         return result
 
