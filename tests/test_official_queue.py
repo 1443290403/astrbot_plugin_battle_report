@@ -86,13 +86,13 @@ def test_partial_car_refreshes_each_three_minutes_and_dissolves_at_nine(setup_qu
         await act('我也要等车', uid='u2')
         clock[0] = 179
         await service.tick()
-        assert send.await_count == 2
+        assert send.await_count == 3  # 入队提醒和新面板各发送一次。
         clock[0] = 180
         await service.tick()
-        assert send.await_count == 3 and '等待3分00秒' in send.await_args.args[1]
+        assert send.await_count == 4 and '等待3分00秒' in send.await_args.args[1]
         clock[0] = 360
         await service.tick()
-        assert send.await_count == 4
+        assert send.await_count == 5
         clock[0] = 540
         await service.tick()
         assert not service.room(SCOPE)['cars']
@@ -103,7 +103,7 @@ def test_partial_car_refreshes_each_three_minutes_and_dissolves_at_nine(setup_qu
     asyncio.run(scenario())
 
 
-def test_three_members_start_fifteen_minutes_extra_and_duplicate_joins_do_not_reset(setup_queue):
+def test_new_members_reset_fifteen_minutes_but_duplicate_joins_do_not(setup_queue):
     service, clock, send, act = setup_queue
     async def scenario():
         await act()
@@ -115,16 +115,93 @@ def test_three_members_start_fifteen_minutes_extra_and_duplicate_joins_do_not_re
         assert car['ready'] and car['deadline'] == 1100
         clock[0] = 300
         await act('我也要等车', uid='u4')
+        notice = send.await_args_list[-2].args[1]
+        assert all(queue.mention(f'u{i}') in notice for i in range(1, 4))
+        assert queue.mention('u4') not in notice
         clock[0] = 700
         await act('我也要等车', uid='u3')
-        assert car['deadline'] == 1100 and car['members']['u3']['joined_at'] == 200
-        clock[0] = 1099
+        assert car['deadline'] == 1200 and car['members']['u3']['joined_at'] == 200
+        clock[0] = 1199
         await service.tick()
         assert service.room(SCOPE)['cars']
-        clock[0] = 1100
+        clock[0] = 1200
         await service.tick()
         assert not service.room(SCOPE)['cars']
         assert all(queue.mention(f'u{i}') in send.await_args.args[1] for i in range(1, 5))
+    asyncio.run(scenario())
+
+
+def test_new_member_resets_partial_car_and_mentions_only_existing_members_once(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        clock[0] = 120
+        await act('我也要等车', uid='u2', msg='new-member')
+        car = service.room(SCOPE)['cars'][0]
+        assert car['deadline'] == 660 and car['next_refresh'] == 180
+        assert car['members']['u1']['joined_at'] == 0
+        assert car['members']['u2']['joined_at'] == 120
+        notice = send.await_args_list[-2].args[1]
+        assert queue.mention('u1') in notice and queue.mention('u2') not in notice
+        assert '云玩家u2加入了1号车' in notice and '计时已重置' in notice
+        before = send.await_count
+        clock[0] = 200
+        await act('我也要等车', uid='u2', msg='new-member')
+        assert send.await_count == before
+        await act('我也要等车', uid='u2')
+        assert car['deadline'] == 660 and car['members']['u2']['joined_at'] == 120
+        notices = [c for c in send.await_args_list if '加入了' in c.args[1]]
+        assert len(notices) == 1
+        assert not service.room(SCOPE)['outbox']
+    asyncio.run(scenario())
+
+
+def test_join_notification_and_timer_are_isolated_between_cars(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        await act('再开一车', uid='u2')
+        first, second = service.room(SCOPE)['cars']
+        clock[0] = 100
+        await act('我也要等车', first['id'], uid='u3')
+        notice = send.await_args_list[-2].args[1]
+        assert queue.mention('u1') in notice
+        assert queue.mention('u2') not in notice and queue.mention('u3') not in notice
+        assert first['deadline'] == 640 and second['deadline'] == 540
+        before = len([c for c in send.await_args_list if '加入了' in c.args[1]])
+        clock[0] = 200
+        await act('我也要等车', first['id'], uid='u2')
+        assert first['deadline'] == 640 and second['deadline'] == 540
+        assert len([c for c in send.await_args_list if '加入了' in c.args[1]]) == before
+    asyncio.run(scenario())
+
+
+def test_failed_join_notification_survives_restart_with_reset_timer_and_original_recipients(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        async def fail_notice(scope, text, buttons, reply):
+            if '加入了' in text:
+                raise OSError('temporarily unavailable')
+            return {'id': 'panel'}
+        send.side_effect = fail_notice
+        clock[0] = 100
+        await act('我也要等车', uid='u2')
+        room = service.room(SCOPE)
+        assert room['cars'][0]['deadline'] == 640
+        assert room['outbox'][0]['users'] == ['u1']
+        restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
+        send.side_effect = None
+        clock[0] = 279
+        await restored.tick()
+        assert restored.room(SCOPE)['outbox']
+        clock[0] = 280
+        await restored.tick()
+        assert not restored.room(SCOPE)['outbox']
+        assert restored.room(SCOPE)['cars'][0]['deadline'] == 640
+        text = send.await_args.args[1]
+        assert '加入了1号车' in text and queue.mention('u1') in text
+        assert queue.mention('u2') not in text
     asyncio.run(scenario())
 
 
@@ -278,6 +355,8 @@ def test_atomic_save_failure_rolls_back_queue_change(setup_queue, monkeypatch):
     with pytest.raises(OSError, match='disk full'):
         asyncio.run(act('我也要等车', uid='u2'))
     assert list(service.room(SCOPE)['cars'][0]['members']) == ['u1']
+    assert service.room(SCOPE)['cars'][0]['deadline'] == 540
+    assert not service.room(SCOPE)['outbox']
     assert 'u2' not in next(iter(json.loads(service.path.read_text())['rooms'].values()))['cars'][0]['members']
 
 

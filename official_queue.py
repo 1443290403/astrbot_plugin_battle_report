@@ -28,6 +28,7 @@ HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看队列\n/再�
         '/人齐了发车 [车号] 群号：至少3人可发车\n/等车ID 角色或参赛ID：关联原账号\n'
         '首次关联请用原 QQ 向原机器人发送 /确认关联 确认码，10分钟有效。\n'
         '每3分钟刷新；不足3人等待9分钟解散，满3人后15分钟未发车解散。\n'
+        '新人加入会提醒同车成员，并按当前人数重新计时。\n'
         '一人同时只等一辆车；点击发车按钮后补上群号再发送喵。')
 
 
@@ -175,9 +176,9 @@ class WaitingQueues:
                 self.notify(room, f'{car["number"]}号车{why}，已自动解散喵。', car['members'])
 
     @staticmethod
-    def update_timer(car, now):
+    def update_timer(car, now, *, reset=False):
         ready = len(car['members']) >= 3
-        if ready != car['ready']:
+        if reset or ready != car['ready']:
             car['ready'] = ready
             car['deadline'] = now + (READY_TIMEOUT if ready else GATHER_TIMEOUT)
 
@@ -203,7 +204,7 @@ class WaitingQueues:
             if passive:
                 room['reply_seq'] += 1
                 reply = {'msg_id': room['reply_id'], 'msg_seq': room['reply_seq']}
-        # 不在模块内重试单次接口请求；终态提醒失败后留在 outbox。
+        # 不在模块内重试单次接口请求；已持久化提醒失败后留在 outbox。
         result = await self.send(scope, text, buttons, reply)
         if result is None or (isinstance(result, dict) and (result.get('code', 0) != 0
                                or result.get('retcode', 0) != 0 or result.get('status') == 'failed')):
@@ -304,8 +305,13 @@ class WaitingQueues:
                             if any(uid in q['members'] and q['id'] != car['id'] for q in room['cars']):
                                 raise ValueError('你已经在另一辆车里了喵，请先离队。')
                             if uid not in car['members']:
-                                car['members'][uid] = dict(name=name, joined_at=self.clock())
-                                self.update_timer(car, self.clock())
+                                previous_members = list(car['members'])
+                                now = self.clock()
+                                car['members'][uid] = dict(name=name, joined_at=now)
+                                self.update_timer(car, now, reset=True)
+                                if previous_members:
+                                    self.notify(room, f'{safe(name or "新车友")}加入了{car["number"]}号车，'
+                                                '自动清理计时已重置喵。', previous_members)
                         else:
                             if uid not in car['members']:
                                 raise ValueError('你没有在这辆车里喵。')

@@ -154,7 +154,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 - `OfficialQueueFilter` 接收 qq_official/qq_official_webhook 与 aiocqhttp 的明确等车指令（含帮助别名），priority=100；OneBot 仅静默 stop_event + clear_result，不查服务、不发提示，避免转入聊天。队列操作仍仅官方平台，另验 GroupMessage 的 group_openid；不接管其他平台或普通闲聊，不新增 LLM 工具。
 - `official_queue.py` 的 WaitingQueues 按 platform_id/AppID/group_openid 隔离、成员用 OpenID。后台按原持久化截止处理，单群锁、多群并行；临时文件原子替换，失败不覆盖其他群的在途引用。
-- 队列 180 秒刷新，未满3人540秒、满3人重新900秒，持续满员不重置、降至2人重开540秒；个人 joined_at 不随刷新重置。独立多车、一人同时一车，已在车中再开创建空车。发车只允许本车成员、至少3人，@其他参加者；到期通知全部当时成员。
+- 队列 180 秒刷新，未满3人540秒、满3人重新900秒，v1.25.6 新加入按当前人数重置540/900秒、重复加入不重置、降至2人重开540秒；个人 joined_at 不随刷新重置。独立多车、一人同时一车，已在车中再开创建空车。发车只允许本车成员、至少3人，@其他参加者；到期通知全部当时成员。
 - SDK直接发送 Markdown+键盘，发车按钮仅填输入框；C前缀车token避免未填群号误发车。旧车token不复用；公开战绩按本群home_team/北京时间当月，通过同份build_record_metrics得到胜率，不写统计/权限/原ID归属。
 - 存档 official_waiting_queues.json；终态提醒先落outbox再发送，确认id才移除，失败延后补发。主动推送权限由用户确认已具备，默认开启；保留5分钟被动限制，不能伪报成功。卸载先取消任务再关DB，schema v19保持。
 
@@ -182,3 +182,8 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 - OfficialQueueFilter priority=10000 接收官方两种接入的全部消息；处理器白名单只执行等车相关命令，其他消息在服务检查前 stop_event + clear_result，避免转入原命令或默认聊天。OneBot 仍只静默拦等车消息，非等车原路径保留。
 - lineup_tool 对官方平台提前终止并返回 None；身份表、原账号权限数据与原队列不删除、不迁移，账号管理等原功能在 SnowLuma 使用。
+
+## v1.25.6 新人入队
+
+- 实际新增成员时，快照加入前本车 members 作为提醒对象，成员/按当前人数重置的 deadline/outbox 在同一 edit 原子保存；空车无旧成员不发空提醒。保持旧成员 joined_at 和 next_refresh。重复加入、重放或被拒绝的跨车加入不新增提醒或延时。
+- 入队提醒复用持久化 outbox 及既有重试路径，失败不回滚已提交成员/计时；重启仍按保存的截止、收件人和 retry_at 补发。
