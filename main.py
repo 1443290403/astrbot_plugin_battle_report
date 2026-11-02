@@ -184,7 +184,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.21.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.21.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1189,9 +1189,10 @@ class BattleReportPlugin(Star):
                 _strip_command(event.get_message_str(), ("我的战绩", "/我的战绩")))
             date_from, date_to = month_range(month)
             agg = await self.db.get_players_aggregate(home, players, date_from, date_to)
+            visible_players = agg["active_players"]
             details = []
-            if len(players) > 1:
-                for player in players:
+            if len(visible_players) > 1:
+                for player in visible_players:
                     rec = await self.db.get_player_record(home, player, date_from, date_to)
                     details.append((player, stats.build_record_metrics(rec)))
         except Exception:
@@ -1199,7 +1200,8 @@ class BattleReportPlugin(Star):
             yield event.plain_result(_ERR_QUERY)
             return
         async for result in self._record_results(
-                event, user["name"], home, agg, date_from, date_to, players=players, details=details):
+                event, user["name"], home, agg, date_from, date_to, players=players,
+                visible_players=visible_players, details=details):
             yield result
 
     @filter.command("改名", alias={"/改名"})
@@ -1875,9 +1877,10 @@ class BattleReportPlugin(Star):
             yield event.plain_result("❌ 重置出错了喵…稍后再试一次嘛 (；・∀・)")
 
     async def _record_results(self, event, display, home_team, agg, date_from, date_to,
-                              *, players=None, details=None, team=False):
+                              *, players=None, visible_players=None, details=None, team=False):
         """战绩统计与同范围趋势同图展示，使用标准响应链，不接管发送阶段。"""
         metrics = stats.build_record_metrics(agg, team=team)
+        shown_players = players if visible_players is None else visible_players
         period = f"{date_from} 至 {date_to}"
         trend_note = None
         points = []
@@ -1897,12 +1900,12 @@ class BattleReportPlugin(Star):
             out = self.data_dir / "records" / f"record_{uuid4().hex}.png"
             paths = await asyncio.to_thread(
                 chart.make_record_images, display, home_team, period, metrics, points, out,
-                team=team, players=players, details=details, trend_note=trend_note)
+                team=team, players=shown_players, details=details, trend_note=trend_note)
         except Exception:
             logger.exception("战绩图片生成失败，回退文字")
             lines = [f"📊 {display}（{home_team}）战绩喵～", period]
-            if players:
-                lines += ["参赛 ID："] + list(players)
+            if shown_players:
+                lines += ["参赛 ID："] + list(shown_players)
             lines += [f"{label}：{value}" for label, value in metrics]
             lines += [trend_note or ("友谊累计胜率：" if points else "本期暂无友谊胜负记录")]
             lines += [f"{p['date']}  {p['win_rate']:g}%" for p in points]
@@ -1930,6 +1933,7 @@ class BattleReportPlugin(Star):
             return
         date_from, date_to = month_range(month)
         players = None
+        visible_players = None
         display = name or home_team
         try:
             if not name:
@@ -1940,6 +1944,7 @@ class BattleReportPlugin(Star):
                     players = role["players"]
                     display = role["user_name"]
                     agg = await self.db.get_players_aggregate(home_team, players, date_from, date_to)
+                    visible_players = agg["active_players"]
                 else:
                     agg = await self.db.get_player_record(home_team, name, date_from, date_to)
         except Exception:
@@ -1947,7 +1952,8 @@ class BattleReportPlugin(Star):
             yield event.plain_result(_ERR_QUERY)
             return
         async for result in self._record_results(
-                event, display, home_team, agg, date_from, date_to, players=players, team=not name):
+                event, display, home_team, agg, date_from, date_to, players=players,
+                visible_players=visible_players, team=not name):
             yield result
 
     @filter.command("踢馆", alias={"/踢馆", "战报踢馆", "/战报踢馆"})

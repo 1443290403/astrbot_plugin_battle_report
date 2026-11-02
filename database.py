@@ -1059,8 +1059,8 @@ class Database:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> dict:
-        """多个参赛ID合并战绩（按战队跨群），踢馆积分与三项次数共用集合重算结果。"""
-        total = {"wins": 0, "losses": 0, "draws": 0, "total": 0}
+        """合并战绩及本期 total>0 的 active_players，踢馆按完整集合重算。"""
+        total = {"wins": 0, "losses": 0, "draws": 0, "total": 0, "active_players": []}
         for p in players:
             rec = await self.get_player_record(
                 home_team, p, date_from, date_to, with_raid=False
@@ -1069,6 +1069,8 @@ class Database:
             total["losses"] += int(rec.get("losses", 0))
             total["draws"] += int(rec.get("draws", 0))
             total["total"] += int(rec.get("total", 0))
+            if int(rec.get("total", 0)) > 0:
+                total["active_players"].append(p)
         # 友谊次数 = 集合内任一玩家在本战队一侧出场的去重比赛场次数
         # （合并多ID时按比赛去重，避免同一场出现该用户多个ID被重复计）
         total["friendship"] = 0

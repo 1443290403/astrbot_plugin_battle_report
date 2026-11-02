@@ -1273,7 +1273,9 @@ def record_image_fixture(mod, tmp_path, monkeypatch):
     obj.db.resolve_role = AsyncMock(return_value=None)
     obj.db.get_home_team_record = AsyncMock(return_value=agg)
     obj.db.get_player_record = AsyncMock(return_value=agg)
-    obj.db.get_players_aggregate = AsyncMock(return_value=agg)
+    async def aggregate(home, players, date_from, date_to):
+        return {**agg, 'active_players': list(players)}
+    obj.db.get_players_aggregate = AsyncMock(side_effect=aggregate)
     obj.db.get_user_by_qq = AsyncMock(return_value={'id': 9, 'name': '云玩家'})
     obj.db.get_user_players = AsyncMock(return_value=['示例 玩家'])
     for name in ('get_player_trend', 'get_players_trend', 'get_team_trend'):
@@ -1382,6 +1384,40 @@ def test_record_images_use_unique_paths_for_concurrent_requests(plugin_module, t
         await asyncio.gather(collect(obj.record(event('/战绩 七月'))), collect(obj.record(event('/战绩 七月'))))
     asyncio.run(run())
     assert renderer.call_args_list[0].args[5] != renderer.call_args_list[1].args[5]
+
+
+@pytest.mark.parametrize('handler', ['record', 'my_record'])
+@pytest.mark.parametrize('visible', [[], ['示例 玩家'], ['示例 玩家', '萌新']])
+@pytest.mark.parametrize('text_fallback', [False, True])
+def test_user_record_only_displays_active_ids_without_changing_aggregate_or_trend(
+        plugin_module, tmp_path, monkeypatch, handler, visible, text_fallback):
+    obj, renderer, agg = record_image_fixture(plugin_module, tmp_path, monkeypatch)
+    bound = ['示例 玩家', '萌新', '未出场示例']
+    obj.db.get_user_players.return_value = bound
+    obj.db.resolve_role.return_value = {'user_name': '云玩家', 'players': bound}
+    obj.db.get_players_aggregate.side_effect = None
+    obj.db.get_players_aggregate.return_value = {**agg, 'active_players': visible}
+    if text_fallback:
+        renderer.side_effect = OSError('render failed')
+    command = '/我的战绩 七月' if handler == 'my_record' else '/战绩 云玩家 七月'
+    response = asyncio.run(collect(getattr(obj, handler)(event(command))))
+    assert renderer.call_args.kwargs['players'] == visible
+    assert renderer.call_args.args[3] == plugin_module.stats.build_record_metrics(agg)
+    if handler == 'my_record':
+        expected = visible if len(visible) > 1 else []
+        assert [row[0] for row in renderer.call_args.kwargs['details']] == expected
+        assert [c.args[1] for c in obj.db.get_player_record.await_args_list] == expected
+    else:
+        obj.db.get_player_record.assert_not_awaited()
+    if text_fallback:
+        assert '未出场示例' not in response[0]
+        assert ('参赛 ID：' in response[0]) == bool(visible)
+        for name in bound:
+            if name not in visible:
+                assert name not in response[0]
+    obj.db.get_players_aggregate.assert_awaited_once_with('a队', bound, '2026-07-01', '2026-07-31')
+    obj.db.get_players_trend.assert_awaited_once_with('a队', bound, '2026-07-01', '2026-07-31')
+    assert obj.db.get_user_players.return_value == bound
 
 
 def test_unclosed_quote_does_not_partially_bind(plugin_module, tmp_path):

@@ -107,6 +107,11 @@ AstrBot 战队战报插件：QQ 群约战排表 + 战报解析入库 + 跨群统
 - `_trend_image` 与独立 `/趋势` 共用轴算法；嵌入图密集点位百分比错位避免重叠。空趋势与查询失败显示不同提示，图片生成失败才回退文字。
 - `get_players_aggregate` 的踢馆三项次数与积分从已有集合计算结果透传，不相加各 ID 的踢馆统计。保留 schema v19、已有配置与身份权限。
 
+## v1.21.1 活跃 ID 展示
+
+- `get_players_aggregate.active_players` 复用已有逐 ID 的 total>0 判断，按所选月份的友谊总场次筛选，包含平局；不新增查询。
+- 用户卡的 ID 列表、我的战绩明细及文字回退使用 `visible_players`；汇总和趋势仍使用完整 `players`。不解绑 ID，不丢原集合的踢馆积分；零活跃仍显示汇总，只有一个活跃 ID 不重复发明细。
+
 ## 安装包交付
 
 - 更新时同时交付 ZIP。安装包根目录直接包含 metadata.yaml 与 main.py，使用 AstrBot 的安装包校验检查内容。
