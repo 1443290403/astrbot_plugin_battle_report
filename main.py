@@ -29,7 +29,7 @@ from astrbot.api.message_components import At, File, Image, Node, Nodes, Plain, 
 from astrbot.api.star import Star, StarTools, register
 
 from . import chart, help_guide, lineup, stats
-from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP
+from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
@@ -191,7 +191,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.24.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -308,13 +308,13 @@ class BattleReportPlugin(Star):
     async def _bind_waiting_id(self, scope, uid, query):
         home = await self.db.get_group_home(scope[2])
         if not home:
-            raise ValueError("请先联系管理员为本群绑定战队喵。")
-        role = await self.db.resolve_role(home, query)
-        player = None if role else await self.db.get_player_binding(home, query)
-        if not role and not player:
-            raise ValueError("查不到这个参赛ID或角色喵。")
-        # 只关联公开战绩展示，不修改原 QQ/角色归属、授权或参赛ID绑定。
-        return {"home_team": home, "query": query}
+            home = await self.db.find_official_link_home(query)
+        result = await self.db.request_official_link(home, scope[1], uid, query)
+        if result['linked']:
+            return dict(linked=True, home_team=home, user_id=result['user_id'], query=result['name'])
+        return dict(pending=True, message=(f"正在关联「{queue_safe(result['name'])}」喵。\n"
+                    f"请用该角色原 QQ 给原来的机器人发送：/确认关联 {result['code']}\n"
+                    "确认码10分钟有效，确认后即可使用原账号权限喵。"))
 
     async def _waiting_profile(self, scope, uid, binding):
         if self._check_db():
@@ -322,7 +322,12 @@ class BattleReportPlugin(Star):
         home = await self.db.get_group_home(scope[2])
         if not home:
             return '', '未绑定战队'
-        if binding:
+        identity = await self.db.get_official_identity(scope[1], uid)
+        user = await self.db.get_user_by_qq(home, identity['qq_id']) if identity else None
+        if user:
+            display = user['name']
+            players = await self.db.get_user_players(home, user['id'])
+        elif binding:
             if binding.get("home_team") != home:
                 return '', '未绑定'
             query = binding["query"]
@@ -334,11 +339,7 @@ class BattleReportPlugin(Star):
             else:
                 return '', '未绑定'
         else:
-            user = await self.db.get_user_by_qq(home, uid)
-            if not user:
-                return '', '未绑定'
-            display = user['name']
-            players = await self.db.get_user_players(home, user['id'])
+            return '', '未关联'
         now = datetime.now(timezone(timedelta(hours=8)))
         date_from = f"{now.year}-{now.month:02}-01"
         date_to = f"{now.year}-{now.month:02}-{calendar.monthrange(now.year, now.month)[1]:02}"
@@ -389,6 +390,71 @@ class BattleReportPlugin(Star):
         finally:
             event.clear_result()
 
+    def _official_appid(self, event):
+        get_name = getattr(event, "get_platform_name", None)
+        if not callable(get_name) or get_name() not in QUEUE_PLATFORMS:
+            return None
+        platform = self.context.get_platform_inst(event.get_platform_id())
+        if platform is None or platform.meta().name not in QUEUE_PLATFORMS:
+            return None
+        return str(platform.appid)
+
+    async def _identity_qq(self, event):
+        """SnowLuma 使用 QQ；官方账号仅通过已验证、AppID 隔离的身份关联取原 QQ。"""
+        name = getattr(event, "get_platform_name", None)
+        if not callable(name) or name() not in QUEUE_PLATFORMS:
+            return str(event.get_sender_id()) if event.get_sender_id() else None
+        if self._check_db():
+            return None
+        appid = self._official_appid(event)
+        if not appid:
+            return None
+        identity = await self.db.get_official_identity(appid, str(event.get_sender_id()))
+        return str(identity['qq_id']) if identity else None
+
+    async def _has_team_permission(self, event, home):
+        qq = await self._identity_qq(event)
+        return bool(qq) and await self.db.is_team_admin(home, qq)
+
+    @filter.command("确认关联", alias={"/确认关联"})
+    async def confirm_identity(self, event: AstrMessageEvent):
+        """角色原 QQ 在 SnowLuma 端确认一次官方身份关联。"""
+        platform = getattr(event, "get_platform_name", None)
+        if not callable(platform) or platform() != 'aiocqhttp':
+            yield event.plain_result("请用原 QQ 在 SnowLuma 端确认关联喵。")
+            return
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        code = _strip_command(event.get_message_str(), ('确认关联', '/确认关联')).strip()
+        if not re.fullmatch(r'[A-Fa-f0-9]{16}', code):
+            yield event.plain_result("用法喵：/确认关联 确认码")
+            return
+        status = await self.db.confirm_official_link(code, str(event.get_sender_id()))
+        messages = {'ok': '账号关联成功喵，官方账号现在可使用原账号已有的插件权限。',
+                    'invalid': '确认码无效或已过期喵，请在官方端重新 /等车ID。',
+                    'denied': '只有该角色的原 QQ 可以确认关联喵。',
+                    'conflict': '账号已有其他关联喵，请先由原 QQ 解除关联。'}
+        yield event.plain_result(messages[status])
+
+    @filter.command("解除官方关联", alias={"/解除官方关联"})
+    async def revoke_identity(self, event: AstrMessageEvent):
+        """仅原 QQ 撤销自己的官方账号关联，不删除角色或参赛 ID。"""
+        platform = getattr(event, "get_platform_name", None)
+        if not callable(platform) or platform() != 'aiocqhttp':
+            yield event.plain_result("请用原 QQ 在 SnowLuma 端解除关联喵。")
+            return
+        err = await self._group_check(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        if _strip_command(event.get_message_str(), ('解除官方关联', '/解除官方关联')):
+            yield event.plain_result("用法喵：/解除官方关联")
+            return
+        count = await self.db.revoke_official_links(str(event.get_sender_id()))
+        yield event.plain_result('官方账号关联已解除喵。' if count else '没有需要解除的官方关联喵。')
+
     # ---------- 内部工具 ----------
 
     def _get_review_inbox(self) -> ReviewInbox:
@@ -425,7 +491,7 @@ class BattleReportPlugin(Star):
             return
         if (not isinstance(raw, dict) or raw.get("post_type") != "message"
                 or raw.get("message_type") != "private" or event.get_group_id()
-                or not self._is_super_admin(event)):
+                or not await self._is_super_admin(event)):
             return
         decision = parse_decision(event.get_message_str())
         if decision is None:
@@ -454,7 +520,7 @@ class BattleReportPlugin(Star):
 
     @filter.command("申请列表", alias={"/申请列表"})
     async def request_list(self, event: AstrMessageEvent):
-        if event.get_group_id() or not self._is_super_admin(event):
+        if event.get_group_id() or not await self._is_super_admin(event):
             return
         event.stop_event()
         scope = _review_scope(event)
@@ -470,7 +536,7 @@ class BattleReportPlugin(Star):
 
     @filter.command("刷新申请", alias={"/刷新申请"})
     async def request_refresh(self, event: AstrMessageEvent):
-        if event.get_group_id() or not self._is_super_admin(event):
+        if event.get_group_id() or not await self._is_super_admin(event):
             return
         event.stop_event()
         scope = _review_scope(event)
@@ -504,12 +570,18 @@ class BattleReportPlugin(Star):
 
     async def _is_manager(self, event: AstrMessageEvent, group_id: str | None = None) -> bool:
         """本队管理员兼具插件内的群管理权限；不会改变 QQ 平台角色。"""
-        if self._is_super_admin(event) or event.is_admin():
+        if await self._is_super_admin(event) or event.is_admin():
             return True
+        original_qq = await self._identity_qq(event)
+        get_config = getattr(getattr(self, 'context', None), 'get_config', None)
+        if self._official_appid(event) and original_qq and callable(get_config):
+            config = get_config(getattr(event, 'unified_msg_origin', None))
+            if original_qq in {str(value) for value in config.get('admins_id', [])}:
+                return True
         target_group = group_id or event.get_group_id()
         if target_group and self.db_ready and self.db:
             home = await self.db.get_group_home(target_group)
-            if home and await self.db.is_team_admin(home, event.get_sender_id()):
+            if home and original_qq and await self.db.is_team_admin(home, original_qq):
                 return True
         try:
             group = await event.get_group(group_id) if group_id else await event.get_group()
@@ -518,11 +590,13 @@ class BattleReportPlugin(Star):
             group = None
         if group is None:
             return False
-        sender = str(event.get_sender_id())
-        if sender == str(group.group_owner):
+        senders = {str(event.get_sender_id())}
+        if original_qq:
+            senders.add(original_qq)
+        if str(getattr(group, 'group_owner', None)) in senders:
             return True
-        admins = [str(a) for a in (group.group_admins or [])]
-        return sender in admins
+        admins = {str(a) for a in (getattr(group, 'group_admins', None) or [])}
+        return bool(senders & admins)
 
     @staticmethod
     def _extract_msg_text(msg: dict) -> str:
@@ -797,7 +871,7 @@ class BattleReportPlugin(Star):
     @filter.command("绑定战队", alias={"/绑定战队"})
     async def bind_home(self, event: AstrMessageEvent, team: str = ""):
         """超管可任意绑定；战队管理员重绑需同时管理原队和目标队。"""
-        is_super = self._is_super_admin(event)
+        is_super = await self._is_super_admin(event)
         err = self._check_db() if is_super else await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -814,11 +888,11 @@ class BattleReportPlugin(Star):
         if not team or len(team) > 64:
             yield event.plain_result("用法喵：绑定战队 <战队名>\n战队名最多 64 字。")
             return
-        if not is_super and not await self.db.is_team_admin(team, event.get_sender_id()):
+        if not is_super and not await self._has_team_permission(event, team):
             yield event.plain_result(f"❌ 只有 {team} 的战队管理员才能绑定该战队喵，请超管先设置战队管理员。")
             return
         old_home = await self.db.get_group_home(group_id)
-        if not is_super and old_home and old_home != team and not await self.db.is_team_admin(old_home, event.get_sender_id()):
+        if not is_super and old_home and old_home != team and not await self._has_team_permission(event, old_home):
             yield event.plain_result(f"❌ 本群属于 {old_home} 喵，重绑需要同时拥有原战队和目标战队的管理权限。")
             return
         await self.db.set_group_home(group_id, team)
@@ -858,7 +932,7 @@ class BattleReportPlugin(Star):
         err = self._check_db()
         if err:
             return err
-        if not self._is_super_admin(event):
+        if not await self._is_super_admin(event):
             return _ADMIN_ONLY
         return None
 
@@ -1006,7 +1080,7 @@ class BattleReportPlugin(Star):
     @filter.command("群聊属性", alias={"/群聊属性"})
     async def set_chat_type(self, event: AstrMessageEvent, chat_type: str = ""):
         """超管可设置任意群，本群绑定战队的管理员可设置本队群属性。"""
-        is_super = self._is_super_admin(event)
+        is_super = await self._is_super_admin(event)
         err = self._check_db() if is_super else await self._group_check(event)
         if err:
             yield event.plain_result(err)
@@ -1023,7 +1097,7 @@ class BattleReportPlugin(Star):
                     home, role,
                 ))
                 return
-            if not await self.db.is_team_admin(home, event.get_sender_id()):
+            if not await self._has_team_permission(event, home):
                 yield event.plain_result(f"❌ 只有超管或 {home} 的战队管理员才能设置群聊属性喵。")
                 return
         chat_type = help_guide.normalize_chat_type(chat_type)
@@ -1126,10 +1200,12 @@ class BattleReportPlugin(Star):
 
     # ---------- 用户与参赛ID ----------
 
-    def _is_super_admin(self, event) -> bool:
+    async def _is_super_admin(self, event) -> bool:
         """是否超级管理员。"""
         admin = str(self.config.get("super_admin", "") or "").strip()
-        return bool(admin) and str(event.get_sender_id()) == admin
+        if not admin:
+            return False
+        return await self._identity_qq(event) == admin
 
     async def _check_enabled(self, event) -> str | None:
         """群被禁用时返回提示文案。"""
@@ -1178,8 +1254,8 @@ class BattleReportPlugin(Star):
         if err:
             yield event.plain_result(err)
             return
-        qq = event.get_sender_id()
-        user = await self.db.get_user_by_qq(home, qq)
+        qq = await self._identity_qq(event)
+        user = await self.db.get_user_by_qq(home, qq) if qq else None
         if not user:
             yield event.plain_result(_NEED_BIND)
             return
@@ -1235,7 +1311,10 @@ class BattleReportPlugin(Star):
             yield event.plain_result("用法喵：绑定ID <参赛ID> [参赛ID ...]")
             return
 
-        qq = event.get_sender_id()
+        qq = await self._identity_qq(event)
+        if not qq:
+            yield event.plain_result("请先 /等车ID 角色名，并用原 QQ 确认关联喵。")
+            return
         my_user = await self.db.get_user_by_qq(home, qq)
         lines: list[str] = []
         for p in names:
@@ -1261,8 +1340,8 @@ class BattleReportPlugin(Star):
             yield event.plain_result("用法喵：解绑ID <参赛ID> [参赛ID ...]")
             return
 
-        qq = event.get_sender_id()
-        my_user = await self.db.get_user_by_qq(home, qq)
+        qq = await self._identity_qq(event)
+        my_user = await self.db.get_user_by_qq(home, qq) if qq else None
         is_manager = await self._is_manager(event)
         lines: list[str] = []
         for p in names:
@@ -1356,7 +1435,8 @@ class BattleReportPlugin(Star):
             yield event.plain_result(err)
             return
         try:
-            user = await self.db.get_user_by_qq(home, event.get_sender_id())
+            qq = await self._identity_qq(event)
+            user = await self.db.get_user_by_qq(home, qq) if qq else None
             if not user:
                 yield event.plain_result(_NEED_BIND)
                 return
@@ -1386,8 +1466,8 @@ class BattleReportPlugin(Star):
         if err:
             yield event.plain_result(err)
             return
-        qq = event.get_sender_id()
-        user = await self.db.get_user_by_qq(home, qq)
+        qq = await self._identity_qq(event)
+        user = await self.db.get_user_by_qq(home, qq) if qq else None
         if not user:
             yield event.plain_result(_NEED_BIND)
             return
@@ -2439,7 +2519,7 @@ class BattleReportPlugin(Star):
     @filter.command("导出群成员", alias={"/导出群成员"})
     async def export_group_members(self, event: AstrMessageEvent, group_id: str = ""):
         """导出群成员列表到 CSV 文件（仅超级管理员）"""
-        if not self._is_super_admin(event):
+        if not await self._is_super_admin(event):
             yield event.plain_result(_ADMIN_ONLY)
             return
 

@@ -7,6 +7,7 @@
 import re
 import time
 import hashlib
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -29,7 +30,7 @@ except ImportError:  # 单元测试以顶层模块方式导入 database
         KIND_FRIENDLY, KIND_RAID, RAID_PLACEHOLDER, report_fingerprint,
     )
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -215,6 +216,33 @@ class Database:
                         created_at BIGINT NOT NULL,
                         UNIQUE KEY uk_team_player (home_team, player_name),
                         INDEX idx_team_user (home_team, user_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
+                # v20：QQ 与官方 OpenID 同一身份的附加关联，保留 users.qq_id。
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS official_user_accounts (
+                        appid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        openid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        qq_id VARCHAR(64) NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        PRIMARY KEY (appid, openid),
+                        UNIQUE KEY uk_official_qq (appid, qq_id),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS official_link_requests (
+                        token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+                        home_team VARCHAR(64) NOT NULL,
+                        appid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        openid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        owner_qq VARCHAR(64) NOT NULL,
+                        expires_at BIGINT NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        INDEX idx_official_request (appid, openid),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
                 # 新增表用 CREATE TABLE IF NOT EXISTS 就够，**不需要 information_schema
@@ -883,6 +911,111 @@ class Database:
             (home_team, qq_id),
         )
         return rows[0] if rows else None
+
+    async def get_official_identity(self, appid: str, openid: str) -> dict | None:
+        """通过已验证的 OpenID 取得原 QQ 身份；原角色归属变化时立即失效。"""
+        rows = await self._query(
+            """SELECT a.user_id, a.qq_id, u.name, u.home_team
+               FROM official_user_accounts a JOIN users u ON u.id = a.user_id AND u.qq_id = a.qq_id
+               WHERE a.appid = %s AND a.openid = %s""", (appid, openid))
+        return rows[0] if rows else None
+
+    async def find_official_link_home(self, query: str) -> str:
+        """未设置官方群战队时，仅为身份验证定位唯一原 QQ，不替群绑定战队。"""
+        rows = await self._query(
+            """SELECT u.home_team, u.qq_id FROM player_ids p JOIN users u ON u.id = p.user_id
+               WHERE p.home_team = u.home_team AND p.player_name = %s ORDER BY u.id""", (query,))
+        if not rows:
+            rows = await self._query("SELECT home_team, qq_id FROM users WHERE name = %s ORDER BY id", (query,))
+        owners = {str(row['qq_id']) for row in rows if row['qq_id']}
+        if len(owners) != 1 or any(not row['qq_id'] for row in rows):
+            raise ValueError("角色不存在或属于多个原账号喵，请先联系管理员设置本群战队。")
+        return rows[0]['home_team']
+
+    async def request_official_link(self, home_team: str, appid: str, openid: str, query: str) -> dict:
+        """请求关联现有角色，不写 QQ/OpenID 映射；确认码只存哈希，10 分钟有效。"""
+        if not appid or not openid or len(appid) > 64 or len(openid) > 128:
+            raise ValueError("官方账号标识无效喵。")
+        code = secrets.token_hex(8).upper()
+        now = int(time.time())
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute(
+                """SELECT u.id, u.name, u.qq_id FROM player_ids p JOIN users u ON p.user_id = u.id
+                   WHERE p.home_team = %s AND u.home_team = %s AND p.player_name = %s""",
+                (home_team, home_team, query))
+            user = await cur.fetchone()
+            if not user:
+                await cur.execute("SELECT id, name, qq_id FROM users WHERE home_team = %s AND name = %s",
+                                  (home_team, query))
+                user = await cur.fetchone()
+            if not user:
+                raise ValueError("查不到已归属的角色喵，请先在原机器人绑定参赛ID。")
+            qq = str(user['qq_id'] or '')
+            if not re.fullmatch(r'[1-9][0-9]{4,11}', qq):
+                raise ValueError("该角色还没有原 QQ 身份喵，请先在原机器人完成绑定。")
+            await cur.execute(
+                "SELECT user_id, qq_id, openid FROM official_user_accounts WHERE appid = %s AND openid = %s",
+                (appid, openid))
+            mine = await cur.fetchone()
+            if mine:
+                await cur.execute("SELECT qq_id FROM users WHERE id = %s", (mine['user_id'],))
+                original = await cur.fetchone()
+                if not original or str(original['qq_id']) != qq or str(mine['qq_id']) != qq:
+                    raise ValueError("当前官方账号已关联其他账号喵，请先由原 QQ 解除关联。")
+                return dict(linked=True, user_id=user['id'], name=user['name'], qq_id=qq)
+            await cur.execute("SELECT openid FROM official_user_accounts WHERE appid = %s AND qq_id = %s", (appid, qq))
+            if await cur.fetchone():
+                raise ValueError("原账号已经关联另一个官方账号喵，请先由原 QQ 解除关联。")
+            await cur.execute("DELETE FROM official_link_requests WHERE appid = %s AND openid = %s", (appid, openid))
+            await cur.execute("DELETE FROM official_link_requests WHERE home_team = %s AND expires_at <= %s", (home_team, now))
+            await cur.execute(
+                """INSERT INTO official_link_requests
+                   (token_hash, home_team, appid, openid, user_id, owner_qq, expires_at, created_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (hashlib.sha256(code.encode()).hexdigest(), home_team, appid, openid, user['id'], qq, now + 600, now))
+            return dict(linked=False, code=code, name=user['name'])
+
+    async def confirm_official_link(self, code: str, qq: str) -> str:
+        """仅请求角色的原 QQ 可确认；检查和消费确认码与身份写入同一事务。"""
+        digest = hashlib.sha256(code.upper().encode()).hexdigest()
+        rows = await self._query("SELECT home_team FROM official_link_requests WHERE token_hash = %s", (digest,))
+        if not rows:
+            return 'invalid'
+        home = rows[0]['home_team']
+        async with self._identity_cursor(home) as cur:
+            await cur.execute("SELECT * FROM official_link_requests WHERE token_hash = %s FOR UPDATE", (digest,))
+            request = await cur.fetchone()
+            if not request:
+                return 'invalid'
+            if request['expires_at'] <= int(time.time()):
+                await cur.execute("DELETE FROM official_link_requests WHERE token_hash = %s", (digest,))
+                return 'invalid'
+            await cur.execute("SELECT id, qq_id FROM users WHERE home_team = %s AND id = %s FOR UPDATE",
+                              (home, request['user_id']))
+            user = await cur.fetchone()
+            if not user or str(user['qq_id']) != request['owner_qq'] or request['owner_qq'] != str(qq):
+                return 'denied'
+            await cur.execute(
+                """SELECT openid, qq_id FROM official_user_accounts
+                   WHERE appid = %s AND (openid = %s OR qq_id = %s) FOR UPDATE""",
+                (request['appid'], request['openid'], qq))
+            existing = await cur.fetchall()
+            if existing and any(e['openid'] != request['openid'] or str(e['qq_id']) != str(qq) for e in existing):
+                return 'conflict'
+            if not existing:
+                await cur.execute(
+                    """INSERT INTO official_user_accounts (appid, openid, user_id, qq_id, created_at)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (request['appid'], request['openid'], user['id'], qq, int(time.time())))
+            await cur.execute("DELETE FROM official_link_requests WHERE token_hash = %s", (digest,))
+            return 'ok'
+
+    async def revoke_official_links(self, qq: str) -> int:
+        """原 QQ 撤销自己的全部官方关联和待确认请求，原角色与 QQ 权限不变。"""
+        async with self._identity_cursor('official-revoke:' + qq) as cur:
+            await cur.execute("DELETE FROM official_link_requests WHERE owner_qq = %s", (qq,))
+            await cur.execute("DELETE FROM official_user_accounts WHERE qq_id = %s", (qq,))
+            return cur.rowcount
 
     async def get_user_by_id(self, user_id: int) -> dict | None:
         rows = await self._query(

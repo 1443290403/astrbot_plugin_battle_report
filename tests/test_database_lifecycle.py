@@ -8,7 +8,7 @@ import pytest
 from pymysql.err import IntegrityError
 
 from battle_report_parser import BattleReport, Duel
-from database import Database, DuplicateReportError
+from database import Database, DuplicateReportError, SCHEMA_VERSION
 
 
 class Context:
@@ -123,7 +123,7 @@ def test_export_sent_migration_can_replay_after_column_was_added(column_present)
     asyncio.run(db._init_schema())
     alter = [sql for sql, _ in statements if 'ALTER TABLE matches ADD COLUMN export_sent' in sql]
     assert len(alter) == (0 if column_present else 1)
-    assert statements[-1][1] == (19,)
+    assert statements[-1][1] == (SCHEMA_VERSION,)
     assert any('information_schema.columns' in sql.lower() and params == ('matches', 'export_sent')
                for sql, params in statements)
 

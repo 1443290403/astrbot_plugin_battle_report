@@ -331,3 +331,12 @@ def test_invalid_saved_car_is_rejected_without_overwriting_file(setup_queue, fie
     with pytest.raises(ValueError):
         queue.WaitingQueues(service.path, service.send, service.profile, service.bind)
     assert service.path.read_text() == original
+
+
+def test_pending_identity_request_does_not_become_a_trusted_saved_binding(setup_queue):
+    service, _, send, act = setup_queue
+    service.bind.return_value = dict(pending=True, message='请用原 QQ 发送 /确认关联 AABBCCDDEEFF0011')
+    asyncio.run(act('等车ID', '云玩家'))
+    assert service.room(SCOPE)['bindings'] == {}
+    assert '/确认关联' in send.await_args.args[1]
+    assert '已关联' not in send.await_args.args[1]

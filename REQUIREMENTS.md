@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.24.0`｜数据库 `SCHEMA_VERSION = 19`｜最后核对：2026-11-02
+> 对应版本：`1.25.0`｜数据库 `SCHEMA_VERSION = 20`｜最后核对：2026-11-02
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -37,7 +37,7 @@
 
 ```
 main.py                    命令入口 / 权限 / 平台消息收发 / 编排
-  ├── official_queue.py     QQ 官方等车、独立计时、按钮与待发提醒 ← 持久化 JSON
+  ├── official_queue.py     QQ 官方等车、独立计时、按钮与待发提醒 ← 持久化 JSON（身份关联在 MySQL）
   ├── request_review.py     QQ 申请转发、审批与本地持久化 ← 不依赖 MySQL
   ├── help_guide.py         三类用途流程帮助 + 未完成配置的开通引导 ← 纯 Python
   ├── command_args.py       引号/空格/批量 ID 的命令参数解析        ← 纯 Python
@@ -153,6 +153,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | **group_ban** | `group_id`, `banned`, `created_at` | 群级功能开关 |
 | **group_chat_type** | `group_id`, `chat_type` | 群属性，缺省友谊群 |
 | **users** | `id`, `home_team`, `name`, `qq_id`, `created_at` | 角色。`UNIQUE(home_team, name)` |
+| **official_user_accounts** | appid、openid、user_id、qq_id、created_at | 已验证的官方身份；原用户外键，AppID 内 OpenID/QQ 各唯一 |
+| **official_link_requests** | token_hash、home_team、appid、openid、user_id、owner_qq、expires_at、created_at | 10分钟一次性确认请求，只存码的哈希 |
 | **player_ids** | `id`, `home_team`, `player_name`, `user_id`, `created_at` | 参赛ID池 + 绑定。`user_id` NULL = 未绑定。`UNIQUE(home_team, player_name)` |
 | **settlements** | `id`, `home_team`, `month`, `player_name`, `rank_no`, `total_points`, `bonus`, `created_at` | 月度结算结果（见 §5-M14）。`month` 为 `'YYYY-MM'`；`player_name` 是**解析后的展示名**（M-03 口径，与 `get_player_ranking` 的 `player` 同源）；`UNIQUE(home_team, month, player_name)` 让重结算可以直接覆盖 |
 | **schema_version** | `version` | 迁移游标，单行 |
@@ -179,6 +181,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | v17 | 新建 `settlements`（月度结算，见 §5-M14）。**没有 `current < 17` 分支** —— 表用 `CREATE TABLE IF NOT EXISTS` 与其它基础表并列无条件建好，语句本身幂等，不需要 `information_schema` 探测（探测只对 `ALTER` 是必需的），也没有存量数据要迁；靠末尾那句统一的「写版本行」把版本推到 17 |
 | v18 | 新建 `team_admins`，`CREATE TABLE IF NOT EXISTS` 幂等创建，末尾推进版本；不修改现有战报/ID/群配置，不自动授权任何人 |
 | v19 | matches 增加 `export_sent TINYINT NOT NULL DEFAULT 0`，先探测字段再 ALTER，可在中断后重放；历史数据默认未发送，不改内容指纹/战绩 |
+| v20 | 新建 official_user_accounts / official_link_requests，保留 users.qq_id；CREATE TABLE IF NOT EXISTS 可重放，无角色/QQ/战绩回填 |
 
 > ⚠️ **写迁移的坑**（已在 v14 踩过）：MySQL 不允许 `UPDATE duels` 的子查询里直接 `SELECT FROM duels`（错误 1093）。必须把子查询包成派生表 `(…) r1` 强制物化，否则 `initialize()` 抛异常 → 全插件报"数据库未连接"。
 >
@@ -256,6 +259,16 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 3. `filter_report_outcome(member_team=...)`：导出时排除他在对手一侧的场次
 
 **⚠️ 新增任何统计/查询/导出，必须复用这套解析**，否则同一个人会出现两个名字、数字对不上。
+
+---
+
+**QQ / OpenID 同一账号（v1.25.0）：** `/等车ID` 从已有角色/参赛 ID 定位原用户，只生成 10 分钟一次性请求；原 QQ 在 aiocqhttp 端 `/确认关联` 后才创建 official_user_accounts，不能根据公开名字直接取得权限。关联表保存原 users.id 及 qq_id 快照，保留 users.qq_id；AppID/OpenID 用 ascii_bin，机器人应用之间隔离，同一 AppID 的 WS/Webhook 可复用。身份解析官方平台先查 get_official_identity，再用原 QQ 查询当前战队用户；OneBot 直接用平台发送者 QQ，绝不写 OpenID 进 users.qq_id。
+
+- 已验证账号的 own-ID、改名、我的战绩以及 _is_super_admin/_is_manager、绑定战队、群属性、群列表等权限统一使用 `_identity_qq`。权限仍按原 QQ 的当前配置/战队管理员表判断，已有超管/管理权限完整继承；不额外给普通用户管理权，不修改 AstrBot event.role 或 QQ 服务器权限。平台不支持的 API 不能因关联而获得。
+- official_user_accounts 以 (appid,openid) 为主键，(appid,qq_id) 唯一，指向原用户并保留原 QQ。原用户 QQ 归属变化或记录删除时映射失效；改名不改变身份。允许原 QQ 在不同战队已有角色共用这一 AppID 身份，仍按目标群 home_team 取用户。
+- official_link_requests 只保存确认码 SHA256；请求记录目标 users.id、原 QQ 快照与截止。确认事务加原有身份锁和行锁，检查原 QQ、当前归属、有效期与唯一关联后才写入并消费。错误 QQ 不消费、过期/重发/已消费码不能使用，已有其他关联不能覆盖。`/解除官方关联` 仅原 OneBot QQ 可撤销自己的映射及待确认请求。
+- 未设置官方群战队时，find_official_link_home 仅为身份验证定位名称所指的唯一原 QQ；多个原账号同名则拒绝。这个过程不设置 group_home，不作为战绩查询的战队兜底，确认后仍由有权限账号设置群战队。
+- 旧 v1.24 JSON 中的公开展示别名仅可继续读公开战绩，绝不作为认证/授权来源；已验证用户显示优先于旧别名，角色改名后用原 ID 查询，不再依赖旧展示名。
 
 ---
 
@@ -416,7 +429,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 - 仅本车成员可发车，至少 3 人，目的群号为 5~12 位正数字；成功移除该车并通知除发车者外的成员，自动解散通知当时全车成员，其他车不变。每次操作先检查到期，禁止旧按钮复活旧车；消息 ID 去重最多保留最近 200 条。
 - 状态位于 data_dir/official_waiting_queues.json，临时文件 fsync + os.replace 原子落盘后才发送；文件损坏不覆盖。edit 内无 await，失败仅还原变化的群以免破坏别群的发送引用；每群异步锁，多群 tick 并发。刷新不追补离线历史面板，重启按原截止检查。initialize 启动后台任务、terminate 先取消任务再关闭 DB。
 - 集合/解散通知先存 outbox，API 确认 id 后删除；失败保留，180 秒后或新指令补发。接口有 20 秒限时，单次请求不自动重试；网络超时无法保证平台没有送达，因此补发采用至少一次通知语义。普通面板失败不回滚成员变更。被动回复仅使用 290 秒内且本模块未用满 4 次的 msg_id +递增 msg_seq；其余用已授权的主动消息，权限关闭/接口失败不得假报已送达。
-- 面板异步获取每人当月战绩，profile 单次限时 8 秒；月份按北京时间计算。本群 home_team 取原群绑定；展示关联或现有官方账号绑定得到角色全部 ID，去重后读取 get_player_record(with_raid=False)，胜率展示复用 build_record_metrics，平局不进入分母。未绑定/暂无胜负/暂不可用单独展示，不填 0%。`等车ID` 只查询公开角色/参赛 ID 并存到当前 scope，不修改 users/player_ids 或管理员身份，换队后旧关联失效。
+- 面板异步获取每人当月战绩，profile 单次限时 8 秒；月份按北京时间计算。本群 home_team 取原群绑定；展示关联或现有官方账号绑定得到角色全部 ID，去重后读取 get_player_record(with_raid=False)，胜率展示复用 build_record_metrics，平局不进入分母。未绑定/暂无胜负/暂不可用单独展示，不填 0%。v1.25 起 `等车ID` 申请关联现有账号，QQ 确认后用同一原用户及权限；历史公开展示别名不授予权限。
 
 战报文本在群里"流浪"，读写消息是本插件的一大块隐式依赖：
 
@@ -766,7 +779,8 @@ year = now.year - 1 if month > now.month else now.year
 | **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
 | **F-03** | `/记录 玩家名 比分 [对手]` | `record_cmd` / `lineup.record_from_info` | 找该选手**最后一场未记录**的 `0:0` 对阵填入比分；指定对手且无未记录对阵时，在最新轮次插入新对阵。比分支持 `2:0` 或紧凑 `20` | M-04、M-10、队对齐(见下) | 无 |
 | **F-38** | LLM 工具 `battle_report_lineup(lineup_text)` | `lineup_tool` / `_prepare_lineup` | 与 F-01 共用完整排表流程；按当前群保存名单，成功只直发一份原文并返回 None，错误文本交回模型。仅在用户明确要求并给出双方名单时调用；私聊/禁用/数据库检查不可绕过 | M-01、M-03、M-10、M-11 | `teams`（覆盖式，不写战报） |
-| **F-39** | QQ 官方群 `/等车`、`/蹲车`、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/等车帮助` | `official_queue_cmd` / `WaitingQueues` | 官方群按钮及多车独立计时，3分钟刷新、9/15分钟解散，发车定向提醒；公开战绩展示关联与等待时长 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON，不改 schema v19 |
+| **F-39** | QQ 官方群 `/等车`、`/蹲车`、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/等车帮助` | `official_queue_cmd` / `WaitingQueues` | 官方群按钮及多车独立计时，3分钟刷新、9/15分钟解散，发车定向提醒；原账号关联入口与等待时长，验证见 F-40 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON；身份 SQL 见 F-40 |
+| **F-40** | `/等车ID 角色或参赛ID`、`/确认关联 确认码`、`/解除官方关联` | request_official_link / confirm_official_link / revoke_official_links / _identity_qq | 原 QQ 确认 OpenID 对原用户的关联；两端同一原 QQ 身份和已有全部插件权限；保留原 QQ/角色/参赛 ID，支持即时撤销，不信任旧 JSON 展示关联 | M-02、M-03、M-10 | official_user_accounts / official_link_requests；schema v20 |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -969,6 +983,7 @@ year = now.year - 1 if month > now.month else now.year
 
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
+| **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改 QQ 官方等车** | ① OfficialQueueFilter 平台/指令/群检查 ② WaitingQueues 状态、作用域锁、计时/出发/outbox/存档 ③ _send_waiting_message 的 SDK 参数/模板/被动额度及主动权限 ④ _waiting_profile 的 home_team、北京时间当月和公开展示关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
@@ -1281,6 +1296,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
+| `test_official_identity.py` | SQLite 事务执行真实 SQL：哈希码/QQ确认/一次性/过期/归属变化/唯一关联/AppID/撤销/回滚/首次设置；另有可选原生 MySQL 用例 |
 | `test_official_queue.py` | 独立队列、180/540/900秒边界、重启/待发/原子写回滚、作用域、旧按钮/去重、跨群并发、填群号保护和按钮参数；不连接 QQ |
 | `test_request_review.py` | 事件/卡片筛选、JSON/URL/序号边界、卡片 msgseq 审批、同群新邀请/重复/乱序隔离、旧标识保留、QQ 已同意同步与拒绝冲突；文本通知、四种审批、重启/并发/选单、跨连接隔离、引用兼容/核验、错误及存储失败；可选真实 aiocqhttp 响应/异常回归，不建立 QQ 连接 |
 | `test_qq_request_diagnostics.py` | 诊断报告脱敏、审批类型/序号保留、旧记录缺字段/错误 JSON/超大文件、精确编号和最新记录选择、只读校验、Docker 定位/失败输出隔离、worker 不递归枚举容器 |
@@ -1313,6 +1329,8 @@ v1.19.0 验证：**654 项通过、1 项跳过**。新增 `/排行` 各分支和
 v1.19.1 验证：**666 项通过、1 项跳过**。覆盖插件全局人格选择、缺失/空白配置使用全局默认、跨群同人格、内置 default/禁用/失效人格、当前会话模型继续调用、仅传选中人格而无额外提示、全部展示条目与长文本不截断。保留模型失败/超时取消、先发榜单及数据口径回归；模型使用模拟接口，数据库测试未启用。
 
 v1.19.2 验证：**672 项通过、1 项跳过**。覆盖不添加标题、模型回显标题去除、换行合并、短文本原样和长文本句末/省略号收束；未配置/禁用/失效/空提示词/缺人格接口时只发排行，不解析模型、不发提示，缺模型上下文也能正常查榜。保留有效人格生成、模型错误/取消和原排行数据回归；模型使用模拟接口，数据库测试未启用。
+
+v1.25.0 验证：**973 项测试通过，1 项跳过**。覆盖 QQ/OpenID 同用户查询、自己的 ID 绑定/解绑/改名/我的战绩、原QQ超管/战队管理/AstrBot权限继承及无额外授权、战队/AppID范围和撤销生效、官方端不得冒充原QQ确认、未验证不得直接认领、公开展示别名不授予权限、首次无群设置时唯一原QQ定位、角色改名稳定。SQLite事务执行真实查询/写入校验仅存码哈希、原QQ验证、一次性/过期/重发、归属变化失效、唯一关联、写入回滚、撤销不删用户/ID；另在独立 MySQL 8.4 容器实测新表创建、迁移重放、原QQ确认、保留QQ及撤销，1项通过；测试容器已清理，未使用生产库。未接入真实 QQ / 官方机器人，平台权限和发送需部署验证。
 
 v1.24.0 验证：**940 项测试通过，1 项跳过**。覆盖官方/Webhook 指令隔离与私聊/频道/禁群/DB拦截、SDK Markdown/审核模板/动态键盘参数、发车仅填输入框、未填群号不发车、180/540/900秒边界、超3人/重复加入不重置、降至不足3人重计时、多车/一人一车、发车排除本人提及与解散全员提及、旧按钮/事件去重、按平台/AppID/群隔离、存档损坏和原子写失败、跨群并发、重启保留截止及待发提醒、主动权限关闭后的补发、等待时长与资料错误降级、公开战绩关联不改归属、北京时间当月同队去重ID胜率且排除平局、任务卸载取消和配置默认值。全部 QQ 接口与时钟为模拟，MySQL 集成未启用，未向真实官方机器人发送消息。
 
@@ -1359,7 +1377,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.24.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.25.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交

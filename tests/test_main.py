@@ -981,9 +981,9 @@ def test_no_implicit_author_super_admin(plugin_module, tmp_path):
     obj = plugin(plugin_module, tmp_path)
     ev = event()
     ev.get_sender_id = lambda: '1443290403'
-    assert obj._is_super_admin(ev) is False
+    assert asyncio.run(obj._is_super_admin(ev)) is False
     obj.config['super_admin'] = '1443290403'
-    assert obj._is_super_admin(ev) is True
+    assert asyncio.run(obj._is_super_admin(ev)) is True
 
 
 def test_fullwidth_quoted_batch_and_latest_report(plugin_module, tmp_path):
@@ -2188,6 +2188,7 @@ def test_llm_lineup_preserves_team_names_starting_with_command_word(plugin_modul
 def official_waiting(plugin_module, tmp_path):
     obj = plugin(plugin_module, tmp_path)
     obj.db.get_group_home.return_value = None
+    obj.db.get_official_identity = AsyncMock(return_value=None)
     api = SimpleNamespace(post_group_message=AsyncMock(return_value={'id': 'sent'}))
     platform = SimpleNamespace(appid='app-A', meta=lambda: SimpleNamespace(name='qq_official'),
                                client=SimpleNamespace(api=api))
@@ -2269,15 +2270,14 @@ def test_official_waiting_api_failure_does_not_claim_panel_success(official_wait
     assert obj._get_waiting_queues().room(('platform-A', 'app-A', 'group-openid'))['cars']
 
 
-def test_waiting_public_stat_link_preserves_spaces_and_does_not_claim_existing_id(official_waiting):
+def test_waiting_identity_request_preserves_spaces_and_does_not_claim_before_confirmation(official_waiting):
     obj, _, _, _ = official_waiting
     obj.db.get_group_home.return_value = 'a队'
-    obj.db.resolve_role = AsyncMock(return_value=None)
-    obj.db.get_player_binding = AsyncMock(return_value={'player_name': '示例 玩家'})
+    obj.db.request_official_link = AsyncMock(return_value=dict(linked=False, name='云玩家', code='AABBCCDDEEFF0011'))
     obj.db.bind_player_to_user = AsyncMock()
     binding = asyncio.run(obj._bind_waiting_id(('platform-A', 'app-A', 'group-openid'), 'member-openid', '示例 玩家'))
-    assert binding == dict(home_team='a队', query='示例 玩家')
-    obj.db.get_player_binding.assert_awaited_once_with('a队', '示例 玩家')
+    assert binding['pending'] and '确认关联 AABBCCDDEEFF0011' in binding['message']
+    obj.db.request_official_link.assert_awaited_once_with('a队', 'app-A', 'member-openid', '示例 玩家')
     obj.db.bind_player_to_user.assert_not_awaited()
 
 
@@ -2303,8 +2303,8 @@ def test_waiting_without_id_does_not_fabricate_a_zero_win_rate(official_waiting)
     obj, _, _, _ = official_waiting
     obj.db.get_group_home.return_value = 'a队'
     obj.db.get_user_by_qq = AsyncMock(return_value=None)
-    assert asyncio.run(obj._waiting_profile(('p', 'app', 'g'), 'official-openid', None)) == ('', '未绑定')
-    obj.db.get_user_by_qq.assert_awaited_once_with('a队', 'official-openid')
+    assert asyncio.run(obj._waiting_profile(('p', 'app', 'g'), 'official-openid', None)) == ('', '未关联')
+    obj.db.get_user_by_qq.assert_not_awaited()
 
 
 def test_waiting_changed_team_does_not_reuse_old_stat_identity(official_waiting):
@@ -2329,3 +2329,188 @@ def test_waiting_timer_task_is_cancelled_before_plugin_database_closes(plugin_mo
         assert task.done()
         db.close.assert_awaited_once()
     asyncio.run(scenario())
+
+
+def setup_linked_official(obj):
+    obj.db.get_official_identity.return_value = dict(qq_id='10001', user_id=7, name='云玩家', home_team='a队')
+    obj.db.get_group_home.return_value = 'a队'
+    obj.db.get_user_by_qq = AsyncMock(return_value=dict(id=7, name='云玩家', qq_id='10001'))
+    obj.db.get_user_players = AsyncMock(return_value=['示例 玩家', '萌新'])
+
+
+@pytest.mark.parametrize('command,handler', [('/我的ID', 'auth'), ('/改名 遗老', 'rename_me')])
+def test_official_commands_use_existing_qq_user_instead_of_creating_an_openid_user(official_waiting, command, handler):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.db.rename_user = AsyncMock(return_value='ok')
+    ev.get_message_str = lambda: command
+    response = asyncio.run(collect(getattr(obj, handler)(ev)))
+    assert '❌' not in response[0]
+    obj.db.get_user_by_qq.assert_awaited_once_with('a队', '10001')
+    if handler == 'rename_me':
+        obj.db.rename_user.assert_awaited_once_with('a队', 7, '遗老')
+
+
+def test_official_self_binding_and_unbinding_use_original_user_ownership(official_waiting):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.db.bind_player_to_self = AsyncMock(return_value=('ok', dict(id=7, name='云玩家', qq_id='10001')))
+    obj.db.get_player_binding = AsyncMock(return_value=dict(user_id=7, user_name='云玩家'))
+    obj.db.unbind_player = AsyncMock(return_value=1)
+    ev.get_message_str = lambda: '/绑定ID "示例 玩家"'
+    asyncio.run(collect(obj.bind_id(ev)))
+    obj.db.bind_player_to_self.assert_awaited_once_with('a队', '示例 玩家', '10001')
+    obj._is_manager = AsyncMock(return_value=False)
+    ev.get_message_str = lambda: '/解绑ID "示例 玩家"'
+    asyncio.run(collect(obj.unbind_id(ev)))
+    obj.db.unbind_player.assert_awaited_once_with('a队', '示例 玩家', 7)
+
+
+def test_unverified_official_cannot_claim_a_role_through_bind_id(official_waiting):
+    obj, ev, _, _ = official_waiting
+    obj.db.get_group_home.return_value = 'a队'
+    obj.db.bind_player_to_self = AsyncMock()
+    ev.get_message_str = lambda: '/绑定ID 云玩家'
+    response = asyncio.run(collect(obj.bind_id(ev)))
+    assert '确认关联' in response[0]
+    obj.db.bind_player_to_self.assert_not_awaited()
+
+
+@pytest.mark.parametrize('permission', ['super', 'team', 'astrbot'])
+def test_verified_original_qq_permissions_are_inherited_by_official_account(official_waiting, permission):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    ev.get_group = AsyncMock(return_value=None)
+    if permission == 'super':
+        obj.config['super_admin'] = '10001'
+        assert asyncio.run(obj._is_super_admin(ev)) is True
+    elif permission == 'team':
+        obj.db.is_team_admin = AsyncMock(side_effect=lambda home, qq: home == 'a队' and qq == '10001')
+    else:
+        obj.context.get_config = Mock(return_value={'admins_id': ['10001']})
+    assert asyncio.run(obj._is_manager(ev)) is True
+    assert ev.is_admin() is False  # 不篡改 AstrBot 事件或其他插件的权限。
+
+
+def test_verification_is_required_before_super_admin_inheritance_and_revoke_takes_effect(official_waiting):
+    obj, ev, _, _ = official_waiting
+    obj.config['super_admin'] = '10001'
+    assert asyncio.run(obj._is_super_admin(ev)) is False
+    setup_linked_official(obj)
+    assert asyncio.run(obj._is_super_admin(ev)) is True
+    obj.db.get_official_identity.return_value = None
+    assert asyncio.run(obj._is_super_admin(ev)) is False
+
+
+def test_official_group_binding_uses_inherited_original_super_admin(official_waiting):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.config['super_admin'] = '10001'
+    obj.db.get_group_home.return_value = None
+    obj.db.set_group_home = AsyncMock()
+    obj.db.backfill_group_home = AsyncMock(return_value=0)
+    ev.get_message_str = lambda: '/绑定战队 a队'
+    asyncio.run(collect(obj.bind_home(ev)))
+    obj.db.set_group_home.assert_awaited_once_with('group-openid', 'A队')
+
+
+def test_waiting_verified_user_takes_priority_over_old_public_display_binding(official_waiting):
+    obj, _, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.db.get_player_record = AsyncMock(return_value=dict(wins=3, losses=1))
+    assert asyncio.run(obj._waiting_profile(('p', 'app-A', 'g'), 'member-openid',
+                       dict(home_team='a队', query='别人的公开角色'))) == ('云玩家', '75%')
+    obj.db.get_user_by_qq.assert_awaited_once_with('a队', '10001')
+
+
+def test_original_qq_must_confirm_in_onebot_and_official_cannot_spoof_confirmation(official_waiting):
+    obj, ev, _, _ = official_waiting
+    obj.db.confirm_official_link = AsyncMock(return_value='ok')
+    ev.get_message_str = lambda: '/确认关联 AABBCCDDEEFF0011'
+    response = asyncio.run(collect(obj.confirm_identity(ev)))
+    assert '原 QQ' in response[0]
+    obj.db.confirm_official_link.assert_not_awaited()
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    ev.get_sender_id = lambda: '10001'
+    response = asyncio.run(collect(obj.confirm_identity(ev)))
+    assert '关联成功' in response[0]
+    obj.db.confirm_official_link.assert_awaited_once_with('AABBCCDDEEFF0011', '10001')
+
+
+def test_original_qq_can_revoke_own_links_without_target_argument(official_waiting):
+    obj, ev, _, _ = official_waiting
+    obj.db.revoke_official_links = AsyncMock(return_value=1)
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    ev.get_sender_id = lambda: '10001'
+    ev.get_message_str = lambda: '/解除官方关联'
+    assert '已解除' in asyncio.run(collect(obj.revoke_identity(ev)))[0]
+    obj.db.revoke_official_links.assert_awaited_once_with('10001')
+
+
+def test_first_identity_request_does_not_need_an_already_bound_official_group(official_waiting):
+    obj, _, _, _ = official_waiting
+    obj.db.find_official_link_home = AsyncMock(return_value='a队')
+    obj.db.request_official_link = AsyncMock(return_value=dict(linked=False, name='云玩家', code='AABBCCDDEEFF0011'))
+    result = asyncio.run(obj._bind_waiting_id(('p', 'app-A', 'g'), 'member-openid', '云玩家'))
+    assert result['pending']
+    obj.db.find_official_link_home.assert_awaited_once_with('云玩家')
+    obj.db.request_official_link.assert_awaited_once_with('a队', 'app-A', 'member-openid', '云玩家')
+
+
+def test_official_my_record_queries_original_roles_full_id_set(official_waiting):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.db.get_players_aggregate = AsyncMock(return_value=dict(wins=3, losses=1, active_players=[]))
+    obj.db.get_players_trend = AsyncMock(return_value=[])
+    async def rendered(*args, **kwargs):
+        yield 'rendered-original-user'
+    obj._record_results = rendered
+    ev.get_message_str = lambda: '/我的战绩 七月'
+    response = asyncio.run(collect(obj.my_record(ev)))
+    assert response == ['rendered-original-user']
+    obj.db.get_user_by_qq.assert_awaited_once_with('a队', '10001')
+    obj.db.get_user_players.assert_awaited_once_with('a队', 7)
+    assert obj.db.get_players_aggregate.await_args.args[:2] == ('a队', ['示例 玩家', '萌新'])
+
+
+def test_official_privileges_do_not_cross_bot_appids(official_waiting):
+    obj, ev, _, platform = official_waiting
+    obj.config['super_admin'] = '10001'
+    obj.db.get_official_identity.side_effect = lambda app, uid: dict(qq_id='10001') if app == 'app-A' else None
+    assert asyncio.run(obj._is_super_admin(ev)) is True
+    platform.appid = 'app-B'
+    assert asyncio.run(obj._is_super_admin(ev)) is False
+
+
+def test_verified_ordinary_account_does_not_gain_roles_it_never_had(official_waiting):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.config['super_admin'] = '30003'
+    obj.context.get_config = Mock(return_value={'admins_id': []})
+    ev.get_group = AsyncMock(return_value=SimpleNamespace())
+    assert asyncio.run(obj._is_super_admin(ev)) is False
+    assert asyncio.run(obj._is_manager(ev)) is False
+
+
+def test_official_numeric_sender_cannot_bypass_openid_verification(official_waiting):
+    obj, ev, _, _ = official_waiting
+    obj.config['super_admin'] = '10001'
+    ev.get_sender_id = lambda: '10001'
+    assert asyncio.run(obj._is_super_admin(ev)) is False
+
+
+def test_inherited_team_administration_remains_scoped_to_original_team(official_waiting):
+    obj, ev, _, _ = official_waiting
+    setup_linked_official(obj)
+    obj.db.get_group_home.return_value = 'b队'
+    obj.db.is_team_admin = AsyncMock(side_effect=lambda home, qq: home == 'a队' and qq == '10001')
+    ev.get_group = AsyncMock(return_value=None)
+    assert asyncio.run(obj._is_manager(ev)) is False
+    obj.db.is_team_admin.assert_awaited_once_with('b队', '10001')
+
+
+def test_unlinked_official_never_checks_an_empty_team_admin_subject(official_waiting):
+    obj, ev, _, _ = official_waiting
+    obj.db.is_team_admin.return_value = True
+    assert asyncio.run(obj._has_team_permission(ev, 'a队')) is False
+    obj.db.is_team_admin.assert_not_awaited()

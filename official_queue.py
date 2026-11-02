@@ -24,7 +24,8 @@ PLATFORMS = {'qq_official', 'qq_official_webhook'}
 COMMANDS = ('人齐了发车', '跑路了再见', '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
 HELP = ('等车流程喵～\n/等车：开车或查看队列\n/再开一车：新增独立队列\n'
         '/我也要等车 [车号]：加入\n/跑路了再见 [车号]：离开\n'
-        '/人齐了发车 [车号] 群号：至少3人可发车\n/等车ID 参赛ID：设置面板战绩\n'
+        '/人齐了发车 [车号] 群号：至少3人可发车\n/等车ID 角色或参赛ID：关联原账号\n'
+        '首次关联请用原 QQ 向原机器人发送 /确认关联 确认码，10分钟有效。\n'
         '每3分钟刷新；不足3人等待9分钟解散，满3人后15分钟未发车解散。\n'
         '一人同时只等一辆车；点击发车按钮后补上群号再发送喵。')
 
@@ -259,9 +260,13 @@ class WaitingQueues:
                     if not query:
                         raise ValueError('用法喵：/等车ID 参赛ID')
                     binding = await self.bind(scope, uid, query)
+                    if binding.get('pending'):
+                        await self.emit(scope, room, binding['message'])
+                        return
                     with self.edit():
                         room['bindings'][uid] = binding
-                    await self.emit(scope, room, f'等车战绩设为「{safe(query)}」啦喵。')
+                    await self.emit(scope, room, f'账号已关联「{safe(query)}」啦喵。' if binding.get('linked')
+                                    else f'等车战绩设为「{safe(query)}」啦喵。')
                     return
                 selected = None
                 with self.edit():
@@ -311,7 +316,7 @@ class WaitingQueues:
                         selected = []
                     else:
                         raise ValueError('请用 /等车帮助 查看指令喵。')
-                # edit 回滚会替换 state；异常时必须重新取 room。
+                # 异常时对应群会还原；发送前重新取当前 room。
                 room = self.room(scope)
                 await self.flush(scope, room)
                 cars = room['cars'] if selected is None else [q for q in room['cars'] if q['id'] in selected]

@@ -157,3 +157,9 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 队列 180 秒刷新，未满3人540秒、满3人重新900秒，持续满员不重置、降至2人重开540秒；个人 joined_at 不随刷新重置。独立多车、一人同时一车，已在车中再开创建空车。发车只允许本车成员、至少3人，@其他参加者；到期通知全部当时成员。
 - SDK直接发送 Markdown+键盘，发车按钮仅填输入框；C前缀车token避免未填群号误发车。旧车token不复用；公开战绩按本群home_team/北京时间当月，通过同份build_record_metrics得到胜率，不写统计/权限/原ID归属。
 - 存档 official_waiting_queues.json；终态提醒先落outbox再发送，确认id才移除，失败延后补发。主动推送权限由用户确认已具备，默认开启；保留5分钟被动限制，不能伪报成功。卸载先取消任务再关DB，schema v19保持。
+
+## v1.25.0 官方身份关联
+
+- `/等车ID` 申请给原角色关联 OpenID，原 QQ `/确认关联` 一次后生效。schema v20 新增 official_user_accounts / official_link_requests，保留 users.qq_id 和 users.id，不创建替代用户、不移动参赛 ID。只存10分钟一次性码的哈希，已有映射不覆盖；原QQ可解除自己的全部关联。
+- `_identity_qq` 是平台身份统一入口：OneBot用原QQ，官方用AppID隔离的已验证OpenID映射到原QQ。所有 own-ID、改名、我的战绩及超管/战队管理判断共用；`_is_super_admin` 现为异步，全部调用必须await。按用户最新要求继承原QQ已有全部插件权限，不改event.role或QQ服务器权限。
+- 验证前不能写 users.qq_id=OpenID，不信任公开角色名和旧JSON展示别名授权。源角色QQ归属变化立刻失效，AppID跨连接切换可复用，同名其他bot不共用。未绑定官方群可只为认证找唯一原QQ，不自动设置群战队或兜底统计。

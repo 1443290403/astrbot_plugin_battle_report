@@ -1709,3 +1709,22 @@ def test_batch_settlement_atomic_replacement_and_failure_rollback():
         assert await db.get_settlement('b队', '2026-07') == {'遗老': 30}
         assert await db.get_settlement('a队', '2026-09') == {'遗老': 30}
     _with_db(ops)
+
+
+def test_official_identity_links_preserve_qq_and_can_replay_schema_migration():
+    async def ops(db):
+        uid = await db.find_or_create_user('a队', '云玩家', '10001')
+        await db.bind_player_to_user('a队', '示例 玩家', uid)
+        request = await db.request_official_link('a队', 'test-app', 'test-openid', '示例 玩家')
+        assert not request['linked']
+        assert await db.confirm_official_link(request['code'], '20002') == 'denied'
+        assert await db.confirm_official_link(request['code'], '10001') == 'ok'
+        identity = await db.get_official_identity('test-app', 'test-openid')
+        assert identity['user_id'] == uid and identity['qq_id'] == '10001'
+        assert (await db.get_user_by_id(uid))['qq_id'] == '10001'
+        await db._init_schema()
+        assert (await db.get_official_identity('test-app', 'test-openid'))['user_id'] == uid
+        assert await db.revoke_official_links('10001') == 1
+        assert await db.get_official_identity('test-app', 'test-openid') is None
+        assert await db.get_user_players('a队', uid) == ['示例 玩家']
+    _with_db(ops)
