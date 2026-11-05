@@ -2264,7 +2264,7 @@ def test_official_bot_cannot_bypass_queue_only_routing_via_llm_lineup_tool(offic
 
 
 @pytest.mark.parametrize('text', [
-    '/进队等车', '/发送群号 123456789', '/解散队伍',
+    '/进队等车', '/发送群号 123456789', '/解散队伍', '/离队', '/解散',
     '/友谊等车', '友谊等车', '/友谊等车帮助', '/帮助 友谊等车', '/战报帮助 友谊等车',
     '/等车', '蹲车', '/我也要等车 C1_abcd1234', '/跑路了再见',
     '/人齐了发车 C1_abcd1234 123456789', '/再开一车',

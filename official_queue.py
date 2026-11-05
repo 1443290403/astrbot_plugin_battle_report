@@ -22,11 +22,12 @@ except ImportError:
 REFRESH = 240
 GATHER_TIMEOUT = READY_TIMEOUT = 600
 PLATFORMS = {'qq_official', 'qq_official_webhook'}
-COMMANDS = ('友谊等车帮助', '友谊等车', '进队等车', '发送群号', '解散队伍', '人齐了发车', '跑路了再见',
+COMMANDS = ('友谊等车帮助', '友谊等车', '进队等车', '发送群号', '解散队伍', '离队', '解散', '人齐了发车', '跑路了再见',
             '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
 HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n/再开一车：新增队伍\n'
-        '/进队等车 [车号]：加入\n/跑路了再见：退出自己所在队伍\n'
-        '/发送群号 群号：通知同车成员并结束该车\n/解散队伍：解散自己所在队伍\n'
+        '/进队等车 [车号]：加入\n/离队：退出当前队伍\n'
+        '/发送群号 群号：通知同车成员并结束该车\n/解散：解散当前队伍\n'
+        '入队后自动定位你的队伍，不用填写车号。\n'
         '/等车ID 角色或参赛ID：关联原账号，首次用原 QQ /确认关联 确认码\n'
         '每4分钟统一广播；建队10分钟清理，首次满3人重新计10分钟并提醒接友谊。\n'
         '之后进出不延时，一人同时只在一队；车次号按北京时间每日重新从1编号喵。')
@@ -39,7 +40,8 @@ def parse_command(text):
     if not match:
         return None
     action = {'友谊等车': '等车', '友谊等车帮助': '等车帮助',
-              '进队等车': '我也要等车', '发送群号': '人齐了发车'}.get(match[1], match[1])
+              '进队等车': '我也要等车', '发送群号': '人齐了发车',
+              '离队': '跑路了再见', '解散': '解散队伍'}.get(match[1], match[1])
     return action, (match[2] or '').strip()
 
 
@@ -91,10 +93,10 @@ def avatar(appid, uid):
 def keyboard(car=None):
     # 所有队伍共用两行操作；按本人队伍离开/发送/解散，加入指定车可点面板车次旁的链接。
     actions = [('join', '进队等车', '/进队等车', True),
-               ('leave', '跑路了再见', '/跑路了再见', True),
+               ('leave', '跑路了再见', '/离队', True),
                ('go', '发送群号', '/发送群号 ', False),
                ('new', '再开一车', '/再开一车', True),
-               ('dissolve', '解散队伍', '/解散队伍', True),
+               ('dissolve', '解散队伍', '/解散', True),
                ('help', '友谊等车帮助', '/友谊等车帮助', True)]
     buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
                 'action': {'type': 2, 'permission': {'type': 2}, 'data': data,

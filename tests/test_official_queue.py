@@ -36,9 +36,9 @@ def test_shared_keyboard_has_three_buttons_per_row_and_no_car_required_for_own_a
     assert [len(r['buttons']) for r in rows] == [3, 3]
     buttons = [b for r in rows for b in r['buttons']]
     assert [b['render_data']['label'] for b in buttons] == ['进队等车', '跑路了再见', '发送群号', '再开一车', '解散队伍', '友谊等车帮助']
-    assert buttons[1]['action']['data'] == '/跑路了再见'
+    assert buttons[1]['action']['data'] == '/离队'
     assert buttons[2]['action']['data'] == '/发送群号 ' and buttons[2]['action']['enter'] is False
-    assert buttons[4]['action']['data'] == '/解散队伍'
+    assert buttons[4]['action']['data'] == '/解散'
     assert all(b['action']['type'] == 2 and b['action']['permission']['type'] == 2 for b in buttons)
 
 
@@ -416,6 +416,7 @@ def test_corrupt_store_is_not_overwritten(tmp_path):
 
 
 @pytest.mark.parametrize('text,expected', [
+    ('/离队', ('跑路了再见', '')), ('/解散', ('解散队伍', '')),
     ('/进队等车', ('我也要等车', '')), ('/发送群号 123456789', ('人齐了发车', '123456789')),
     ('/解散队伍', ('解散队伍', '')), ('/友谊等车', ('等车', '')), ('等车', ('等车', '')),
     ('/我也要等车 C1_old', ('我也要等车', 'C1_old')), ('/人齐了发车 123456789', ('人齐了发车', '123456789')),
@@ -483,4 +484,43 @@ def test_notification_retains_names_when_car_removed_before_api_confirmation(set
         await restored.tick()
         notice = texts(send)[-1]
         assert '@群名片u1 ' in notice and '@群名片u2 ' in notice
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('command', ['/离队', '/解散', '/发送群号 123456789'])
+def test_joined_operations_without_car_number_only_target_callers_car(setup_queue, command):
+    service, _, send, act = setup_queue
+    async def scenario():
+        await act()
+        for u in ['u3', 'u4']:
+            await act('我也要等车', uid=u)
+        await act('再开一车', uid='u2')
+        first, own = service.room(SCOPE)['cars']
+        for u in ['u5', 'u6']:
+            await act('我也要等车', own['id'], uid=u)
+        first_snapshot = json.loads(json.dumps(first))
+        action, raw = queue.parse_command(command)
+        await act(action, raw, uid='u2')
+        assert service.room(SCOPE)['cars'][0] == first_snapshot
+        if command == '/离队':
+            assert set(own['members']) == {'u5', 'u6'}
+            notice = texts(send, '离开了')[-1]
+        else:
+            assert service.room(SCOPE)['cars'] == [first]
+            notice = texts(send, '发车啦' if '群号' in command else '已解散')[-1]
+        assert queue.mention('u5') in notice and queue.mention('u6') in notice
+        assert not any(queue.mention(u) in notice for u in ['u1', 'u3', 'u4'])
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('command', ['/离队', '/解散', '/发送群号 123456789'])
+def test_unjoined_operations_cannot_fall_back_to_other_users_only_car(setup_queue, command):
+    service, _, send, act = setup_queue
+    async def scenario():
+        await act()
+        before = json.loads(json.dumps(service.room(SCOPE)['cars']))
+        action, raw = queue.parse_command(command)
+        await act(action, raw, uid='outsider')
+        assert service.room(SCOPE)['cars'] == before
+        assert '还没有加入队伍' in texts(send)[-1]
     asyncio.run(scenario())
