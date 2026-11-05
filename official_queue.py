@@ -292,13 +292,6 @@ class WaitingQueues:
             raise ValueError('你还没有加入队伍喵。')
         return found[0]
 
-    def display_name(self, room, uid):
-        for car in room['cars']:
-            if uid in car['members']:
-                return car['members'][uid]['name'] or f'车友{uid[-4:]}'
-        return f'车友{uid[-4:]}'
-
-
     async def emit(self, scope, room, text, buttons=None, *, plain=False):
         now = self.clock()
         reply = {}
@@ -323,10 +316,8 @@ class WaitingQueues:
             if not force and notice['retry_at'] > self.clock():
                 continue
             plain = notice.get('format') == 'text'
-            names = notice.get('names', {})
-            labels = ' '.join(mention(uid) + input_text('@' + names.get(uid, self.display_name(room, uid)) + ' ',
-                                                       names.get(uid, self.display_name(room, uid)))
-                              for uid in notice['users'])
+            # 原生标签由 QQ 显示本群名称；不能再拼接缓存昵称或“填入指令”标签。
+            labels = ' '.join(mention(uid) for uid in dict.fromkeys(notice['users']))
             text = (labels + '\n' if labels else '') + notice['text']
             try:
                 await self.emit(scope, room, text, plain=plain)
@@ -351,9 +342,8 @@ class WaitingQueues:
             title = f'**{label} · {len(car["members"])}人** ' + input_text('/进队等车 ' + car['id'], '进队等车')
             members = []
             for uid, member in car['members'].items():
-                name = member['name'] or f'车友{uid[-4:]}'
                 waited = max(0, int(now - member['joined_at']))
-                members.append(f'{avatar(scope[1], uid)} {input_text("@" + name + " ", name)} '
+                members.append(f'{avatar(scope[1], uid)} {mention(uid)} '
                                f'{waited // 60}:{waited % 60:02}')
             sections.append(title + f'\n> 自动清理：{cleanup} ｜ 广播间隔：4分钟\n\n'
                             + '　'.join(members or ['暂无成员']))
@@ -428,12 +418,12 @@ class WaitingQueues:
                                 if self.update_timer(car, self.clock()):
                                     self.notify(room, f'{car["number"]}号车人齐啦，快去接友谊喵！', car['members'])
                                 elif previous_members:
-                                    self.notify(room, f'{safe(name or "新车友")}加入了{car["number"]}号车喵。', previous_members)
+                                    self.notify(room, f'有新成员加入了{car["number"]}号车喵。', previous_members)
                         elif action == '跑路了再见':
                             if uid not in car['members']:
                                 raise ValueError('你没有在这队里喵。')
-                            leaving = car['members'].pop(uid)
-                            self.notify(room, f'{safe(leaving["name"] or "一位车友")}离开了{car["number"]}号车喵。', car['members'])
+                            car['members'].pop(uid)
+                            self.notify(room, f'有成员离开了{car["number"]}号车喵。', car['members'])
                             if not car['members']:
                                 room['cars'].remove(car)
                         else:
@@ -452,7 +442,7 @@ class WaitingQueues:
                         room['cars'].remove(car)
                         others = {user: member for user, member in car['members'].items() if user != uid}
                         notice_id = self.notify(room, f'{car["number"]}号车发车啦！\n'
-                                    f'发车者：{safe(name or "本车成员")}，快来集合喵～', others)
+                                               '快来集合喵～', others)
                         self.notify(room, args[-1], [], plain=True, after=notice_id)
                     else:
                         raise ValueError('请用 /等车帮助 查看指令喵。')

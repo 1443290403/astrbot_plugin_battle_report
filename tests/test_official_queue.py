@@ -56,7 +56,8 @@ def test_all_cars_in_one_compact_panel_members_on_one_logical_line_without_stats
         assert any(line.count('![头像 #32px #32px]') == 2 for line in lines)
         assert all('广播间隔：4分钟' in line for line in lines if '自动清理：' in line)
         assert 'https://q.qlogo.cn/qqapp/app-a/u1/100' in text
-        assert '群名片u1' in text and 'qqbot-cmd-input' in text
+        assert text.count(queue.mention('u1')) == 1
+        assert '群名片u1' not in text and 'qqbot-cmd-input' in text
         service.profile.assert_not_awaited()
     asyncio.run(scenario())
 
@@ -136,7 +137,8 @@ def test_join_duplicate_events_do_not_notify_twice_and_leave_notifies_remaining_
         left = texts(send, '离开了1号车')[-1]
         assert queue.mention('u1') in left and queue.mention('u2') not in left
         assert service.room(SCOPE)['cars'][0]['deadline'] == 600
-        assert 'qqbot-cmd-input' in left and '@群名片u1 ' in left
+        assert 'qqbot-cmd-input' not in left and '群名片u1' not in left
+        assert left.count(queue.mention('u1')) == 1
     asyncio.run(scenario())
 
 
@@ -475,7 +477,7 @@ def test_full_transition_atomic_failure_cannot_reset_timer_or_queue_ready_notice
     assert not service.room(SCOPE)['outbox'] and not texts(send, '快去接友谊')
 
 
-def test_notification_retains_names_when_car_removed_before_api_confirmation(setup_queue):
+def test_notification_uses_native_member_ids_when_car_removed_before_api_confirmation(setup_queue):
     service, clock, send, act = setup_queue
     async def scenario():
         await act()
@@ -488,7 +490,8 @@ def test_notification_retains_names_when_car_removed_before_api_confirmation(set
         clock[0] = 840
         await restored.tick()
         notice = texts(send)[-1]
-        assert '@群名片u1 ' in notice and '@群名片u2 ' in notice
+        assert all(notice.count(queue.mention(u)) == 1 for u in ['u1', 'u2'])
+        assert 'qqbot-cmd-input' not in notice and '群名片u1' not in notice
     asyncio.run(scenario())
 
 
@@ -621,3 +624,35 @@ def test_legacy_number_conversion_write_failure_preserves_original_pending_recor
     with pytest.raises(OSError, match='disk full'):
         queue.WaitingQueues(service.path, send, None, None, clock=lambda: 0)
     assert service.path.read_text() == original
+
+
+def test_old_notice_name_snapshots_cannot_duplicate_or_override_native_group_names(setup_queue):
+    service, _, send, act = setup_queue
+    async def scenario():
+        await act()
+        room = service.room(SCOPE)
+        room['outbox'] = [dict(id='legacy', users=['u1', 'u1', 'u2'], names={'u1': '旧QQ昵称', 'u2': '旧群名片'},
+                              retry_at=0, text='1号车已解散喵。')]
+        await service.flush(SCOPE, room)
+        text = texts(send)[-1]
+        assert text.count(queue.mention('u1')) == text.count(queue.mention('u2')) == 1
+        assert '旧QQ昵称' not in text and '旧群名片' not in text and 'qqbot-cmd-input' not in text
+    asyncio.run(scenario())
+
+
+def test_all_new_panels_and_notifications_leave_member_name_rendering_to_qq(setup_queue):
+    service, _, send, _ = setup_queue
+    async def scenario():
+        for i, (action, uid, raw) in enumerate([
+            ('等车', 'u1', ''), ('我也要等车', 'u2', ''), ('跑路了再见', 'u2', ''),
+            ('我也要等车', 'u2', ''), ('我也要等车', 'u3', ''), ('人齐了发车', 'u1', '123456789'),
+        ]):
+            await service.execute(SCOPE, action, raw, uid, '缓存QQ昵称' + uid, str(i))
+        for text in texts(send):
+            assert '缓存QQ昵称' not in text
+            assert 'text="@' not in text
+            if '![头像' in text:
+                assert 'qqbot-at-user' in text
+        assert len(texts(send, '快去接友谊')) == 1
+        assert len([c for c in send.await_args_list if c.kwargs.get('plain') and c.args[1] == '123456789']) == 1
+    asyncio.run(scenario())

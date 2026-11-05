@@ -2658,9 +2658,10 @@ def test_official_waiting_uses_group_card_before_qq_nickname(official_waiting, h
     ev.message_obj.raw_message.raw_data = raw
     asyncio.run(obj.official_queue_cmd(ev))
     text = unquote(api.post_group_message.await_args.kwargs['markdown']['content'])
-    assert ('群昵称' if has_card else 'QQ昵称') in text
-    if has_card:
-        assert 'QQ昵称' not in text
+    member = obj._get_waiting_queues().room(('platform-A', 'app-A', 'group-openid'))['cars'][0]['members']['member-openid']
+    assert member['name'] == ('群昵称' if has_card else 'QQ昵称')
+    assert text.count('<qqbot-at-user id="member-openid" />') == 1
+    assert '群昵称' not in text and 'QQ昵称' not in text
     obj.db.get_group_home.assert_not_awaited()
     obj.db.get_official_identity.assert_not_awaited()
 
