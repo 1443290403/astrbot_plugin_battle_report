@@ -30,6 +30,7 @@ from astrbot.api.star import Star, StarTools, register
 
 from . import chart, help_guide, lineup, stats
 from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
+from .official_queue import group_nickname as queue_group_nickname
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
@@ -196,7 +197,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.25.6")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -388,7 +389,7 @@ class BattleReportPlugin(Star):
             scope = (str(platform_id), str(platform.appid), str(group))
             action, raw = command
             uid = str(event.get_sender_id())
-            name = str(event.get_sender_name() or '')
+            name = queue_group_nickname(source, str(event.get_sender_name() or ''))
             await self._get_waiting_queues().execute(
                 scope, action, raw, uid, '' if name == uid else name,
                 str(event.message_obj.message_id or ''))

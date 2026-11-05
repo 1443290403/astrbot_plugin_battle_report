@@ -2264,6 +2264,7 @@ def test_official_bot_cannot_bypass_queue_only_routing_via_llm_lineup_tool(offic
 
 
 @pytest.mark.parametrize('text', [
+    '/进队等车', '/发送群号 123456789', '/解散队伍',
     '/友谊等车', '友谊等车', '/友谊等车帮助', '/帮助 友谊等车', '/战报帮助 友谊等车',
     '/等车', '蹲车', '/我也要等车 C1_abcd1234', '/跑路了再见',
     '/人齐了发车 C1_abcd1234 123456789', '/再开一车',
@@ -2322,10 +2323,10 @@ def test_official_waiting_posts_real_sdk_markdown_and_keyboard_payload(official_
     assert params['group_openid'] == 'group-openid' and params['msg_type'] == 2
     assert params['msg_id'] == 'incoming-1' and params['msg_seq'] == 1
     assert '1号车' in params['markdown']['content']
-    assert '未绑定角色' in params['markdown']['content']
+    assert '当月胜率' not in params['markdown']['content']
     assert '![头像 #32px #32px](https://q.qlogo.cn/qqapp/app-A/member-openid/100)' in params['markdown']['content']
-    assert '> 当月胜率：未绑定角色' in params['markdown']['content']
-    assert params['keyboard']['content']['rows'][1]['buttons'][0]['action']['enter'] is False
+    assert '广播间隔：4分钟' in params['markdown']['content']
+    assert params['keyboard']['content']['rows'][0]['buttons'][2]['action']['enter'] is False
     ev.send.assert_not_awaited()
     ev.stop_event.assert_called_once()
     ev.clear_result.assert_called_once()
@@ -2645,3 +2646,20 @@ def test_all_custom_filters_are_instantiated_by_registration_with_framework_opti
 def test_custom_filter_regression_harness_rejects_the_previous_instance_registration(plugin_module):
     with pytest.raises(TypeError, match='not callable'):
         plugin_module.filter.custom_filter(plugin_module.OfficialQueueFilter())
+
+
+@pytest.mark.parametrize('has_card', [True, False])
+def test_official_waiting_uses_group_card_before_qq_nickname(official_waiting, has_card):
+    from urllib.parse import unquote
+    obj, ev, api, _ = official_waiting
+    raw = {'author': {'username': 'QQ昵称'}}
+    if has_card:
+        raw['member'] = {'nick': '群昵称'}
+    ev.message_obj.raw_message.raw_data = raw
+    asyncio.run(obj.official_queue_cmd(ev))
+    text = unquote(api.post_group_message.await_args.kwargs['markdown']['content'])
+    assert ('群昵称' if has_card else 'QQ昵称') in text
+    if has_card:
+        assert 'QQ昵称' not in text
+    obj.db.get_group_home.assert_not_awaited()
+    obj.db.get_official_identity.assert_not_awaited()

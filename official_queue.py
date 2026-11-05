@@ -9,6 +9,7 @@ import re
 import tempfile
 import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -18,18 +19,17 @@ try:
 except ImportError:
     from command_args import parse_command_args, single_name
 
-REFRESH = 180
-GATHER_TIMEOUT = 540
-READY_TIMEOUT = 900
+REFRESH = 240
+GATHER_TIMEOUT = READY_TIMEOUT = 600
 PLATFORMS = {'qq_official', 'qq_official_webhook'}
-COMMANDS = ('友谊等车帮助', '友谊等车', '人齐了发车', '跑路了再见', '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
-HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看队列\n/再开一车：新增独立队列\n'
-        '/我也要等车 [车号]：加入\n/跑路了再见 [车号]：离开\n'
-        '/人齐了发车 [车号] 群号：至少3人可发车\n/等车ID 角色或参赛ID：关联原账号\n'
-        '首次关联请用原 QQ 向原机器人发送 /确认关联 确认码，10分钟有效。\n'
-        '每3分钟刷新；不足3人等待9分钟解散，满3人后15分钟未发车解散。\n'
-        '新人加入会提醒同车成员，并按当前人数重新计时。\n'
-        '一人同时只等一辆车；点击发车按钮后补上群号再发送喵。')
+COMMANDS = ('友谊等车帮助', '友谊等车', '进队等车', '发送群号', '解散队伍', '人齐了发车', '跑路了再见',
+            '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
+HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n/再开一车：新增队伍\n'
+        '/进队等车 [车号]：加入\n/跑路了再见：退出自己所在队伍\n'
+        '/发送群号 群号：通知同车成员并结束该车\n/解散队伍：解散自己所在队伍\n'
+        '/等车ID 角色或参赛ID：关联原账号，首次用原 QQ /确认关联 确认码\n'
+        '每4分钟统一广播；建队10分钟清理，首次满3人重新计10分钟并提醒接友谊。\n'
+        '之后进出不延时，一人同时只在一队；车次号按北京时间每日重新从1编号喵。')
 
 
 def parse_command(text):
@@ -38,8 +38,39 @@ def parse_command(text):
     match = re.fullmatch(r'\s*/?(' + '|'.join(COMMANDS) + r')(?:\s+(.*))?\s*', text, re.S)
     if not match:
         return None
-    action = {'友谊等车': '等车', '友谊等车帮助': '等车帮助'}.get(match[1], match[1])
+    action = {'友谊等车': '等车', '友谊等车帮助': '等车帮助',
+              '进队等车': '我也要等车', '发送群号': '人齐了发车'}.get(match[1], match[1])
     return action, (match[2] or '').strip()
+
+
+def day_key(now):
+    return datetime.fromtimestamp(now, timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+
+
+def input_text(text, show):
+    # QQ 的参数指令是填入输入框，不自动发送；两个属性都须 URL 编码。
+    return f'<qqbot-cmd-input text="{quote(str(text)[:100], safe="")}" show="{quote(str(show)[:100], safe="")}" reference="false" />'
+
+
+def group_nickname(source, fallback=''):
+    """群名片优先，未提供时按用户要求回退 QQ 昵称。"""
+    def get(obj, key):
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+    raw = get(source, 'raw_data') or source
+    for obj, keys in [(get(raw, 'member'), ('nick', 'card', 'group_nickname')),
+                      (get(source, 'member'), ('nick', 'card', 'group_nickname')),
+                      (get(raw, 'author'), ('member_name', 'group_nickname', 'card')),
+                      (get(source, 'author'), ('member_name', 'group_nickname', 'card')),
+                      (raw, ('member_name', 'group_nickname', 'card'))]:
+        for key in keys:
+            value = get(obj, key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().replace('\n', ' ').replace('\r', ' ')
+    author = get(raw, 'author') or get(source, 'author')
+    for value in (get(author, 'username'), get(author, 'nickname'), fallback):
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace('\n', ' ').replace('\r', ' ')
+    return ''
 
 
 def safe(text):
@@ -57,22 +88,19 @@ def avatar(appid, uid):
     return f'![头像 #32px #32px]({url})'
 
 
-def keyboard(car):
-    rows = []
-    for buttons in [
-        [('join', '我也要等车', f'/我也要等车 {car["id"]}', True),
-         ('leave', '跑路了再见', f'/跑路了再见 {car["id"]}', True)],
-        [('go', '人齐了发车', f'/人齐了发车 {car["id"]} ', False),
-         ('new', '再开一车', '/再开一车', True)],
-        [('help', '友谊等车帮助', '/友谊等车帮助', True)],
-    ]:
-        rows.append({'buttons': [
-            {'id': f'{car["id"]}_{key}',
-             'render_data': {'label': label, 'visited_label': label, 'style': 1},
-             'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
-                        'enter': enter, 'reply': True}}
-            for key, label, data, enter in buttons]})
-    return {'content': {'rows': rows}}
+def keyboard(car=None):
+    # 所有队伍共用两行操作；按本人队伍离开/发送/解散，加入指定车可点面板车次旁的链接。
+    actions = [('join', '进队等车', '/进队等车', True),
+               ('leave', '跑路了再见', '/跑路了再见', True),
+               ('go', '发送群号', '/发送群号 ', False),
+               ('new', '再开一车', '/再开一车', True),
+               ('dissolve', '解散队伍', '/解散队伍', True),
+               ('help', '友谊等车帮助', '/友谊等车帮助', True)]
+    buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
+                'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
+                           'enter': enter, 'reply': True, 'unsupport_tips': '请发送对应文字指令'}}
+               for key, label, data, enter in actions]
+    return {'content': {'rows': [{'buttons': buttons[:3]}, {'buttons': buttons[3:]}]}}
 
 
 class WaitingQueues:
@@ -87,10 +115,10 @@ class WaitingQueues:
         self.clock = clock
         self.log = log
         self.locks = {}
-        self.state = {'version': 1, 'rooms': {}}
+        self.state = {'version': 2, 'rooms': {}}
         if self.path.exists():
             state = json.loads(self.path.read_text('utf-8'))
-            if state.get('version') != 1 or not isinstance(state.get('rooms'), dict):
+            if type(state.get('version')) is not int or state['version'] not in (1, 2) or not isinstance(state.get('rooms'), dict):
                 raise ValueError('等车存档格式错误')
             for key, room in state['rooms'].items():
                 if (not isinstance(room, dict) or not isinstance(room.get('scope'), list)
@@ -99,18 +127,24 @@ class WaitingQueues:
                         or not isinstance(room.get('bindings'), dict) or not isinstance(room.get('seen'), list)
                         or type(room.get('next_number')) is not int or room['next_number'] < 1):
                     raise ValueError('等车存档格式错误')
+                users = set()
                 for car in room['cars']:
                     if (not isinstance(car.get('id'), str) or not car['id'].startswith('C')
-                            or type(car.get('number')) is not int or not isinstance(car.get('members'), dict)
+                            or type(car.get('number')) is not int or car['number'] < 1
+                            or not isinstance(car.get('members'), dict)
                             or type(car.get('ready')) is not bool):
                         raise ValueError('等车存档格式错误')
                     if any(not isinstance(member, dict) or not isinstance(member.get('name'), str)
                            for member in car['members'].values()):
                         raise ValueError('等车存档成员错误')
-                    times = ([car.get('deadline'), car.get('next_refresh')]
+                    if users.intersection(car['members']):
+                        raise ValueError('等车存档存在重复入队成员')
+                    users.update(car['members'])
+                    times = ([car.get('deadline')]
+                             + ([car.get('next_refresh')] if state['version'] == 1 else [])
                              + [member.get('joined_at') for member in car['members'].values()])
                     for value in times:
-                        if not isinstance(value, (int, float)) or not math.isfinite(value):
+                        if type(value) not in (int, float) or not math.isfinite(value):
                             raise ValueError('等车存档计时错误')
                 for notice in room['outbox']:
                     if (not isinstance(notice, dict) or not isinstance(notice.get('id'), str)
@@ -118,7 +152,32 @@ class WaitingQueues:
                             or not isinstance(notice.get('retry_at'), (int, float))
                             or not math.isfinite(notice['retry_at'])):
                         raise ValueError('等车待发提醒格式错误')
+                    if ('names' in notice and (not isinstance(notice['names'], dict)
+                            or any(not isinstance(name, str) for name in notice['names'].values()))):
+                        raise ValueError('等车通知昵称格式错误')
+                if state['version'] == 2:
+                    if (not isinstance(room.get('next_refresh'), (int, float))
+                            or not math.isfinite(room['next_refresh'])
+                            or not isinstance(room.get('number_day'), str)):
+                        raise ValueError('等车广播或编号格式错误')
+                    if any(not isinstance(car.get('day'), str) for car in room['cars']):
+                        raise ValueError('等车车次日期错误')
             self.state = state
+            if state['version'] == 1:
+                with self.edit():
+                    now = self.clock()
+                    for room in state['rooms'].values():
+                        room['number_day'] = day_key(now)
+                        room['next_refresh'] = min([car['next_refresh'] for car in room['cars']] or [now + REFRESH])
+                        for car in room['cars']:
+                            start = min([m['joined_at'] for m in car['members'].values()] or [now])
+                            car['day'] = day_key(start)
+                            # 不复活已过期的旧车，不给旧车重新赠送一整段等待时间。
+                            car['deadline'] = min(car['deadline'], now + GATHER_TIMEOUT)
+                            car.pop('next_refresh', None)
+                        room['next_number'] = max([c['number'] for c in room['cars'] if c['day'] == room['number_day']] or [0]) + 1
+                    state['version'] = 2
+
 
     @staticmethod
     def key(scope):
@@ -163,7 +222,9 @@ class WaitingQueues:
     @staticmethod
     def notify(room, text, users):
         room['outbox'].append({'id': uuid4().hex, 'text': text,
-                               'users': list(users), 'retry_at': 0})
+                               'users': list(users), 'retry_at': 0,
+                               'names': {uid: (member['name'] or f'车友{uid[-4:]}')
+                                         for uid, member in users.items()} if isinstance(users, dict) else {}})
 
     def expire(self, room, now):
         expired = [car for car in room['cars'] if now >= car['deadline']]
@@ -176,23 +237,35 @@ class WaitingQueues:
                 self.notify(room, f'{car["number"]}号车{why}，已自动解散喵。', car['members'])
 
     @staticmethod
-    def update_timer(car, now, *, reset=False):
-        ready = len(car['members']) >= 3
-        if reset or ready != car['ready']:
-            car['ready'] = ready
-            car['deadline'] = now + (READY_TIMEOUT if ready else GATHER_TIMEOUT)
+    def update_timer(car, now):
+        # ready 是“曾经满3人”，不能在离队后清零。
+        if not car['ready'] and len(car['members']) >= 3:
+            car['ready'] = True
+            car['deadline'] = now + READY_TIMEOUT
+            return True
+        return False
 
     @staticmethod
-    def select(room, target, uid):
+    def select(room, target, uid, *, joining=False):
         if target:
             found = [q for q in room['cars'] if q['id'] == target or str(q['number']) == target]
         else:
             found = [q for q in room['cars'] if uid in q['members']]
-            if not found and len(room['cars']) == 1:
-                found = room['cars']
+            if not found and joining and room['cars']:
+                found = [next((q for q in room['cars'] if len(q['members']) < 3), room['cars'][0])]
         if len(found) != 1:
-            raise ValueError('请 /友谊等车 查看并选择车号喵。' if not target else '这辆车已经结束了喵，请 /友谊等车 查看。')
+            if target:
+                raise ValueError('这辆车已经结束了喵，请 /友谊等车 查看。' if not found
+                                 else '车次号有重复，请点面板选择队伍喵。')
+            raise ValueError('你还没有加入队伍喵。')
         return found[0]
+
+    def display_name(self, room, uid):
+        for car in room['cars']:
+            if uid in car['members']:
+                return car['members'][uid]['name'] or f'车友{uid[-4:]}'
+        return f'车友{uid[-4:]}'
+
 
     async def emit(self, scope, room, text, buttons=None):
         now = self.clock()
@@ -214,7 +287,11 @@ class WaitingQueues:
         for notice in list(room['outbox']):
             if not force and notice['retry_at'] > self.clock():
                 continue
-            text = ' '.join(mention(uid) for uid in notice['users']) + '\n' + notice['text']
+            names = notice.get('names', {})
+            labels = ' '.join(mention(uid) + input_text('@' + names.get(uid, self.display_name(room, uid)) + ' ',
+                                                       names.get(uid, self.display_name(room, uid)))
+                              for uid in notice['users'])
+            text = (labels + '\n' if labels else '') + notice['text']
             try:
                 await self.emit(scope, room, text)
             except Exception:
@@ -228,26 +305,25 @@ class WaitingQueues:
                 with self.edit():
                     room['outbox'] = [n for n in room['outbox'] if n['id'] != notice['id']]
 
-    async def panel(self, scope, room, car):
+    async def panel(self, scope, room, car=None):
         now = self.clock()
-        async def row(uid, member):
-            try:
-                display, rate = await asyncio.wait_for(
-                    self.profile(scope, uid, room['bindings'].get(uid)), timeout=8)
-            except Exception:
-                display, rate = '', '暂不可用'
-            name = display or member['name'] or f'车友{uid[-4:]}'
-            waited = max(0, int(now - member['joined_at']))
-            return (f'{avatar(scope[1], uid)} {safe(name)} ｜ 已等待{waited // 60}分{waited % 60:02}秒\n\n'
-                    f'> 当月胜率：{safe(rate)}')
-        rows = await asyncio.gather(*(row(uid, member) for uid, member in car['members'].items()))
-        remaining = max(0, int(car['deadline'] - now))
-        cleanup = (f'{remaining // 60}分钟' if remaining % 60 == 0
-                   else f'{remaining // 60}分{remaining % 60:02}秒')
-        text = (f'## {car["number"]}号车 · 当前友谊等车列表 | {len(car["members"])}人\n'
-                f'> 自动清理：{cleanup}\n> 广播间隔：{REFRESH // 60}分钟\n\n'
-                + '\n\n'.join(rows or ['> 暂时还没有成员喵。']))
-        await self.emit(scope, room, text, keyboard(car))
+        sections = ['**友谊等车**']
+        for car in room['cars']:
+            remaining = max(0, int(car['deadline'] - now))
+            cleanup = f'{remaining // 60}分{remaining % 60:02}秒'
+            label = f'{car["number"]}号车' if car['day'] == day_key(now) else f'{car["day"][5:]}·{car["number"]}号车'
+            title = f'**{label} · {len(car["members"])}人** ' + input_text('/进队等车 ' + car['id'], '进队等车')
+            members = []
+            for uid, member in car['members'].items():
+                name = member['name'] or f'车友{uid[-4:]}'
+                waited = max(0, int(now - member['joined_at']))
+                members.append(f'{avatar(scope[1], uid)} {input_text("@" + name + " ", name)} '
+                               f'{waited // 60}:{waited % 60:02}')
+            sections.append(title + f'\n> 自动清理：{cleanup} ｜ 广播间隔：4分钟\n\n'
+                            + '　'.join(members or ['暂无成员']))
+        if not room['cars']:
+            sections.append('当前没有队伍喵。')
+        await self.emit(scope, room, '\n\n'.join(sections), keyboard())
 
     async def execute(self, scope, action, raw, uid, name, msg_id):
         async with self.lock(scope):
@@ -255,6 +331,7 @@ class WaitingQueues:
             if key not in self.state['rooms']:
                 with self.edit():
                     self.state['rooms'][key] = {'scope': list(scope), 'cars': [], 'next_number': 1,
+                                               'number_day': day_key(self.clock()), 'next_refresh': self.clock() + REFRESH,
                                                'bindings': {}, 'seen': [], 'outbox': []}
             room = self.room(scope)
             if msg_id and msg_id in room['seen']:
@@ -263,6 +340,12 @@ class WaitingQueues:
                 if msg_id:
                     room.update(reply_id=msg_id, reply_at=self.clock(), reply_seq=0)
                     room['seen'] = (room['seen'] + [msg_id])[-200:]
+                if day_key(self.clock()) != room['number_day']:
+                    room['number_day'], room['next_number'] = day_key(self.clock()), 1
+                if name:
+                    for car in room['cars']:
+                        if uid in car['members']:
+                            car['members'][uid]['name'] = name
             self.expire(room, self.clock())
             await self.flush(scope, room, force=True)
             try:
@@ -280,87 +363,82 @@ class WaitingQueues:
                         return
                     with self.edit():
                         room['bindings'][uid] = binding
-                    await self.emit(scope, room, f'账号已关联「{safe(query)}」啦喵。' if binding.get('linked')
-                                    else f'等车战绩设为「{safe(query)}」啦喵。')
+                    await self.emit(scope, room, f'账号已关联「{safe(query)}」啦喵。')
                     return
-                selected = None
                 with self.edit():
                     if action in ('等车', '蹲车', '再开一车'):
                         if args:
-                            raise ValueError('用 /友谊等车 查看，或 /再开一车 新增队列喵。')
+                            raise ValueError('用 /友谊等车 查看，或 /再开一车 新增队伍喵。')
                         if action == '再开一车' or not room['cars']:
                             own = any(uid in q['members'] for q in room['cars'])
                             now = self.clock()
                             car = dict(id=f'C{room["next_number"]}_' + uuid4().hex[:8].upper(), number=room['next_number'],
-                                       members={} if own else {uid: dict(name=name, joined_at=now)},
-                                       ready=False, deadline=now + GATHER_TIMEOUT, next_refresh=now + REFRESH)
+                                       day=day_key(now), owner=uid, members={} if own else {uid: dict(name=name, joined_at=now)},
+                                       ready=False, deadline=now + GATHER_TIMEOUT)
+                            if not room['cars']:
+                                room['next_refresh'] = now + REFRESH
                             room['next_number'] += 1
                             room['cars'].append(car)
-                            selected = [car['id']]
-                    elif action in ('我也要等车', '跑路了再见'):
+                    elif action in ('我也要等车', '跑路了再见', '解散队伍'):
                         if len(args) > 1:
                             raise ValueError('只需指定一个车号喵。')
-                        car = self.select(room, args[0] if args else None, uid)
+                        car = self.select(room, args[0] if args else None, uid, joining=action == '我也要等车')
                         if action == '我也要等车':
                             if any(uid in q['members'] and q['id'] != car['id'] for q in room['cars']):
-                                raise ValueError('你已经在另一辆车里了喵，请先离队。')
+                                raise ValueError('你已经在另一队了喵，请先离队。')
                             if uid not in car['members']:
-                                previous_members = list(car['members'])
-                                now = self.clock()
-                                car['members'][uid] = dict(name=name, joined_at=now)
-                                self.update_timer(car, now, reset=True)
-                                if previous_members:
-                                    self.notify(room, f'{safe(name or "新车友")}加入了{car["number"]}号车，'
-                                                '自动清理计时已重置喵。', previous_members)
-                        else:
+                                previous_members = dict(car['members'])
+                                car['members'][uid] = dict(name=name, joined_at=self.clock())
+                                if self.update_timer(car, self.clock()):
+                                    self.notify(room, f'{car["number"]}号车人齐啦，快去接友谊喵！', car['members'])
+                                elif previous_members:
+                                    self.notify(room, f'{safe(name or "新车友")}加入了{car["number"]}号车喵。', previous_members)
+                        elif action == '跑路了再见':
                             if uid not in car['members']:
-                                raise ValueError('你没有在这辆车里喵。')
-                            del car['members'][uid]
+                                raise ValueError('你没有在这队里喵。')
+                            leaving = car['members'].pop(uid)
+                            self.notify(room, f'{safe(leaving["name"] or "一位车友")}离开了{car["number"]}号车喵。', car['members'])
                             if not car['members']:
                                 room['cars'].remove(car)
-                            else:
-                                self.update_timer(car, self.clock())
-                        selected = [car['id']]
+                        else:
+                            if uid not in car['members'] and not (not car['members'] and car.get('owner') == uid):
+                                raise ValueError('只有本车成员可以解散队伍喵。')
+                            room['cars'].remove(car)
+                            self.notify(room, f'{car["number"]}号车已解散喵。', car['members'])
                     elif action == '人齐了发车':
                         if len(args) not in (1, 2) or not re.fullmatch(r'[1-9][0-9]{4,11}', args[-1]):
-                            raise ValueError('用法喵：/人齐了发车 [车号] 群号')
+                            raise ValueError('用法喵：/发送群号 群号')
                         car = self.select(room, args[0] if len(args) == 2 else None, uid)
                         if uid not in car['members']:
-                            raise ValueError('只有本车成员可以发车喵。')
+                            raise ValueError('只有本车成员可以发送群号喵。')
                         if len(car['members']) < 3:
-                            raise ValueError('至少凑满3人才能发车喵。')
+                            raise ValueError('至少凑满3人才能发送群号喵。')
                         room['cars'].remove(car)
-                        self.notify(room, f'{car["number"]}号车发车啦！群号：{args[-1]}\n'
-                                    f'发车者：{safe(car["members"][uid]["name"] or "本车成员")}，快来集合喵～',
-                                    [user for user in car['members'] if user != uid])
-                        selected = []
+                        others = {user: member for user, member in car['members'].items() if user != uid}
+                        self.notify(room, f'{car["number"]}号车发车啦！群号：{input_text(args[-1], args[-1])}\n'
+                                    f'发车者：{safe(name or "本车成员")}，快来集合喵～', others)
                     else:
                         raise ValueError('请用 /友谊等车帮助 查看指令喵。')
-                # 异常时对应群会还原；发送前重新取当前 room。
                 room = self.room(scope)
                 await self.flush(scope, room)
-                cars = room['cars'] if selected is None else [q for q in room['cars'] if q['id'] in selected]
-                for car in cars:
-                    await self.panel(scope, room, car)
-                if not cars and action == '跑路了再见':
-                    await self.emit(scope, room, '已离队，本车已解散喵。')
+                await self.panel(scope, room)
             except ValueError as exc:
                 await self.emit(scope, self.room(scope), str(exc))
 
     async def tick(self):
-        # 不让一个群的网络等待延迟其他群的解散时刻。
         async def tick_room(scope):
             async with self.lock(scope):
                 room = self.room(scope)
+                before = len(room['cars'])
                 self.expire(room, self.clock())
                 await self.flush(scope, room)
-                for car in list(room['cars']):
-                    if car['next_refresh'] > self.clock():
-                        continue
-                    with self.edit():
-                        car['next_refresh'] = self.clock() + REFRESH
+                due = room['next_refresh'] <= self.clock()
+                if room['cars'] and (due or len(room['cars']) != before):
+                    if due:
+                        with self.edit():
+                            room['next_refresh'] = self.clock() + REFRESH
                     try:
-                        await self.panel(scope, room, car)
+                        await self.panel(scope, room)
                     except Exception:
                         if self.log:
                             self.log.exception('QQ 官方等车面板刷新失败')
