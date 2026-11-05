@@ -2663,3 +2663,33 @@ def test_official_waiting_uses_group_card_before_qq_nickname(official_waiting, h
         assert 'QQ昵称' not in text
     obj.db.get_group_home.assert_not_awaited()
     obj.db.get_official_identity.assert_not_awaited()
+
+
+@pytest.mark.parametrize('template', ['', 'approved-template'])
+def test_waiting_group_number_uses_plain_api_payload_even_when_template_configured(official_waiting, template):
+    obj, _, api, _ = official_waiting
+    obj.config['official_queue_markdown_template_id'] = template
+    asyncio.run(obj._send_waiting_message(('platform-A', 'app-A', 'group-openid'), '123456789', None,
+                                         {'msg_id': 'incoming', 'msg_seq': 2}, plain=True))
+    assert api.post_group_message.await_args.kwargs == dict(
+        group_openid='group-openid', msg_type=0, content='123456789', msg_id='incoming', msg_seq=2)
+
+
+def test_official_departure_posts_real_mentions_then_plain_group_number(official_waiting):
+    obj, ev, api, _ = official_waiting
+    async def scenario():
+        for i, (uid, text) in enumerate([('u1', '/友谊等车'), ('u2', '/进队等车'),
+                                         ('u3', '/进队等车'), ('u1', '/发送群号 123456789')]):
+            ev.get_sender_id = lambda: uid
+            ev.get_message_str = lambda: text
+            ev.message_obj.message_id = str(i)
+            await obj.official_queue_cmd(ev)
+        calls = api.post_group_message.await_args_list
+        numbers = [i for i, c in enumerate(calls) if c.kwargs['msg_type'] == 0]
+        assert len(numbers) == 1
+        number = calls[numbers[0]].kwargs
+        assert number['content'] == '123456789' and 'markdown' not in number and 'keyboard' not in number
+        notice = calls[numbers[0] - 1].kwargs['markdown']['content']
+        assert '发车啦' in notice and '123456789' not in notice
+        assert '<qqbot-at-user id="u2" />' in notice and '<qqbot-at-user id="u3" />' in notice
+    asyncio.run(scenario())

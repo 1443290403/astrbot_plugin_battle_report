@@ -197,7 +197,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -290,7 +290,7 @@ class BattleReportPlugin(Star):
                 logger.exception("QQ 官方等车定时处理失败")
             await asyncio.sleep(15)
 
-    async def _send_waiting_message(self, scope, text, keyboard, reply):
+    async def _send_waiting_message(self, scope, text, keyboard, reply, *, plain=False):
         platform_id, appid, group_id = scope
         platform = self.context.get_platform_inst(platform_id)
         if (platform is None or platform.meta().name not in QUEUE_PLATFORMS
@@ -298,13 +298,16 @@ class BattleReportPlugin(Star):
             raise RuntimeError("原 QQ 官方机器人连接不可用")
         if self._check_db() or await self.db.get_group_ban(group_id):
             raise RuntimeError("本群等车推送暂不可用")
-        template = str(self.config.get("official_queue_markdown_template_id", "") or "").strip()
-        markdown = ({"custom_template_id": template, "params": [
-            {"key": str(self.config.get("official_queue_markdown_param", "content") or "content"),
-             "values": [text]}]} if template else {"content": text})
-        params = dict(msg_type=2, markdown=markdown, **reply)
-        if keyboard:
-            params["keyboard"] = keyboard
+        if plain:
+            params = dict(msg_type=0, content=text, **reply)
+        else:
+            template = str(self.config.get("official_queue_markdown_template_id", "") or "").strip()
+            markdown = ({"custom_template_id": template, "params": [
+                {"key": str(self.config.get("official_queue_markdown_param", "content") or "content"),
+                 "values": [text]}]} if template else {"content": text})
+            params = dict(msg_type=2, markdown=markdown, **reply)
+            if keyboard:
+                params["keyboard"] = keyboard
         result = await asyncio.wait_for(platform.client.api.post_group_message(
             group_openid=group_id, **params), timeout=20)
         if not isinstance(result, dict) or not result.get("id"):

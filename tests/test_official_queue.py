@@ -35,10 +35,11 @@ def test_shared_keyboard_has_three_buttons_per_row_and_no_car_required_for_own_a
     rows = send.await_args.args[2]['content']['rows']
     assert [len(r['buttons']) for r in rows] == [3, 3]
     buttons = [b for r in rows for b in r['buttons']]
-    assert [b['render_data']['label'] for b in buttons] == ['进队等车', '跑路了再见', '发送群号', '再开一车', '解散队伍', '友谊等车帮助']
+    assert [b['render_data']['label'] for b in buttons] == ['进队等车', '跑路了再见', '发送群号', '再开一车', '解散队伍', '等车帮助']
     assert buttons[1]['action']['data'] == '/离队'
     assert buttons[2]['action']['data'] == '/发送群号 ' and buttons[2]['action']['enter'] is False
     assert buttons[4]['action']['data'] == '/解散'
+    assert buttons[5]['action']['data'] == '/等车帮助'
     assert all(b['action']['type'] == 2 and b['action']['permission']['type'] == 2 for b in buttons)
 
 
@@ -196,7 +197,7 @@ def test_dissolve_requires_membership_and_notifies_every_member(setup_queue):
     asyncio.run(scenario())
 
 
-def test_send_group_number_uses_click_to_fill_link_and_mentions_others_only(setup_queue):
+def test_send_group_number_is_a_separate_plain_digit_message_and_mentions_others_only(setup_queue):
     service, _, send, act = setup_queue
     async def scenario():
         await act()
@@ -204,7 +205,10 @@ def test_send_group_number_uses_click_to_fill_link_and_mentions_others_only(setu
             await act('我也要等车', uid=u)
         await act('人齐了发车', '123456789')
         notice = texts(send, '发车啦')[-1]
-        assert '<qqbot-cmd-input text="123456789" show="123456789"' in notice
+        assert '123456789' not in notice
+        number_calls = [c for c in send.await_args_list if c.kwargs.get('plain')]
+        assert len(number_calls) == 1 and number_calls[0].args[1] == '123456789'
+        assert number_calls[0].args[2] is None
         assert queue.mention('u1') not in notice
         assert queue.mention('u2') in notice and queue.mention('u3') in notice
         assert not service.room(SCOPE)['cars']
@@ -421,6 +425,7 @@ def test_corrupt_store_is_not_overwritten(tmp_path):
     ('/解散队伍', ('解散队伍', '')), ('/友谊等车', ('等车', '')), ('等车', ('等车', '')),
     ('/我也要等车 C1_old', ('我也要等车', 'C1_old')), ('/人齐了发车 123456789', ('人齐了发车', '123456789')),
     ('/帮助 友谊等车', ('等车帮助', '')), ('/等车帮助', ('等车帮助', '')),
+    ('/友谊等车帮助', ('等车帮助', '')),
     ('/友谊等车天气', None), ('普通聊天', None), ('/帮助 等车 其他', None)])
 def test_command_filter_is_strict_and_old_aliases_work(text, expected):
     assert queue.parse_command(text) == expected
@@ -524,3 +529,95 @@ def test_unjoined_operations_cannot_fall_back_to_other_users_only_car(setup_queu
         assert service.room(SCOPE)['cars'] == before
         assert '还没有加入队伍' in texts(send)[-1]
     asyncio.run(scenario())
+
+
+def test_number_failure_retries_only_plain_number_after_restart_without_mentioning_again(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        for uid in ['u2', 'u3']:
+            await act('我也要等车', uid=uid)
+        send.reset_mock()
+        async def fail_number(scope, text, buttons, reply, *, plain=False):
+            if plain:
+                raise OSError('number send failed')
+            return {'id': 'sent'}
+        send.side_effect = fail_number
+        await act('人齐了发车', '123456789')
+        pending = service.room(SCOPE)['outbox']
+        assert len(pending) == 1 and pending[0]['format'] == 'text'
+        assert pending[0]['text'] == '123456789' and not pending[0]['users']
+        restored = queue.WaitingQueues(service.path, send, None, None, clock=lambda: clock[0])
+        send.side_effect = None
+        before = send.await_count
+        clock[0] = 239
+        await restored.tick()
+        assert send.await_count == before
+        clock[0] = 240
+        await restored.tick()
+        assert not restored.room(SCOPE)['outbox']
+        assert len(texts(send, '发车啦')) == 1
+        assert send.await_args.kwargs == {'plain': True} and send.await_args.args[1] == '123456789'
+    asyncio.run(scenario())
+
+
+def test_number_waits_for_departure_notice_confirmation_before_sending(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        for uid in ['u2', 'u3']:
+            await act('我也要等车', uid=uid)
+        send.reset_mock()
+        async def fail_notice(scope, text, buttons, reply, *, plain=False):
+            if '发车啦' in text:
+                raise OSError('notice send failed')
+            return {'id': 'sent'}
+        send.side_effect = fail_notice
+        await act('人齐了发车', '123456789')
+        pending = service.room(SCOPE)['outbox']
+        assert len(pending) == 2 and pending[1]['after'] == pending[0]['id']
+        assert not any(c.kwargs.get('plain') for c in send.await_args_list)
+        restored = queue.WaitingQueues(service.path, send, None, None, clock=lambda: clock[0])
+        send.side_effect = None
+        before = send.await_count
+        clock[0] = 240
+        await restored.tick()
+        retry = send.await_args_list[before:]
+        assert len(retry) == 2 and '发车啦' in retry[0].args[1]
+        assert retry[1].args[1] == '123456789' and retry[1].kwargs == {'plain': True}
+        assert not restored.room(SCOPE)['outbox']
+    asyncio.run(scenario())
+
+
+def test_upgrade_converts_only_pending_legacy_group_number_link_and_is_replayable(setup_queue):
+    service, _, send, act = setup_queue
+    asyncio.run(act())
+    room = service.room(SCOPE)
+    room['cars'] = []
+    room['outbox'] = [dict(id='legacy', users=['u2'], names={'u2': '萌新'}, retry_at=100,
+                          text='1号车发车啦！群号：' + queue.input_text('123456789', '123456789') + '\n发车者：云玩家，快来集合喵～')]
+    service.path.write_text(json.dumps(service.state, ensure_ascii=False))
+    restored = queue.WaitingQueues(service.path, send, None, None, clock=lambda: 0)
+    pending = restored.room(SCOPE)['outbox']
+    assert len(pending) == 2 and pending[0]['id'] == 'legacy'
+    assert pending[0]['users'] == ['u2'] and 'qqbot-cmd-input' not in pending[0]['text']
+    assert pending[1]['format'] == 'text' and pending[1]['after'] == 'legacy'
+    assert pending[1]['text'] == '123456789' and pending[1]['retry_at'] == 100
+    again = queue.WaitingQueues(service.path, send, None, None, clock=lambda: 0)
+    assert again.room(SCOPE)['outbox'] == pending
+
+
+def test_legacy_number_conversion_write_failure_preserves_original_pending_record(setup_queue, monkeypatch):
+    service, _, send, act = setup_queue
+    asyncio.run(act())
+    room = service.room(SCOPE)
+    room['outbox'] = [dict(id='legacy', users=['u2'], retry_at=0,
+                          text='1号车发车啦！群号：' + queue.input_text('123456789', '123456789') + '\n发车者：云玩家')]
+    original = json.dumps(service.state, ensure_ascii=False)
+    service.path.write_text(original)
+    def fail_replace(*args):
+        raise OSError('disk full')
+    monkeypatch.setattr(queue.os, 'replace', fail_replace)
+    with pytest.raises(OSError, match='disk full'):
+        queue.WaitingQueues(service.path, send, None, None, clock=lambda: 0)
+    assert service.path.read_text() == original

@@ -24,6 +24,9 @@ GATHER_TIMEOUT = READY_TIMEOUT = 600
 PLATFORMS = {'qq_official', 'qq_official_webhook'}
 COMMANDS = ('友谊等车帮助', '友谊等车', '进队等车', '发送群号', '解散队伍', '离队', '解散', '人齐了发车', '跑路了再见',
             '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
+_LEGACY_GROUP_NUMBER_RE = re.compile(
+    r'^(?P<heading>[0-9]+号车发车啦！)群号：<qqbot-cmd-input text="(?P<number>[1-9][0-9]{4,11})" '
+    r'show="(?P=number)" reference="false" />\n')
 HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n/再开一车：新增队伍\n'
         '/进队等车 [车号]：加入\n/离队：退出当前队伍\n'
         '/发送群号 群号：通知同车成员并结束该车\n/解散：解散当前队伍\n'
@@ -97,7 +100,7 @@ def keyboard(car=None):
                ('go', '发送群号', '/发送群号 ', False),
                ('new', '再开一车', '/再开一车', True),
                ('dissolve', '解散队伍', '/解散', True),
-               ('help', '友谊等车帮助', '/友谊等车帮助', True)]
+               ('help', '等车帮助', '/等车帮助', True)]
     buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
                 'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
                            'enter': enter, 'reply': True, 'unsupport_tips': '请发送对应文字指令'}}
@@ -157,6 +160,13 @@ class WaitingQueues:
                     if ('names' in notice and (not isinstance(notice['names'], dict)
                             or any(not isinstance(name, str) for name in notice['names'].values()))):
                         raise ValueError('等车通知昵称格式错误')
+                    if (notice.get('format', 'markdown') not in ('markdown', 'text')
+                            or ('after' in notice and (not isinstance(notice['after'], str)
+                                                       or notice['after'] == notice['id']))):
+                        raise ValueError('等车通知发送格式错误')
+                    if (notice.get('format') == 'text'
+                            and (notice['users'] or not re.fullmatch(r'[1-9][0-9]{4,11}', notice['text']))):
+                        raise ValueError('等车群号通知格式错误')
                 if state['version'] == 2:
                     if (not isinstance(room.get('next_refresh'), (int, float))
                             or not math.isfinite(room['next_refresh'])
@@ -179,6 +189,21 @@ class WaitingQueues:
                             car.pop('next_refresh', None)
                         room['next_number'] = max([c['number'] for c in room['cars'] if c['day'] == room['number_day']] or [0]) + 1
                     state['version'] = 2
+            if any(_LEGACY_GROUP_NUMBER_RE.match(n['text']) for r in state['rooms'].values()
+                   for n in r['outbox']):
+                # 升级前尚未发出的群号也要去掉“填入指令”链接，不能补发旧格式。
+                with self.edit():
+                    for room in state['rooms'].values():
+                        pending = []
+                        for notice in room['outbox']:
+                            pending.append(notice)
+                            match = _LEGACY_GROUP_NUMBER_RE.match(notice['text'])
+                            if match:
+                                notice['text'] = match['heading'] + '\n' + notice['text'][match.end():]
+                                pending.append({'id': uuid4().hex, 'text': match['number'], 'users': [],
+                                                'names': {}, 'retry_at': notice['retry_at'],
+                                                'format': 'text', 'after': notice['id']})
+                        room['outbox'] = pending
 
 
     @staticmethod
@@ -222,11 +247,16 @@ class WaitingQueues:
         return self.state['rooms'][self.key(scope)]
 
     @staticmethod
-    def notify(room, text, users):
-        room['outbox'].append({'id': uuid4().hex, 'text': text,
-                               'users': list(users), 'retry_at': 0,
-                               'names': {uid: (member['name'] or f'车友{uid[-4:]}')
-                                         for uid, member in users.items()} if isinstance(users, dict) else {}})
+    def notify(room, text, users, *, plain=False, after=None):
+        notice = {'id': uuid4().hex, 'text': text,
+                  'users': list(users), 'retry_at': 0,
+                  'format': 'text' if plain else 'markdown',
+                  'names': {uid: (member['name'] or f'车友{uid[-4:]}')
+                            for uid, member in users.items()} if isinstance(users, dict) else {}}
+        if after is not None:
+            notice['after'] = after
+        room['outbox'].append(notice)
+        return notice['id']
 
     def expire(self, room, now):
         expired = [car for car in room['cars'] if now >= car['deadline']]
@@ -269,7 +299,7 @@ class WaitingQueues:
         return f'车友{uid[-4:]}'
 
 
-    async def emit(self, scope, room, text, buttons=None):
+    async def emit(self, scope, room, text, buttons=None, *, plain=False):
         now = self.clock()
         reply = {}
         passive = room.get('reply_id') and now - room['reply_at'] < 290 and room['reply_seq'] < 4
@@ -280,22 +310,26 @@ class WaitingQueues:
                 room['reply_seq'] += 1
                 reply = {'msg_id': room['reply_id'], 'msg_seq': room['reply_seq']}
         # 不在模块内重试单次接口请求；已持久化提醒失败后留在 outbox。
-        result = await self.send(scope, text, buttons, reply)
+        result = (await self.send(scope, text, buttons, reply, plain=True) if plain
+                  else await self.send(scope, text, buttons, reply))
         if result is None or (isinstance(result, dict) and (result.get('code', 0) != 0
                                or result.get('retcode', 0) != 0 or result.get('status') == 'failed')):
             raise RuntimeError('QQ 官方消息发送未确认')
 
     async def flush(self, scope, room, force=False):
         for notice in list(room['outbox']):
+            if any(n['id'] == notice.get('after') for n in room['outbox']):
+                continue
             if not force and notice['retry_at'] > self.clock():
                 continue
+            plain = notice.get('format') == 'text'
             names = notice.get('names', {})
             labels = ' '.join(mention(uid) + input_text('@' + names.get(uid, self.display_name(room, uid)) + ' ',
                                                        names.get(uid, self.display_name(room, uid)))
                               for uid in notice['users'])
             text = (labels + '\n' if labels else '') + notice['text']
             try:
-                await self.emit(scope, room, text)
+                await self.emit(scope, room, text, plain=plain)
             except Exception:
                 with self.edit():
                     for live in room['outbox']:
@@ -417,10 +451,11 @@ class WaitingQueues:
                             raise ValueError('至少凑满3人才能发送群号喵。')
                         room['cars'].remove(car)
                         others = {user: member for user, member in car['members'].items() if user != uid}
-                        self.notify(room, f'{car["number"]}号车发车啦！群号：{input_text(args[-1], args[-1])}\n'
+                        notice_id = self.notify(room, f'{car["number"]}号车发车啦！\n'
                                     f'发车者：{safe(name or "本车成员")}，快来集合喵～', others)
+                        self.notify(room, args[-1], [], plain=True, after=notice_id)
                     else:
-                        raise ValueError('请用 /友谊等车帮助 查看指令喵。')
+                        raise ValueError('请用 /等车帮助 查看指令喵。')
                 room = self.room(scope)
                 await self.flush(scope, room)
                 await self.panel(scope, room)
