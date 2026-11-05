@@ -56,8 +56,8 @@ def test_all_cars_in_one_compact_panel_members_on_one_logical_line_without_stats
         assert any(line.count('![头像 #32px #32px]') == 2 for line in lines)
         assert all('广播间隔：4分钟' in line for line in lines if '自动清理：' in line)
         assert 'https://q.qlogo.cn/qqapp/app-a/u1/100' in text
-        assert text.count(queue.mention('u1')) == 1
-        assert '群名片u1' not in text and 'qqbot-cmd-input' in text
+        assert 'qqbot-at-user' not in text
+        assert 'text="@群名片u1 " show="群名片u1"' in text
         service.profile.assert_not_awaited()
     asyncio.run(scenario())
 
@@ -640,7 +640,7 @@ def test_old_notice_name_snapshots_cannot_duplicate_or_override_native_group_nam
     asyncio.run(scenario())
 
 
-def test_all_new_panels_and_notifications_leave_member_name_rendering_to_qq(setup_queue):
+def test_panels_only_fill_names_but_notifications_keep_native_mentions(setup_queue):
     service, _, send, _ = setup_queue
     async def scenario():
         for i, (action, uid, raw) in enumerate([
@@ -649,10 +649,11 @@ def test_all_new_panels_and_notifications_leave_member_name_rendering_to_qq(setu
         ]):
             await service.execute(SCOPE, action, raw, uid, '缓存QQ昵称' + uid, str(i))
         for text in texts(send):
-            assert '缓存QQ昵称' not in text
-            assert 'text="@' not in text
             if '![头像' in text:
-                assert 'qqbot-at-user' in text
+                assert 'qqbot-at-user' not in text
+                assert 'text="@缓存QQ昵称' in text and 'show="@' not in text
+            else:
+                assert '缓存QQ昵称' not in text and 'text="@' not in text
         assert len(texts(send, '快去接友谊')) == 1
         assert len([c for c in send.await_args_list if c.kwargs.get('plain') and c.args[1] == '123456789']) == 1
     asyncio.run(scenario())

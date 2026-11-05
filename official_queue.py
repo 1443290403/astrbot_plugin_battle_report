@@ -342,8 +342,9 @@ class WaitingQueues:
             title = f'**{label} · {len(car["members"])}人** ' + input_text('/进队等车 ' + car['id'], '进队等车')
             members = []
             for uid, member in car['members'].items():
+                name = member['name'] or f'车友{uid[-4:]}'
                 waited = max(0, int(now - member['joined_at']))
-                members.append(f'{avatar(scope[1], uid)} {mention(uid)} '
+                members.append(f'{avatar(scope[1], uid)} {input_text("@" + name + " ", name)} '
                                f'{waited // 60}:{waited % 60:02}')
             sections.append(title + f'\n> 自动清理：{cleanup} ｜ 广播间隔：4分钟\n\n'
                             + '　'.join(members or ['暂无成员']))
