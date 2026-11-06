@@ -79,6 +79,7 @@ def plugin_module(monkeypatch):
 
 
 def event(text='', group='100', admin=False, messages=None):
+    extras = {}
     return SimpleNamespace(
         get_group_id=lambda: group,
         get_message_str=lambda: text,
@@ -93,6 +94,9 @@ def event(text='', group='100', admin=False, messages=None):
         send=AsyncMock(),
         stop_event=Mock(),
         clear_result=Mock(),
+        get_extra=lambda key, default=None: extras.get(key, default),
+        set_extra=lambda key, value: extras.__setitem__(key, value),
+        should_call_llm=Mock(),
         is_at_or_wake_command=True,
     )
 
@@ -2248,6 +2252,83 @@ def test_official_bot_silently_ignores_every_non_queue_message(official_waiting,
     obj._get_waiting_queues.assert_not_called()
     obj.db.get_group_ban.assert_not_awaited()
     assert not list(obj.data_dir.iterdir())
+
+
+@pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])
+@pytest.mark.parametrize('text', ['/登录Q音', '/查歌词 示例歌曲', '/点歌 示例歌曲', '1', '普通聊天', '/帮助'])
+def test_official_router_preserves_other_plugins_and_excludes_own_handlers(
+        official_waiting, plugin_module, platform_name, text):
+    obj, ev, api, _ = official_waiting
+    ev.get_platform_name = lambda: platform_name
+    ev.get_message_str = lambda: text
+    obj.config['official_queue_enabled'] = False
+    obj.db_ready = False
+    obj._get_waiting_queues = Mock(side_effect=AssertionError('not a queue command'))
+
+    gate = SimpleNamespace(handler_module_path=plugin_module.__name__,
+                           handler_name='official_queue_cmd', handler=obj.official_queue_cmd)
+    own = SimpleNamespace(handler_module_path=plugin_module.__name__,
+                          handler_name='ranking', handler=obj.ranking)
+    foreign = [SimpleNamespace(handler_module_path='data.plugins.astrbot_plugin_music.main',
+                               handler_name=name, handler=AsyncMock())
+               for name in ('music_route', 'music_reply')]
+    handlers = [gate, own, foreign[0], foreign[1]]
+    params = {'music_route': {'song': '示例歌曲'}}
+    ev.set_extra('activated_handlers', handlers)
+    ev.set_extra('handlers_parsed_params', params)
+
+    asyncio.run(obj.official_queue_cmd(ev))
+
+    assert ev.get_extra('activated_handlers') is handlers
+    assert handlers == [gate, *foreign]
+    assert ev.get_extra('handlers_parsed_params') is params
+    ev.should_call_llm.assert_called_once_with(True)
+    ev.stop_event.assert_not_called()
+    ev.clear_result.assert_not_called()
+    ev.send.assert_not_awaited()
+    api.post_group_message.assert_not_awaited()
+    obj.db.get_group_ban.assert_not_awaited()
+    obj._get_waiting_queues.assert_not_called()
+    for handler in foreign:
+        handler.handler.assert_not_awaited()
+
+
+@pytest.mark.parametrize('bound', [False, True])
+def test_official_router_with_only_own_handlers_still_stops_silently(
+        official_waiting, plugin_module, bound):
+    obj, ev, api, _ = official_waiting
+    ev.get_message_str = lambda: '/排行'
+    gate = SimpleNamespace(handler_module_path=plugin_module.__name__,
+                           handler_name='official_queue_cmd', handler=obj.official_queue_cmd)
+    own = SimpleNamespace(handler_module_path=plugin_module.__name__ if not bound else 'loader_alias',
+                          handler_name='ranking', handler=obj.ranking if bound else type(obj).ranking)
+    handlers = [gate, own]
+    ev.set_extra('activated_handlers', handlers)
+    asyncio.run(obj.official_queue_cmd(ev))
+    assert handlers == [gate]
+    ev.should_call_llm.assert_called_once_with(True)
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+    ev.send.assert_not_awaited()
+    api.post_group_message.assert_not_awaited()
+    obj.db.get_group_ban.assert_not_awaited()
+
+
+@pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])
+def test_official_queue_keeps_exclusive_routing_with_foreign_listeners(official_waiting, platform_name):
+    obj, ev, api, _ = official_waiting
+    ev.get_platform_name = lambda: platform_name
+    foreign = SimpleNamespace(handler_module_path='data.plugins.astrbot_plugin_music.main',
+                              handler_name='music_route', handler=AsyncMock())
+    handlers = [foreign]
+    ev.set_extra('activated_handlers', handlers)
+    asyncio.run(obj.official_queue_cmd(ev))
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+    ev.should_call_llm.assert_not_called()
+    foreign.handler.assert_not_awaited()
+    api.post_group_message.assert_awaited_once()
+    assert ev.get_extra('activated_handlers') is handlers and handlers == [foreign]
 
 
 @pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])

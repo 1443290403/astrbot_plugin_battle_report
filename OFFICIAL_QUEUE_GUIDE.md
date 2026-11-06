@@ -1,6 +1,6 @@
 # QQ 官方机器人友谊等车使用说明
 
-适用版本：v1.26.4。仅 `qq_official` / `qq_official_webhook` 的 QQ 群聊执行等车功能。其他命令和聊天静默忽略；SnowLuma 继续处理原有战报、账号管理和聊天，等车指令在 SnowLuma 下静默忽略。
+适用版本：v1.26.5。仅 `qq_official` / `qq_official_webhook` 的 QQ 群聊执行等车功能。本插件的其他功能保持静默，音乐等其他插件继续处理自己的命令；普通聊天不触发 AstrBot 默认 AI 回复。SnowLuma 继续处理原有战报、账号管理和聊天，等车指令在 SnowLuma 下静默忽略。
 
 ## 开始使用
 

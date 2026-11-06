@@ -93,7 +93,7 @@ class OfficialQueueFilter(CustomFilter):
         if not callable(name):
             return False
         platform = name()
-        # 官方平台统一在此分流：只有等车指令可执行，其余静默终止。
+        # 官方平台统一在此分流：本插件只开放等车，不拦其他插件。
         # OneBot 仅拦截等车指令，原战报与聊天流程继续使用。
         return platform in QUEUE_PLATFORMS or bool(
             platform == 'aiocqhttp' and parse_queue_command(event.get_message_str() or ''))
@@ -197,7 +197,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.4")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.5")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -364,11 +364,30 @@ class BattleReportPlugin(Star):
     @filter.custom_filter(OfficialQueueFilter, priority=10000)
     async def official_queue_cmd(self, event: AstrMessageEvent):
         """等车、加入、离开、发车和新增队列；仅 QQ 官方群聊。"""
+        command = parse_queue_command(event.get_message_str() or '')
+        if event.get_platform_name() in QUEUE_PLATFORMS and command is None:
+            # AstrBot 的 call_llm 标志表示“禁止默认 LLM”，True 才禁用。
+            event.should_call_llm(True)
+            handlers = event.get_extra('activated_handlers')
+            if isinstance(handlers, list):
+                def belongs_here(handler):
+                    return (getattr(handler, 'handler_module_path', None) == __name__
+                            or getattr(getattr(handler, 'handler', None), '__self__', None) is self)
+
+                # StarRequestSubStage 已持有此列表，必须原地过滤。保留当前入口，
+                # 避免遍历下标移动而跳过下一个第三方处理器；不碰其参数与优先级。
+                handlers[:] = [handler for handler in handlers
+                               if not belongs_here(handler)
+                               or getattr(handler, 'handler_name', '') == 'official_queue_cmd']
+                if any(not belongs_here(handler) for handler in handlers):
+                    return
+            event.stop_event()
+            event.clear_result()
+            return
         event.stop_event()
         try:
             if event.get_platform_name() not in QUEUE_PLATFORMS:
                 return
-            command = parse_queue_command(event.get_message_str() or '')
             if command is None:
                 return
             if not self.config.get("official_queue_enabled", True):
