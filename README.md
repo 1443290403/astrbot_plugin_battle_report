@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.27.1
+最新版本：v1.27.2
 
-- 文件：astrbot_plugin_battle_report-1.27.1.zip
-- 源码提交：c87b46ee077af89ffdb26a78b0aa404c6f45d2d0
+- 文件：astrbot_plugin_battle_report-1.27.2.zip
+- 源码提交：550842687cd23a9a346ab9fddeb1a9fbd4989bf4
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：60885678ed5e8b3db108be77703ba5d8ab2389ac0e17f0aead7883039251895e
+- SHA256：b1cc6cd84a32877edd5cab279bba2738bef53d257468277eb69acc25aef6a86a
 
 旧版本安装包保留，按文件名选择。
 
@@ -123,3 +123,10 @@ v1.27.1：新增“呼叫全体”按钮和同名命令，原生@全体摇人友
 
 - [v1.27.1 友谊等车使用说明](OFFICIAL_QUEUE_GUIDE-1.27.1.md)
 - [v1.27.1 平台指令配置指南](PLATFORM_COMMAND_GUIDE-1.27.1.md)
+
+## 呼叫全体显示完整等车面板
+
+v1.27.2：修复呼叫全体消息只有按钮、没有车次的问题。摇人提醒复用完整面板，同条显示当前所有车次、成员头像、姓名、等待和清理时间及按钮；空房显示没有队伍，过期车不展示。30分钟共享冷却、普通广播不@全体、未知送达不补发规则保留。1259项测试通过、1项跳过，另通过真实v4.27.3分发的184项隔离场景。未登录真实QQ。
+
+- [v1.27.2 友谊等车使用说明](OFFICIAL_QUEUE_GUIDE-1.27.2.md)
+- [v1.27.2 平台指令配置指南](PLATFORM_COMMAND_GUIDE-1.27.2.md)
