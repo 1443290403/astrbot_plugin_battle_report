@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.28.0
+最新版本：v1.29.0
 
-- 文件：astrbot_plugin_battle_report-1.28.0.zip
-- 源码提交：d6584c3c5dff802e8892501340c141c121cfb4f2
+- 文件：astrbot_plugin_battle_report-1.29.0.zip
+- 源码提交：d848b0b0bde507df8b166493d2307b30f29875b4
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：095adae58301e658c21d7024360defebc577ba8869ca3b7d096e8ac759d08047
+- SHA256：31619812954629c79f13add21751bc62679c5851733470717084463c11bbeb28
 
 旧版本安装包保留，按文件名选择。
 
@@ -145,3 +145,11 @@ v1.28.0：AstrBot 4.27.3以上后台插件详情打开“战报核对”，按�
 - [v1.28.0 战报核对使用说明](REPORT_COMPARISON_GUIDE-1.28.0.md)
 - [v1.28.0 友谊等车使用说明](OFFICIAL_QUEUE_GUIDE-1.28.0.md)
 - [v1.28.0 平台指令配置指南](PLATFORM_COMMAND_GUIDE-1.28.0.md)
+
+## 云端归档、本地列表与 QQ 批量发送
+
+v1.29.0：后台“战报核对”新增本地上传/云端归档Tab，跨页勾选后可选择自定义QQ或目标战队指定管理员，通过SnowLuma/OneBot私聊合并转发。先预览确认，逐收件人/分包保存回执；成功和结果未知不自动重发，不改变人工已发送标记。schema21独立云端表以网站ID为唯一键，重复拉取更新，不进入本地战绩。1321项默认回归通过、5项跳过，隔离MySQL8.4的74项回归通过；真实v4.27.3 bridge/Web SDK浏览器验证和184项平台隔离检查通过。未发送真实QQ；开发网络未放行战报站，线上页面未实测。
+
+- [v1.29.0 战报核对与批量发送使用说明](REPORT_COMPARISON_GUIDE-1.29.0.md)
+- [v1.29.0 友谊等车使用说明](OFFICIAL_QUEUE_GUIDE-1.29.0.md)
+- [v1.29.0 平台指令配置指南](PLATFORM_COMMAND_GUIDE-1.29.0.md)
