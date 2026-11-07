@@ -442,9 +442,16 @@ def test_call_all_cooldown_is_shared_by_users_and_cars_without_changing_timers(s
         await act('再开一车', uid='u2')
         before = [(c['id'], c['deadline'], dict(c['members'])) for c in service.room(SCOPE)['cars']]
         clock[0] = 50
+        sent_before = send.await_count
         await act('呼叫全体')
         calls = texts(send, '<qqbot-at-everyone />')
         assert len(calls) == 1 and '友谊' in calls[0]
+        assert send.await_count == sent_before + 1
+        assert '**1号车 · 1人**' in calls[0] and '**2号车 · 1人**' in calls[0]
+        assert all(name in calls[0] for name in ('群名片u1', '群名片u2'))
+        assert calls[0].count('![头像 #32px #32px]') == 2
+        assert calls[0].count('0:50') == 2 and calls[0].count('自动清理：9分10秒') == 2
+        assert all(car['id'] in calls[0] for car in service.room(SCOPE)['cars'])
         assert 'qqbot-at-user' not in calls[0]
         await act('呼叫全体', uid='u2')
         assert len(texts(send, '<qqbot-at-everyone />')) == 1
@@ -455,6 +462,36 @@ def test_call_all_cooldown_is_shared_by_users_and_cars_without_changing_timers(s
         assert before == [(c['id'], c['deadline'], dict(c['members'])) for c in service.room(SCOPE)['cars']]
         assert service.room(SCOPE)['next_refresh'] == 240
         assert not service.room(SCOPE)['outbox']
+    asyncio.run(scenario())
+
+
+def test_call_all_empty_panel_does_not_create_a_car(setup_queue):
+    service, _, send, act = setup_queue
+    asyncio.run(act('呼叫全体'))
+    send.assert_awaited_once()
+    text = texts(send)[0]
+    assert text.count('<qqbot-at-everyone />') == 1
+    assert '**友谊等车**' in text and '当前没有队伍喵。' in text
+    assert not service.room(SCOPE)['cars']
+
+
+def test_call_all_panel_excludes_expired_cars_and_does_not_repeat_on_broadcast(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        clock[0] = 100
+        await act('再开一车', uid='u2')
+        clock[0] = 600
+        await act('呼叫全体', uid='u2')
+        text = texts(send, '<qqbot-at-everyone />')[0]
+        assert '1号车' not in text and '**2号车 · 1人**' in text
+        assert '群名片u1' not in text and '群名片u2' in text
+        clock[0] = 640
+        await service.tick()
+        assert '<qqbot-at-everyone' not in texts(send)[-1]
+        assert '**2号车 · 1人**' in texts(send)[-1]
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+        assert service.room(SCOPE)['call_all_until'] == 2400
     asyncio.run(scenario())
 
 

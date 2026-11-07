@@ -338,9 +338,9 @@ class WaitingQueues:
                 with self.edit():
                     room['outbox'] = [n for n in room['outbox'] if n['id'] != notice['id']]
 
-    async def panel(self, scope, room, car=None):
+    async def panel(self, scope, room, car=None, *, announcement=''):
         now = self.clock()
-        sections = ['**友谊等车**']
+        sections = ([announcement] if announcement else []) + ['**友谊等车**']
         for car in room['cars']:
             remaining = max(0, int(car['deadline'] - now))
             cleanup = f'{remaining // 60}分{remaining % 60:02}秒'
@@ -397,8 +397,8 @@ class WaitingQueues:
                     with self.edit():
                         room['call_all_until'] = self.clock() + CALL_ALL_COOLDOWN
                     try:
-                        await self.emit(scope, room, '<qqbot-at-everyone />\n'
-                                        '来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～', keyboard())
+                        await self.panel(scope, room, announcement='<qqbot-at-everyone />\n'
+                                         '来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～')
                     except Exception:
                         if self.log:
                             self.log.exception('QQ 官方等车呼叫全体发送未确认，保留冷却且不自动重试')

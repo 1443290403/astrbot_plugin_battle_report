@@ -238,3 +238,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 等车共享键盘新增第三行“呼叫全体”与同名命令，原生 qqbot-at-everyone 摇人友谊；平台目录和schema选项必须同步，OneBot静默。
 - 房间call_all_until可选字段、1800秒冷却；所有用户/车次共用，按连接/AppID/group隔离。发送前持久化，未知结果仍保留冷却，不进outbox、不自动补发。跨日/散队/重启不清零，不改变车次及广播计时。
 - QQ群管理员和每日全体额度由平台限制，SDK文档注明每群每天1次，不能把插件冷却描述为实际每30分钟均可@全体。旧JSONv2和MySQL schema20保持。
+
+## v1.27.2 呼叫全体完整面板
+
+- 呼叫全体通过panel的单次announcement参数加入原生全体标签和邀请，复用全部车次/成员/计时/按钮渲染；普通交互及广播不传announcement，不能重复@全体。空房提示没有队伍，不隐式建车；30分钟冷却、清理和广播时钟不改。
