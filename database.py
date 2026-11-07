@@ -2010,7 +2010,12 @@ class Database:
             tuple(params),
         )
 
-    async def get_reports_for_export(self, home_team: str, date_from: str | None = None, date_to: str | None = None) -> list[dict]:
+    async def get_comparison_reports(self, home_team: str, date_from: str, date_to: str) -> list[dict]:
+        """只读核对快照，保留每场对局的实际战队侧，不改变普通导出字段。"""
+        return await self.get_reports_for_export(home_team, date_from, date_to, include_team_sides=True)
+
+    async def get_reports_for_export(self, home_team: str, date_from: str | None = None, date_to: str | None = None,
+                                     *, include_team_sides: bool = False) -> list[dict]:
         """按战报聚合返回某战队战报（含原始文本与按 seq 排序的对局），供合并转发导出，按战队跨群、可按日期过滤。
 
         每份战报一个 dict：match_id / team_a / team_b / match_time / rule / location /
@@ -2021,12 +2026,13 @@ class Database:
         params = [home_team]
         if date_from or date_to:
             params += [d1, d2]
+        team_columns = ', d.player_a_team, d.player_b_team' if include_team_sides else ''
         rows = await self._query(
             f"""SELECT m.id AS match_id, m.team_a, m.team_b, m.match_time, m.rule, m.location,
                       m.winner, m.home_team, m.raw_text, m.submitted_by, m.submitted_name,
                       m.kind, m.export_sent,
                       d.seq, d.round_no, d.player_a, d.score_a, d.player_b, d.score_b,
-                      d.a_sub, d.b_sub, d.ruled, d.owner
+                      d.a_sub, d.b_sub, d.ruled, d.owner{team_columns}
                FROM matches m LEFT JOIN duels d ON d.match_id = m.id
                WHERE m.home_team = %s{date_clause}
                ORDER BY m.id, d.seq, d.id""",
@@ -2066,6 +2072,8 @@ class Database:
                     "ruled": bool(r["ruled"]),
                     "owner": bool(r["owner"]),
                 })
+                if include_team_sides:
+                    current['duels'][-1].update(player_a_team=r['player_a_team'], player_b_team=r['player_b_team'])
         return reports
 
     async def set_reports_export_sent_through(self, home_team: str, cutoff_id: int, sent: bool) -> int:

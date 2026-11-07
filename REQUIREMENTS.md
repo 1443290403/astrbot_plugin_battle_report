@@ -417,6 +417,16 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ### M-10 平台消息收发（QQ 适配器口径）
 
+**外部战报只读核对（v1.28.0）：** 后台Pages页面 `pages/report-comparison` 与 `ComparisonWebUI` 使用AstrBot官方bridge/`astrbot.api.web`和后台登录授权，不自开端口，不接受QQ侧用户权限代替后台登录。后台管理员显式选择本地home_team（跨群）和网站groupname；这不是群命令的战队解析兜底，不改_require_home或原群/角色检查。默认上个月按北京时间计算。网站starttime/endtime是发布时间，本地范围是比赛日期，分别校验；单次至多93天。只比较friendly，保留排除的踢馆数量。
+
+`report_site`固定HTTPS域名和查询路径，禁止用户信息、异站/非HTTPS跳转及选手/发布者过滤；全部分页成功、页码/总页数/记录数/唯一网站ID通过后才读取本地快照并比较。限时/重试/数据量边界防止无限抓取；失败不把部分网页数据当完整范围。任务原子保存，单实例一次一任务，最多保留20次；取消/重启不自动重跑，卸载先取消任务再关数据库，清理仅当前实例注册的API。
+
+`Database.get_comparison_reports`复用get_reports_for_export只读SELECT，include_team_sides仅用于核对快照，不改变普通导出字段；按每条duel实际战队侧对齐，并重建本地正文。比较键是比赛日期、双方战队、地点、规则及完整有比分对局序列，保留轮内顺序/ID内部空格/替补/判罚，忽略0:0未打占位。左右战队互换可对齐。此键只用于核对，**不得改已有report_fingerprint及历史提交去重**。网站/本地重复按同规范内容分组；同日同队同地点而内容不同只是候选，不自动删除/合并，也不将网站独有或未检出作为真实性证明。网站无法解析/日期越界/其他队名分列，不混进匹配。
+
+网站HTML及用户原文只按文本渲染，分页展示、历史与下载均要求后台登录；不暴露本地提交QQ或数据库凭据。旧CLI入口继续可用，共用解析/比较模块，HTML缓存按查询指纹隔离，不复用其他队伍/日期的网页。MySQL schema20、统计/提交/发送状态均不变。
+
+
+
 **平台指令配置（v1.27.0）：** platform_command_profiles 为命名 template_list，每项包含 platform_ids 精确连接ID列表、mode（仅开放勾选指令/全部开放/全部屏蔽）及 allowed_commands 多选。首个匹配项生效，空目标不匹配，未配置保留原范围；同协议不同实例独立。只按连接ID匹配，不按平台类型、QQ号或群号解析。COMMANDS/HANDLER_COMMANDS/COMMAND_ALIASES 是配置与执行共同目录，别名统一规范；第N轮通过稳定函数名映射，不依赖显示名。
 
 构造时只对本模块 AdapterMessageEvent 处理器，在原过滤器之前插入 PlatformCommandPermissionFilter；通过 get_handlers_by_module_name 包含暂时禁用的处理器，重装时先移除旧标记过滤器。允许回调绑定当前实例并实时读取配置，拒绝先于参数解析，不调用DB或网络，不重排/修改其他插件。分流器自身不受单指令过滤，继续禁止默认LLM并防御性过滤本插件不允许的处理器；官方端已允许业务处理器不得再被固定白名单剔除。队列命令入口另外按归一动作校验；lineup_tool 共用排表权限，不能绕过。
@@ -809,6 +819,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-41** | QQ群命令与默认对话隔离 | OfficialQueueFilter / official_queue_cmd / command_guard | 群内斜杠命令及已注册裸命令不回落默认LLM；保留插件分发、原参数及普通聊天，不依赖chat前缀 | M-10 | 不写数据库/队列 |
 | **F-42** | 按机器人连接ID手动分配本插件指令 | platform_policy / _install_platform_permissions / _filter_platform_handlers | 命名配置、多选/全部开放/全部屏蔽、别名统一、参数前静默拒绝、AI排表同权限；其他插件与原业务权限保留 | M-10 | 仅插件配置，无DB/队列迁移 |
 | **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，发送尝试前存档、失败和超时不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
+| **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定战报站分页抓取、按战队/月份只读对照、原文分页/进度/取消/最近20次/JSON；发布时间与比赛日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | 插件data_dir/report_comparisons任务JSON；无DB迁移 |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1013,6 +1024,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 原文文本渲染、浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
 | **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
@@ -1124,6 +1136,8 @@ year = now.year - 1 if month > now.month else now.year
 | [stats.py](stats.py) | ~700 | 积分/胜率/表格/帮助文案、`rank_aligns`、**踢馆判定与计分（踢馆侧唯一实现）**、**结算奖金公式与名次（`rank_bonus` / `ranks_for` / `attach_bonus`）**、**结算回执（写 `format_settlement` / 只读 `format_settlement_view`，行体共用 `_settlement_lines`）**、**结算公告（`settlement_awards_changed` 判要不要 @ / `settlement_announcement` 分段文案 / `format_settlement_repeat` 不 @ 时的提示）**、**排行图片左侧面板的 8 行（`build_team_panel`）** | 无 |
 | [chart.py](chart.py) | ~300 | Pillow 趋势图 + 排行表格图（`make_ranking_image` 的 `panel` 参数只负责画，不懂语义） | Pillow |
 | [tests/](tests/) | ~3440 | 13 个纯逻辑测试 + 1 个 DB 集成测试（见 §12） | pytest |
+| [report_site.py](report_site.py) / [report_comparison.py](report_comparison.py) | — | 站点查询/解析/限流完整分页及与CLI共用的比较口径 | 标准库/既有解析器 |
+| [report_webui.py](report_webui.py) / [pages/report-comparison/](pages/report-comparison/) | — | 后台页面/API、原子任务及历史、bridge静态资源 | AstrBot 4.27.3官方Web SDK |
 | [scripts/](scripts/) | — | 一次性数据修复脚本（见下） | — |
 
 ### 8.2 死代码（v1.13.0 已清理）
@@ -1435,7 +1449,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.27.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.28.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1456,3 +1470,5 @@ v1.27.1 验证：**1257 项测试通过，1 项跳过**。覆盖呼叫全体原�
 v1.27.2 验证：**1259 项测试通过，1 项跳过**。覆盖呼叫全体与当前多车完整面板同条发送、头像/群名片/等待和清理时间、空房不建车、过期车排除、普通广播不重复@全体；官方WS/Webhook及审核模板使用同一完整正文，保留共享冷却与失败不补发。另通过真实AstrBot v4.27.3分发的184项隔离场景；未登录真实QQ，客户端呈现仍需现场确认。
 
 v1.27.3 验证：**1260 项测试通过，1 项跳过**。覆盖呼叫结果/手动查看/定时广播冷却时隐藏按钮、原六按钮和顺序保留、跨群独立、重启保持及1800秒精确边界后恢复；官方WS/Webhook及模板键盘同步验证，旧按钮与文字入口仍受冷却保护。另通过真实AstrBot v4.27.3注册/分发的184项隔离场景；未进行真实QQ客户端验证。
+
+v1.28.0 验证：**1301 项测试通过，1 项跳过**。覆盖用户查询地址/日期与固定域名限制、分页/空结果/错误页/编号/完整性、左右侧对齐、规则/比分/替补/判罚/轮内顺序/内部空格、友谊隔离/日期越界/相近队名、只读快照与原导出字段保留、取消/重启/落盘失败/最近20次、构造注册与重载清理；另通过真实AstrBot v4.27.3注册/分发的184项隔离场景。使用真实v4.27.3页面bridge和Web SDK的本地Chromium测试覆盖创建、抓取样本、分类分页、原文文本安全、390px手机/深色布局、匿名401和JSON下载。站点与数据库使用隔离样本；开发网络白名单未放行rep.ygobbs2.com，未验证线上十月数据或连接生产数据库。

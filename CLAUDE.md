@@ -246,3 +246,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 ## v1.27.3 冷却隐藏呼叫按钮
 
 - panel统一按渲染时刻与持久化call_all_until控制键盘show_call_all，冷却中去除第三行，保留原六按钮；到期后下次面板刷新恢复。呼叫结果、查看、交互、广播和重启均共用规则，文字命令及旧按钮仍保留冷却校验。
+
+## v1.28.0 外部战报核对
+
+- WebUI在pages/report-comparison，官方后台bridge+web SDK和登录授权；不自开端口，不在QQ暴露管理接口。任务只读快照、原文文本渲染，关闭先取消任务再关DB。
+- report_site/report_comparison与离线CLI共用逻辑；只比较friendly，按home_team跨群。网站发布时间与正文比赛日期分开。完整分页和唯一ID校验失败不得输出局部差异。
+- 比较键包含规则、轮内顺序、原ID内部空格、替补和判罚，按对局实际战队侧对齐；不得改已有report_fingerprint。网站未检出与同日同地点内容不同只是待核，不自动改库/合并/删报。
+- 最近20次任务JSON保存在data_dir/report_comparisons；最多93天、200页/10000条、5分钟。重启中断不自动重跑；只允许固定战报站HTTPS，禁止跨站跳转及匿名API访问。

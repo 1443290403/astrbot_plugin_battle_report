@@ -17,7 +17,7 @@
     4. 网站侧重复      网站同一份战报有多条 ID
     5. 胜负不一致      内容一致，但库判胜方与网站『胜方』列不符
     6. 同场次多版      同日期+战队+地点但对局内容不同（双方各报一版，指纹拦不住）
-       └ 疑似重复计数  其中的子集：**库内条数多于网站同场次条数**，多出来的是重复
+       └ 疑似重复计数  其中的子集：**库内条数多于网站同场次条数**，多出来的需人工核对
 
 用法：
     python scripts/diff_battle_report_db.py
@@ -65,96 +65,10 @@ DEFAULT_PASSWORD = os.environ.get("ASTRBOT_MYSQL_PASSWORD", "")
 DEFAULT_DB = os.environ.get("ASTRBOT_MYSQL_DB", "astrbot_battle_report")
 
 
-# ---------- 匹配键与归一化 ----------
-
-def _key(match_time: str, teams, location: str) -> tuple:
-    teams = tuple(sorted(t.upper() for t in teams if t))
-    return (match_time, teams, (location or "").strip())
-
-
-def _slug(match_time: str, teams) -> tuple:
-    return _key(match_time, teams, "")[:2]
-
-
-def _winner_from_duels(duels: list[dict], match: dict) -> str | None:
-    """库内 winner 为空时，用 duels 复算胜方。
-
-    战队以 duels 自带的 player_a_team/player_b_team 为准，避免 matches.team_a 与
-    对局归属不一致时判错边。
-    """
-    team_a, team_b = match["team_a"], match["team_b"]
-    if duels:
-        pa_team = (duels[0].get("player_a_team") or "").upper()
-        pb_team = (duels[0].get("player_b_team") or "").upper()
-        if pa_team and pb_team:
-            team_a, team_b = pa_team, pb_team
-    rep = BattleReport(
-        team_a=team_a,
-        team_b=team_b,
-        rule=match.get("rule") or "",
-        match_time=match.get("match_time") or "",
-    )
-    rep.duels = [
-        Duel(d["round_no"], d["player_a"], d["score_a"], d["player_b"], d["score_b"])
-        for d in duels
-    ]
-    return determine_match_winner(rep)
-
-
-def _canon_duel_list(rows: list[tuple], team_a: str, team_b: str) -> list[tuple]:
-    """把对局列表规范化成与战队书写顺序无关的形式，并丢弃 0:0 未打的占位。
-
-    rows 每项为 (round_no, player_a, score_a, player_b, score_b)，player_a 属 team_a。
-    """
-    t1, _t2 = sorted([team_a.upper(), team_b.upper()])
-    out = []
-    for round_no, pa, sa, pb, sb in rows:
-        if sa == 0 and sb == 0:
-            continue
-        if team_a.upper() == t1:
-            out.append((round_no, pa, sa, pb, sb))
-        else:
-            out.append((round_no, pb, sb, pa, sa))
-    return sorted(out)
-
-
-def _site_duels(record: dict) -> list[tuple]:
-    rows = [
-        (d["round_no"], d["player_a"], d["score_a"], d["player_b"], d["score_b"])
-        for d in record.get("duels", [])
-    ]
-    return _canon_duel_list(rows, record["team_a"], record["team_b"])
-
-
-def _db_duels(duels: list[dict], match: dict) -> list[tuple]:
-    rows = [
-        (d["round_no"], d["player_a"], d["score_a"], d["player_b"], d["score_b"])
-        for d in duels
-    ]
-    # player_a 属 player_a_team，须与该场的 team_a 对齐后再规范化
-    t_a = match["team_a"]
-    if duels and (duels[0].get("player_a_team") or "").upper() != t_a.upper():
-        rows = [(r, pb, sb, pa, sa) for r, pa, sa, pb, sb in rows]
-    return _canon_duel_list(rows, t_a, match["team_b"])
-
-
-# ---------- 取数与比对 ----------
-
-def split_by_kind(rows: list[dict], *, include_raid: bool = False) -> tuple[list[dict], dict]:
-    """按 `matches.kind` 过滤，返回 `(kept, excluded_counts)`。
-
-    默认只留友谊战报：网站只收录友谊赛，踢馆报拿来比对只会全落进「只在库里有」。
-    `kind` 为空的历史行按友谊赛处理（与建表默认值 `'friendly'` 一致）。
-    """
-    kept, excluded = [], defaultdict(int)
-    for m in rows:
-        kind = (m.get("kind") or KIND_FRIENDLY)
-        if kind == KIND_FRIENDLY or include_raid:
-            m["kind"] = kind
-            kept.append(m)
-        else:
-            excluded[kind] += 1
-    return kept, dict(excluded)
+from report_comparison import (
+    _key, _slug, _winner_from_duels, _canon_duel_list, _site_duels, _db_duels,
+    split_by_kind, _site_key, _db_key, _session_key, _db_winner, compare,
+)
 
 
 async def fetch_db(pool, start: str, end: str, home_team: str | None,
@@ -194,8 +108,8 @@ async def fetch_db(pool, start: str, end: str, home_team: str | None,
                 marks = ",".join(["%s"] * len(batch))
                 await cur.execute(
                     "SELECT match_id, round_no, player_a, score_a, player_b, score_b, "
-                    "player_a_team, player_b_team, result "
-                    f"FROM duels WHERE match_id IN ({marks}) ORDER BY match_id, round_no, id",
+                    "player_a_team, player_b_team, result, seq, a_sub, b_sub, ruled "
+                    f"FROM duels WHERE match_id IN ({marks}) ORDER BY match_id, seq, id",
                     batch,
                 )
                 for d in await cur.fetchall():
@@ -205,131 +119,6 @@ async def fetch_db(pool, start: str, end: str, home_team: str | None,
         if hasattr(m["match_time"], "isoformat"):
             m["match_time"] = m["match_time"].isoformat()
     return matches, duels, dict(excluded)
-
-
-def _site_key(record: dict) -> tuple:
-    """网站记录的**内容**指纹：时间 + 战队(无序) + 地点 + 规范化对局序列。
-
-    不能只用 (时间, 战队, 地点) —— 地点是固定房间号，同一天同一房间会打多场，
-    该键根本不唯一（实测大量不同对阵共用同一房间号）。必须以对局序列为准。
-    """
-    return (
-        record["match_time"],
-        tuple(sorted({record["team_a"].upper(), record["team_b"].upper()})),
-        (record["location"] or "").strip(),
-        tuple(_site_duels(record)),
-    )
-
-
-def _db_key(match: dict, duels: list[dict]) -> tuple:
-    return (
-        match["match_time"],
-        tuple(sorted({match["team_a"].upper(), match["team_b"].upper()})),
-        (match["location"] or "").strip(),
-        tuple(_db_duels(duels, match)),
-    )
-
-
-def _session_key(match_time: str, teams, location: str) -> tuple:
-    """场次键：日期 + 战队(无序) + 地点。
-
-    这个键**不唯一**（地点是固定房间号，同一天同一房间会打好几场），
-    所以它不能当去重依据，只用来提示"疑似同一场被记了两遍"。
-    真正的去重依据是 _db_key（含对局序列）。
-    """
-    return (
-        match_time,
-        tuple(sorted({(t or "").upper() for t in teams})),
-        (location or "").strip(),
-    )
-
-
-def _db_winner(match: dict, db_duels: dict) -> str:
-    """库记录的胜方：优先取 matches.winner，为空则由对局复算。"""
-    return (match["winner"] or "").upper() or (
-        _winner_from_duels(db_duels.get(match["id"], []), match) or ""
-    )
-
-
-def compare(site_records: list[dict], db_matches: list[dict], db_duels: dict) -> dict:
-    """按内容指纹比对，产出差异与重复。"""
-    site = [r for r in site_records if r.get("parse_ok") and r.get("match_time_in_range")]
-    out_of_range = [r for r in site_records if r.get("parse_ok") and not r.get("match_time_in_range")]
-    parse_failed = [r for r in site_records if not r.get("parse_ok")]
-
-    site_by_key: dict[tuple, list[dict]] = defaultdict(list)
-    for r in site:
-        site_by_key[_site_key(r)].append(r)
-
-    db_by_key: dict[tuple, list[dict]] = defaultdict(list)
-    for m in db_matches:
-        db_by_key[_db_key(m, db_duels.get(m["id"], []))].append(m)
-
-    missing = [r for k in site_by_key if k not in db_by_key for r in site_by_key[k]]
-    only_in_db = [m for k in db_by_key if k not in site_by_key for m in db_by_key[k]]
-    matched = sum(len(site_by_key[k]) for k in site_by_key if k in db_by_key)
-
-    # 内容完全相同的多条：库内重复会直接让统计翻倍
-    db_dupes = {k: v for k, v in db_by_key.items() if len(v) > 1}
-    site_dupes = {k: v for k, v in site_by_key.items() if len(v) > 1}
-
-    winner_mismatch: list[tuple] = []
-    for k in set(site_by_key) & set(db_by_key):
-        s = site_by_key[k][0]
-        for m in db_by_key[k]:
-            db_w = _db_winner(m, db_duels)
-            if db_w and db_w != s["winner_site"].upper():
-                winner_mismatch.append((s, m, db_w))
-
-    # 同场次键、内容却不同：内容指纹拦不住这里。
-    # 判据用**网站侧同场次的条数**（网站是"那天那个房间打了几场"的权威）：
-    # 库内条数多于网站，多出来的就是重复计数。
-    # 注意：两边胜方相反**不能**单独当作重复的证据 —— 双方各报一版时大多只有一版
-    # 被网站收录，另一版胜方自然会因为只含自己那半场而对不上。
-    site_sessions: dict[tuple, int] = defaultdict(int)
-    for r in site:
-        site_sessions[_session_key(r["match_time"], (r["team_a"], r["team_b"]), r["location"])] += 1
-
-    by_session: dict[tuple, list[dict]] = defaultdict(list)
-    for m in db_matches:
-        by_session[_session_key(m["match_time"], (m["team_a"], m["team_b"]), m["location"])].append(m)
-
-    session_groups: list[dict] = []
-    for k, rows in sorted(by_session.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        if len(rows) < 2:
-            continue
-        wins = {_db_winner(m, db_duels) for m in rows} - {""}
-        site_n = site_sessions[k]
-        session_groups.append({
-            "match_time": k[0],
-            "teams": list(k[1]),
-            "location": k[2],
-            "site_count": site_n,
-            "db_exceeds_site": len(rows) > site_n,
-            "winner_conflict": len(wins) > 1,
-            "matches": [
-                {"db_id": m["id"], "winner": _db_winner(m, db_duels),
-                 "submitted_name": m["submitted_name"],
-                 "duel_count": len(db_duels.get(m["id"], []))}
-                for m in rows
-            ],
-        })
-
-    return {
-        "site_total": len(site_records),
-        "site_in_range": len(site),
-        "db_total": len(db_matches),
-        "matched": matched,
-        "missing_in_db": missing,
-        "only_in_db": only_in_db,
-        "winner_mismatch": winner_mismatch,
-        "db_duplicate_keys": db_dupes,
-        "site_duplicate_keys": site_dupes,
-        "db_session_groups": session_groups,
-        "site_out_of_range": out_of_range,
-        "site_parse_failed": parse_failed,
-    }
-
 
 # ---------- 输出 ----------
 
@@ -363,8 +152,8 @@ def build_report(res: dict, meta: dict, limit: int) -> str:
     add("")
     add("| 类别 | 条数 | 说明 |")
     add("|---|---|---|")
-    add(f"| 库里缺失 | {len(res['missing_in_db'])} | 网站有、库中没有（少算） |")
-    add(f"| 只在库里有 | {len(res['only_in_db'])} | 库中有、网站区间内没有（多算） |")
+    add(f"| 库里缺失 | {len(res['missing_in_db'])} | 网站有、本地未匹配（待核） |")
+    add(f"| 只在库里有 | {len(res['only_in_db'])} | 库中有、网站本次发布区间未检出（待核） |")
     add(f"| **库内重复** | {len(res['db_duplicate_keys'])} 组 / "
         f"{sum(len(v) - 1 for v in res['db_duplicate_keys'].values())} 条冗余 | "
         f"同一份战报在库中存了多条，统计直接翻倍 |")
@@ -375,7 +164,7 @@ def build_report(res: dict, meta: dict, limit: int) -> str:
     add(f"| 同场次多版（待核） | {len(res['db_session_groups'])} 组 | "
         f"同日期+同战队+同地点但对局内容不同，指纹去重拦不住 |")
     add(f"| **其中疑似重复计数** | {len(over)} 组 / {over_n} 条 | "
-        f"库内条数**多于**网站同场次条数，多出来的那几条是同一场被记了两遍 |")
+        f"库内条数**多于**网站同场次条数，仅为条数差异，需结合发布时间和原文核对 |")
     add("")
 
     def section(title: str, rows: list[str], note: str = "") -> None:
@@ -426,9 +215,9 @@ def build_report(res: dict, meta: dict, limit: int) -> str:
         )
     section("同场次多版（同日期+战队+地点，内容不同）", session_rows,
             "双方各报一版时，对局只包含自己那半场，内容指纹拦不住 → 库里存成两条。\n"
-            "判据是**网站同场次的条数**（网站是「那天那个房间打了几场」的权威）：\n"
-            "- ⚠ 标出的组库里多于网站 → 多出来的那几条是同一场被记了两遍，应合并；\n"
-            "- 未标出的组两边条数一致 → 确实打了多场，**不要动**；\n"
+            "网站本次发布范围内的条数仅作参考，不代表当天实际总场次：\n"
+            "- ⚠ 标出的组库里多于网站 → 仅为条数差异，需结合发布时间和原文核对；\n"
+            "- 未标出的组两边条数一致，也不能仅凭条数认定是否重复；\n"
             "- 两边胜方相反**不构成**重复的证据，不要只凭它删记录。")
 
     section("胜负不一致",

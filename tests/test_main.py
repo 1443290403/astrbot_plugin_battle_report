@@ -3031,3 +3031,17 @@ def test_official_departure_posts_real_mentions_then_plain_group_number(official
         assert '发车啦' in notice and '123456789' not in notice
         assert '<qqbot-at-user id="u2" />' in notice and '<qqbot-at-user id="u3" />' in notice
     asyncio.run(scenario())
+
+
+def test_comparison_page_registers_on_constructor_and_stops_before_database(plugin_module,tmp_path,monkeypatch):
+    routes=[]
+    monkeypatch.setattr(plugin_module,'StarTools',SimpleNamespace(get_data_dir=lambda:tmp_path))
+    context=SimpleNamespace(register_web_api=lambda *entry:routes.append(entry),registered_web_apis=routes)
+    obj=plugin_module.BattleReportPlugin(context,{})
+    assert obj._comparison_webui is not None and len(routes)==5
+    assert all(r[0].startswith('/astrbot_plugin_battle_report/comparison/') for r in routes)
+    assert obj.db is None and not obj.db_ready
+    obj.db=SimpleNamespace(close=AsyncMock())
+    asyncio.run(obj.terminate())
+    obj.db.close.assert_awaited_once()
+    assert not routes and obj._comparison_webui.jobs.closed

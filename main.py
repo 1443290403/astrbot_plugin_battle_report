@@ -245,7 +245,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.27.3")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.28.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -262,6 +262,14 @@ class BattleReportPlugin(Star):
             self.data_dir = Path("data/plugin_data/battle_report")
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._install_platform_permissions()
+        self._comparison_webui = None
+        if callable(getattr(self.context, 'register_web_api', None)):
+            try:
+                from .report_webui import ComparisonWebUI
+                self._comparison_webui = ComparisonWebUI(self, logger)
+                self._comparison_webui.register()
+            except Exception:
+                logger.exception('战报对比 WebUI 初始化失败，原有指令继续可用')
 
     def _command_allowed(self, event, command):
         platform = getattr(event, 'get_platform_name', lambda: '')()
@@ -347,6 +355,12 @@ class BattleReportPlugin(Star):
                 await task
             except asyncio.CancelledError:
                 pass
+        comparison = getattr(self, '_comparison_webui', None)
+        if comparison:
+            try:
+                await comparison.close()
+            except Exception:
+                logger.exception('战报对比 WebUI 停止失败')
         if self.db:
             await self.db.close()
 

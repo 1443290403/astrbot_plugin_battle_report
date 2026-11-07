@@ -58,6 +58,7 @@ def _db_duels(rec: dict) -> list[dict]:
             "player_a": d["player_a"], "score_a": d["score_a"],
             "player_b": d["player_b"], "score_b": d["score_b"],
             "player_a_team": rec["team_a"], "player_b_team": rec["team_b"], "result": "A",
+            "a_sub": d.get("a_sub", False), "b_sub": d.get("b_sub", False), "ruled": d.get("ruled", False),
         }
         for d in rec["duels"]
     ]
@@ -205,6 +206,7 @@ def test_team_order_flipped_in_db_still_matches():
     for d in duels:  # 库内两侧对调
         d["player_a"], d["player_b"] = d["player_b"], d["player_a"]
         d["score_a"], d["score_b"] = d["score_b"], d["score_a"]
+        d["a_sub"], d["b_sub"] = d["b_sub"], d["a_sub"]
         d["player_a_team"], d["player_b_team"] = d["player_b_team"], d["player_a_team"]
     res = differ.compare([rec], [flipped], {6: duels})
     assert res["matched"] == 1

@@ -1,7 +1,7 @@
 """爬取线上战报系统（rep.ygobbs2.com）指定区间的战报，导出 JSON/CSV 并标注重复组。
 
 背景：插件 astrbot_plugin_battle_report 的统计结果与实际对战结果存在差异。线上战报
-系统是权威数据源，本脚本把指定查询区间的全部战报抓下来，解析正文（正文格式与插件
+系统是外部参考数据源，本脚本把指定查询区间的全部战报抓下来，解析正文（正文格式与插件
 战报格式完全一致，直接复用 battle_report_parser），并按正文内容找出「完全一样的
 战报」——同一份战报被重复提交会让统计翻倍。
 
@@ -15,14 +15,13 @@
 
 输出（默认 scripts/output/）：
     battle_report_<group>_<start>_<end>.json / .csv
-    raw/page_<n>.html        原始 HTML 缓存，重跑时复用（需通过校验）
+    raw/<查询指纹>/page_<n>.html        原始 HTML 缓存，重跑时复用（需通过校验）
 """
 
 import argparse
+import hashlib
 import csv
-import html
 import json
-import re
 import sys
 import time
 import urllib.error
@@ -49,91 +48,17 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, OSError):
         pass
 
-BASE_URL = "https://rep.ygobbs2.com/index.php"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
 
-# 总页数提示：「当前为1页，共有20页」
-_TOTAL_PAGES_RE = re.compile(r"共有\s*(\d+)\s*页")
-# 数据行 <tr>...</tr>；表头行用 <th>，不会被 _TD_RE 命中
-_ROW_RE = re.compile(r"<tr>(.*?)</tr>", re.S)
-_TD_RE = re.compile(r"<td>(.*?)</td>", re.S)
-# 正文单元格里的 <div class="panel-body">...</div>
-_BODY_RE = re.compile(r'<div class="panel-body">(.*?)</div>', re.S)
-_BR_RE = re.compile(r"<br\s*/?>", re.I)
-_TAG_RE = re.compile(r"<[^>]+>")
-
-# 页面有效性标志：抓失败时站点返回一个很短的错误页
-_PAGE_MARKER = "战报列表"
-
-
 class PageError(RuntimeError):
     """某一页在重试后仍无法取得有效内容。"""
 
 
-def norm_content(text: str) -> str:
-    """战报正文归一化，作为「内容是否完全一样」的指纹。
-
-    全角空格转半角、折叠行内空白、逐行 strip、丢弃空行。保留行序。
-    """
-    lines = [re.sub(r"\s+", " ", ln.replace("　", " ")).strip() for ln in text.splitlines()]
-    return "\n".join(ln for ln in lines if ln)
-
-
-def _extract_body(cell: str) -> str | None:
-    """从正文单元格 HTML 里还原战报文本（<br> → 换行）。"""
-    m = _BODY_RE.search(cell)
-    if not m:
-        return None
-    raw = _BR_RE.sub("\n", m.group(1))
-    raw = _TAG_RE.sub("", raw)
-    return html.unescape(raw).strip()
-
-
-def _normalize_pub_date(raw: str) -> str:
-    """把表里的「26-09-30」补成「2026-09-30」。"""
-    parts = re.split(r"[^0-9]+", raw.strip())
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        return raw.strip()
-    y, m, d = (int(p) for p in parts)
-    if y < 100:
-        y += 2000
-    return f"{y:04d}-{m:02d}-{d:02d}"
-
-
-def parse_page(html_text: str) -> tuple[list[dict], int | None]:
-    """解析一页 HTML，返回（记录列表, 总页数）。
-
-    记录含 id/publish_date/publisher/winner_site/loser_site/body。
-    """
-    m = _TOTAL_PAGES_RE.search(html_text)
-    total_pages = int(m.group(1)) if m else None
-
-    records: list[dict] = []
-    for row in _ROW_RE.findall(html_text):
-        cells = _TD_RE.findall(row)
-        if len(cells) != 6:
-            continue  # 表头行或非数据行
-        rid = cells[0].strip()
-        if not rid.isdigit():
-            continue
-        body = _extract_body(cells[5])
-        if body is None:
-            continue
-        records.append(
-            {
-                "id": rid,
-                "winner_site": cells[1].strip(),
-                "loser_site": cells[2].strip(),
-                "publish_date_raw": cells[3].strip(),
-                "publish_date": _normalize_pub_date(cells[3]),
-                "publisher": cells[4].strip(),
-                "body": body,
-            }
-        )
-    return records, total_pages
+from report_site import (BASE_URL, _PAGE_MARKER, norm_content, _extract_body,
+                         _normalize_pub_date, parse_page, enrich)
 
 
 def fetch_page(page: int, group: str, start: str, end: str, timeout: int) -> str:
@@ -207,50 +132,6 @@ def fetch_page_verified(
             time.sleep(wait)
 
     raise PageError(f"第 {page} 页重试 {max_retries} 次仍失败：{last_err}")
-
-
-def enrich(record: dict, start: str, end: str) -> dict:
-    """解析正文，补上结构化字段与胜负比对结果。"""
-    result = parse_battle_report(record["body"])
-    out = dict(record)
-    out["content_key"] = norm_content(record["body"])
-    out["parse_ok"] = result.report is not None
-    out["parse_errors"] = result.errors
-    out["parse_warnings"] = result.warnings
-    if result.report is None:
-        out.update(
-            team_a="", team_b="", match_time="", rule="", location="",
-            winner_computed=None, winner_match=None, match_time_in_range=None,
-            duels=[],
-        )
-        return out
-
-    rep = result.report
-    winner = determine_match_winner(rep)
-    out.update(
-        team_a=rep.team_a,
-        team_b=rep.team_b,
-        match_time=rep.match_time,
-        rule=rep.rule,
-        location=rep.location,
-        winner_computed=winner,
-        winner_match=(winner == record["winner_site"]) if winner else None,
-        match_time_in_range=(start <= rep.match_time <= end),
-        duels=[
-            {
-                "round_no": d.round_no,
-                "player_a": d.player_a,
-                "score_a": d.score_a,
-                "player_b": d.player_b,
-                "score_b": d.score_b,
-                "a_sub": d.a_sub,
-                "b_sub": d.b_sub,
-                "ruled": d.ruled,
-            }
-            for d in rep.duels
-        ],
-    )
-    return out
 
 
 def mark_duplicates(records: list[dict]) -> list[list[str]]:
@@ -377,7 +258,8 @@ def main() -> int:
     script_dir = Path(__file__).resolve().parent
     out_dir = Path(args.out_dir) if args.out_dir else script_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
-    cache_dir = None if args.no_cache else out_dir / "raw"
+    cache_scope = hashlib.sha256(json.dumps([args.group, args.start, args.end]).encode()).hexdigest()[:16]
+    cache_dir = None if args.no_cache else out_dir / "raw" / cache_scope
 
     stem = f"battle_report_{args.group}_{args.start}_{args.end}"
 

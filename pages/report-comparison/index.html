@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>战报核对</title><link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main>
+  <header><div><p class="eyebrow">BATTLE REPORT / RECONCILIATION</p><h1>战报核对<span class="source">rep.ygobbs2.com</span></h1><p class="subtitle">把网站记录与战队战报放在一起，逐项核对差异。</p></div><span class="readonly">● 只读核对</span></header>
+  <section class="query-card" aria-labelledby="query-title">
+    <div class="section-heading"><h2 id="query-title">选择核对范围</h2><p>默认查询上个月的友谊战报</p></div>
+    <form id="query-form">
+      <div class="form-grid"><label>本地战队<input id="team" list="teams" maxlength="64" placeholder="选择或输入战队" required><datalist id="teams"></datalist></label>
+      <label>比赛月份<input id="month" type="month" required></label>
+      <label>网站战队名<input id="site-team" maxlength="64" placeholder="默认与本地战队相同"></label></div>
+      <details class="advanced"><summary>网站查询地址与发布时间范围</summary>
+        <label class="url-label">粘贴战报站查询地址<div class="url-row"><input id="source-url" type="url" placeholder="https://rep.ygobbs2.com/?c=search…"><button id="apply-url" type="button" class="secondary">读取地址</button></div></label>
+        <div class="date-grid"><label>发布开始日期<input id="publish-start" type="date"></label><label>发布结束日期<input id="publish-end" type="date"></label></div>
+        <p class="hint">网站按发布时间搜索，本地按比赛日期取数。可扩大发布范围，检查晚发布的战报。</p>
+      </details>
+      <div class="form-footer"><span class="hint">只比较友谊赛，不修改战报、比分或发送状态。</span><button type="submit" id="start" disabled>开始核对 <span aria-hidden="true">↗</span></button></div>
+    </form>
+  </section>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <section class="runbar"><div><span id="run-status" class="status-pill">准备就绪</span><span id="run-message">连接 AstrBot 后台中…</span></div><div class="run-actions"><select id="history" aria-label="历史核对结果"><option value="">最近的核对</option></select><button id="cancel" class="secondary" hidden>取消</button><button id="download" class="secondary" disabled>导出 JSON</button></div></section>
+  <progress id="progress" max="100" value="0" hidden aria-label="网站抓取进度"></progress>
+  <section class="metrics" aria-label="核对统计"><article><span>网站记录</span><strong id="site-total">—</strong><small>按发布时间抓取</small></article><article><span>本地友谊战报</span><strong id="db-total">—</strong><small>按比赛日期查询</small></article><article class="matched"><span>内容匹配</span><strong id="matched">—</strong><small>相同内容组</small></article><article class="review"><span>核对提示</span><strong id="review-total">—</strong><small>提示项可能互相关联</small></article></section>
+  <section class="results" aria-labelledby="result-title"><div class="section-heading"><h2 id="result-title">核对结果</h2><span id="scope" class="hint">选择战队与月份后开始核对</span></div>
+    <nav id="categories" aria-label="差异类型"></nav><p id="category-note" class="hint"></p>
+    <div class="table-wrap"><table><thead><tr><th>比赛日期 / 对阵</th><th>网站记录</th><th>本地记录</th><th>核对提示</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="records"></tbody></table></div>
+    <div id="empty" class="empty"><span class="empty-icon" aria-hidden="true">≋</span><h3>等待开始核对</h3><p>完成后在这里查看两边记录与原文。</p></div>
+    <div id="pagination" class="pagination" hidden><span id="page-label"></span><div><button id="prev" class="secondary">上一页</button><button id="next" class="secondary">下一页</button></div></div>
+  </section>
+  <footer class="footnote">网站未检出不代表战报虚假。同日、同队、同地点也可能有多场比赛，请结合原文核对。</footer>
+</main>
+<dialog id="detail"><div class="dialog-top"><div><p class="eyebrow">REPORT DETAIL</p><h2>战报原文对照</h2></div><button id="close-detail" class="secondary" aria-label="关闭原文对照">关闭 ×</button></div><p id="detail-note" class="hint"></p><div class="compare-columns"><section><h3>网站记录</h3><div id="site-detail"></div></section><section><h3>本地记录</h3><div id="local-detail"></div></section></div></dialog>
+<script type="module" src="./app.js"></script>
+</body></html>
