@@ -475,6 +475,39 @@ def test_call_all_empty_panel_does_not_create_a_car(setup_queue):
     assert not service.room(SCOPE)['cars']
 
 
+def test_call_all_button_hidden_until_cooldown_expires_across_refresh_and_restart(setup_queue):
+    service, clock, send, act = setup_queue
+    def actions():
+        return [b['action']['data'] for row in send.await_args.args[2]['content']['rows']
+                for b in row['buttons']]
+    async def scenario():
+        await act()
+        baseline = actions()
+        assert baseline[-1] == '/呼叫全体'
+        await act('呼叫全体')
+        assert actions() == baseline[:-1]
+        await act('等车')
+        assert actions() == baseline[:-1]
+        await act(scope=('official-a', 'app-a', 'other-group'))
+        assert actions() == baseline
+        clock[0] = 240
+        await service.tick()
+        original_panels = [c for c in send.await_args_list if c.args[0] == SCOPE and c.args[2]]
+        assert all(b['action']['data'] != '/呼叫全体'
+                   for row in original_panels[-1].args[2]['content']['rows'] for b in row['buttons'])
+        restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
+        await restored.execute(SCOPE, '等车', '', 'u1', '云玩家', 'restart')
+        assert actions() == baseline[:-1]
+        clock[0] = 1799.999
+        await restored.execute(SCOPE, '等车', '', 'u1', '云玩家', 'before-expiry')
+        assert actions() == baseline[:-1]
+        clock[0] = 1800
+        await restored.execute(SCOPE, '等车', '', 'u1', '云玩家', 'at-expiry')
+        assert actions() == baseline
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+    asyncio.run(scenario())
+
+
 def test_call_all_panel_excludes_expired_cars_and_does_not_repeat_on_broadcast(setup_queue):
     service, clock, send, act = setup_queue
     async def scenario():

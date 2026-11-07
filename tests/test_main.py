@@ -2461,7 +2461,9 @@ def test_call_all_uses_native_official_markdown_and_selected_permission(official
         text = markdown['params'][0]['values'][0] if template else markdown['content']
         assert text.count('<qqbot-at-everyone />') == 1 and '友谊' in text
         assert '**友谊等车**' in text and '当前没有队伍喵。' in text
-        assert params['keyboard']['content']['rows'][-1]['buttons'][0]['action']['data'] == '/呼叫全体'
+        rows = params['keyboard']['content']['rows']
+        assert [len(row['buttons']) for row in rows] == [3, 3]
+        assert all(button['action']['data'] != '/呼叫全体' for row in rows for button in row['buttons'])
         ev.message_obj.message_id = 'incoming-2'
         await obj.official_queue_cmd(ev)
         assert api.post_group_message.await_count == 2

@@ -242,3 +242,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 ## v1.27.2 呼叫全体完整面板
 
 - 呼叫全体通过panel的单次announcement参数加入原生全体标签和邀请，复用全部车次/成员/计时/按钮渲染；普通交互及广播不传announcement，不能重复@全体。空房提示没有队伍，不隐式建车；30分钟冷却、清理和广播时钟不改。
+
+## v1.27.3 冷却隐藏呼叫按钮
+
+- panel统一按渲染时刻与持久化call_all_until控制键盘show_call_all，冷却中去除第三行，保留原六按钮；到期后下次面板刷新恢复。呼叫结果、查看、交互、广播和重启均共用规则，文字命令及旧按钮仍保留冷却校验。

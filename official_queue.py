@@ -95,15 +95,16 @@ def avatar(appid, uid):
     return f'![头像 #32px #32px]({url})'
 
 
-def keyboard(car=None):
+def keyboard(car=None, *, show_call_all=True):
     # 所有队伍共用操作，每行至多三个；呼叫全体与车次无关。
     actions = [('join', '进队等车', '/进队等车', True),
                ('leave', '跑路了再见', '/离队', True),
                ('go', '发送群号', '/发送群号 ', False),
                ('new', '再开一车', '/再开一车', True),
                ('dissolve', '解散队伍', '/解散', True),
-               ('help', '等车帮助', '/等车帮助', True),
-               ('call_all', '呼叫全体', '/呼叫全体', True)]
+               ('help', '等车帮助', '/等车帮助', True)]
+    if show_call_all:
+        actions.append(('call_all', '呼叫全体', '/呼叫全体', True))
     buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
                 'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
                            'enter': enter, 'reply': True, 'unsupport_tips': '请发送对应文字指令'}}
@@ -356,7 +357,8 @@ class WaitingQueues:
                             + '　'.join(members or ['暂无成员']))
         if not room['cars']:
             sections.append('当前没有队伍喵。')
-        await self.emit(scope, room, '\n\n'.join(sections), keyboard())
+        await self.emit(scope, room, '\n\n'.join(sections),
+                        keyboard(show_call_all=now >= room.get('call_all_until', 0)))
 
     async def execute(self, scope, action, raw, uid, name, msg_id):
         async with self.lock(scope):
