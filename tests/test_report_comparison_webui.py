@@ -214,10 +214,10 @@ def test_webui_register_and_reload_cleanup_do_not_remove_new_instance(tmp_path):
         routes.append((route,handler,methods,desc))
     plugin=SimpleNamespace(data_dir=tmp_path,context=SimpleNamespace(register_web_api=register,registered_web_apis=routes))
     first=ComparisonWebUI(plugin,logging.getLogger('test'));first.register()
-    assert len(routes) == 5
+    assert len(routes) == 13
     second=ComparisonWebUI(plugin,logging.getLogger('test'));second.register()
     asyncio.run(first.close())
-    assert len(routes) == 5 and all(r[1].__self__ is second for r in routes)
+    assert len(routes) == 13 and all(r[1].__self__ is second for r in routes)
     asyncio.run(second.close()); assert not routes
 
 
@@ -311,3 +311,47 @@ def test_explicit_form_fields_override_imported_url_defaults_consistently():
     query=ComparisonQuery.from_payload(payload(site_team='b队',publish_start='2026-10-02',publish_end='2026-11-01',
         source_url='https://rep.ygobbs2.com/?c=search&a=sub&groupname=a%E9%98%9F&starttime=2026-10-01&endtime=2026-10-31'))
     assert query.site_team=='b队' and query.publish_start=='2026-10-02' and query.publish_end=='2026-11-01'
+
+
+def test_complete_cloud_archive_runs_before_comparison_and_archive_failure_stops_diff(tmp_path):
+    async def scenario():
+        events=[]
+        async def archive(records,query):events.append('archive');return dict(total=1,inserted=1,refreshed=0)
+        async def load(query):events.append('load');return []
+        jobs=ComparisonJobs(tmp_path,load,archive=archive,client=SimpleNamespace(crawl=AsyncMock(return_value=[record()])))
+        job=await jobs.start(payload());await jobs.task
+        assert events==['archive','load'] and jobs.jobs[job['id']]['archive']['inserted']==1
+        events.clear()
+        jobs.archive=AsyncMock(side_effect=OSError('archive unavailable'))
+        job=await jobs.start(payload());await jobs.task
+        assert not events and jobs.jobs[job['id']]['status']=='failed'
+        assert not jobs.result_path(job['id']).exists()
+    asyncio.run(scenario())
+
+
+def test_selection_is_resolved_from_database_and_wrong_local_team_is_rejected(tmp_path):
+    local=report();local['created_at']=1
+    source=record()
+    cloud=dict(cloud_id=101,team_a=source['team_a'],team_b=source['team_b'],match_time=source['match_time'],
+               publish_date=source['publish_date'],winner_site=source['winner_site'],publisher='示例用户',
+               last_seen_at=1,body=source['body'],source_url='https://rep.ygobbs2.com/',parsed_json=json.dumps(source))
+    db=SimpleNamespace(get_webui_local_reports_by_ids=AsyncMock(return_value=[local]),get_cloud_reports_by_ids=AsyncMock(return_value=[cloud]))
+    plugin=SimpleNamespace(data_dir=tmp_path,context=SimpleNamespace(),db_ready=True,db=db)
+    ui=ComparisonWebUI(plugin,logging.getLogger('test'))
+    async def scenario():
+        refs=[dict(source='local',id='1',home_team='a队',body='forged'),dict(source='cloud',id='101',body='forged')]
+        rows=await ui.resolve_reports(refs)
+        assert len(rows)==2 and all(r['body']!='forged' for r in rows)
+        assert rows[0]['source']=='local' and rows[1]['source']=='cloud'
+        db.get_webui_local_reports_by_ids.return_value=[]
+        with pytest.raises(ComparisonError,match='不存在'):await ui.resolve_reports(refs)
+    asyncio.run(scenario())
+
+
+def test_dispatch_shutdown_failure_still_cancels_comparison_and_cleans_routes(tmp_path):
+    routes=[]
+    plugin=SimpleNamespace(data_dir=tmp_path,context=SimpleNamespace(register_web_api=lambda *entry:routes.append(entry),registered_web_apis=routes))
+    ui=ComparisonWebUI(plugin,logging.getLogger('test'));ui.register()
+    ui.dispatch.close=AsyncMock(side_effect=OSError('disk full'))
+    with pytest.raises(OSError):asyncio.run(ui.close())
+    assert ui.jobs.closed and not routes

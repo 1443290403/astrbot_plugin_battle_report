@@ -2,6 +2,10 @@ const $ = id => document.getElementById(id);
 const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
 let jobId = '', category = 'matched', offset = 0, timer, sequence = 0, dbReady = false, running = false;
 let lastResult;
+let view = 'comparison', libraryOffset = 0, libraryData, librarySequence = 0;
+const selection = new Map();
+let dispatchId = '', dispatchTimer, dispatchSequence = 0, dispatchRunning = false;
+const dispatchLabels={prepared:'待确认',running:'发送中',completed:'全部发送成功',partial:'部分未完成',interrupted:'已中断'};
 const labels = {pending:'准备中',running:'核对中',completed:'已完成',failed:'未完成',cancelled:'已取消',interrupted:'已中断'};
 const rowNotes = {matched:'规范内容相同',missing_in_db:'本地未匹配',only_in_db:'本次网站范围未检出',
   db_duplicates:'本地多条相同内容',site_duplicates:'网站多条相同内容',parse_failed:'原文无法解析',
@@ -9,7 +13,7 @@ const rowNotes = {matched:'规范内容相同',missing_in_db:'本地未匹配',o
 const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '';
 const node = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = String(text); if (cls) e.className = cls; return e; };
 function notice(text = '') { $('notice').textContent = text; $('notice').hidden = !text; }
-function setRunning(value) { running = value; $('start').disabled = !dbReady || value; $('cancel').hidden = !value; $('history').disabled = value; }
+function setRunning(value) { running = value; $('start').disabled = !dbReady || (value && view === 'comparison'); $('cancel').hidden = !value; $('history').disabled = value; }
 function monthDates() {
   const [y,m] = $('month').value.split('-').map(Number);
   if (!y || !m) return;
@@ -49,12 +53,14 @@ async function options(initial = false) {
   return data;
 }
 $('query-form').addEventListener('submit', async e => {
-  e.preventDefault(); if (running) return;
+  e.preventDefault();
+  if (view !== 'comparison') { libraryOffset = 0; await loadLibrary(); return; }
+  if (running) return;
   notice(); $('start').disabled = true;
   try {
     const job = await bridge.apiPost('comparison/jobs', {team:$('team').value.trim(), site_team:$('site-team').value.trim(), month:$('month').value,
       source_url:$('source-url').value.trim(), publish_start:$('publish-start').value, publish_end:$('publish-end').value});
-    category = 'matched'; offset = 0; jobId = job.id; setRunning(true); $('download').disabled = true;
+    category = 'matched'; offset = 0; jobId = job.id; lastResult=null; setRunning(true); $('download').disabled = true;
     $('records').replaceChildren(); $('categories').replaceChildren();
     for (const id of ['site-total','db-total','matched','review-total']) $(id).textContent = '—';
     await refresh();
@@ -77,7 +83,9 @@ function drawRows(data) {
     identity.append(node('strong', `${r.team_a || '待解析'} VS ${r.team_b || '待解析'}`),node('small', `${r.match_time || '日期未知'} · ${r.location || '地点未知'}`));
     tr.append(identity);
     for (const side of ['site','local']) {
-      const td = node('td'); td.append(node('span', row[side].length ? row[side].map(r => `#${r.id}`).join('、') : '—', 'id-list'));
+      const td = node('td');
+      if (row[side].length) td.append(...row[side].map(r => selectLabel({...r,source:side === 'site' ? 'cloud' : 'local',home_team:side === 'site' ? '' : data.job.query.team})));
+      else td.append(node('span','—','id-list'));
       if (row[side].length) td.append(node('small', [...new Set(row[side].map(r => r.winner).filter(Boolean))].join(' / ') || '暂无胜方'));
       tr.append(td);
     }
@@ -104,7 +112,7 @@ async function refresh() {
     if (version !== sequence || selected !== jobId) return;
     lastResult = data;
     const job = data.job, active = ['pending','running'].includes(job.status);
-    $('run-status').textContent = labels[job.status] || job.status; $('run-message').textContent = job.message;
+    $('run-status').textContent = labels[job.status] || job.status; $('run-message').textContent = job.message + (job.archive ? ` 云端归档：新增 ${job.archive.inserted}，刷新 ${job.archive.refreshed}。` : '');
     $('scope').textContent = `${job.query.team} · 比赛 ${job.query.start} 至 ${job.query.end} · 网站发布 ${job.query.publish_start} 至 ${job.query.publish_end}${job.finished_at ? ' · 核对于 '+formatTime(job.finished_at) : ''}`;
     $('progress').hidden = !active; $('progress').value = job.pages ? job.page / job.pages * 100 : 0;
     setRunning(active); $('download').disabled = job.status !== 'completed';
@@ -127,6 +135,7 @@ async function refresh() {
     $('site-total').textContent = summary.site_total; $('db-total').textContent = summary.db_total;
     $('matched').textContent = summary.matched_groups; $('review-total').textContent = summary.review_count;
     categories(job); drawRows(data);
+    if (view !== 'comparison') await loadLibrary();
     const excluded = Object.values(summary.excluded || {}).reduce((a,b) => a + b, 0);
     if (excluded) notice(`已排除 ${excluded} 份踢馆等非友谊战报。`);
   } catch(e) {
@@ -159,7 +168,7 @@ function detail(row) {
 }
 $('close-detail').addEventListener('click', () => $('detail').close());
 $('detail').addEventListener('click', e => {if (e.target === $('detail')) {const r = $('detail').getBoundingClientRect(); if(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) $('detail').close();}});
-window.addEventListener('pagehide', () => clearTimeout(timer));
+window.addEventListener('pagehide', () => { clearTimeout(timer); clearTimeout(dispatchTimer); });
 if (!bridge) {
   notice('请从 AstrBot 后台的插件详情页打开“战报核对”。'); $('run-message').textContent = '未连接 AstrBot 后台';
 } else {
@@ -172,3 +181,154 @@ if (!bridge) {
     else if (data.history.length) {jobId = data.history[0].id; await refresh();}
   } catch(e) {notice(e.message); $('run-message').textContent = '无法读取后台状态';}
 }
+
+// 查询页与跨页选择篮：发送内容始终由后台重新读取，前端只提交来源和编号。
+function selectKey(record) { return `${record.source}:${record.id}`; }
+function selectionChanged() {
+  const records = [...selection.values()], local = records.filter(r => r.source === 'local').length;
+  $('selection-count').textContent = `已选 ${records.length} 份战报${records.length ? ` · 本地 ${local} / 云端 ${records.length-local}` : ''}`;
+  $('send-qq').disabled = !records.length; $('clear-selection').disabled = !records.length;
+  document.querySelectorAll('[data-report-key]').forEach(input => { input.checked = selection.has(input.dataset.reportKey); });
+  const current = libraryData?.records || [];
+  $('library-select-all').checked = current.length > 0 && current.every(r => selection.has(selectKey(r)));
+  $('library-select-all').indeterminate = current.some(r => selection.has(selectKey(r))) && !$('library-select-all').checked;
+}
+function selectLabel(record, showId = true) {
+  const label = node('label',null,'report-select'), input = node('input');
+  input.type = 'checkbox'; input.dataset.reportKey = selectKey(record); input.checked = selection.has(selectKey(record));
+  input.setAttribute('aria-label',`勾选${record.source === 'cloud' ? '云端' : '本地'}战报 ${record.id}`);
+  input.addEventListener('change', () => {if (input.checked) selection.set(selectKey(record),record); else selection.delete(selectKey(record)); selectionChanged();});
+  label.append(input); if (showId) label.append(node('span',`#${record.id}`,'id-list')); return label;
+}
+function selectComparisonPage(source) {
+  for (const row of lastResult?.records || []) for (const record of row[source === 'cloud' ? 'site' : 'local']) {
+    const r = {...record,source,home_team:source === 'local' ? lastResult.job.query.team : ''}; selection.set(selectKey(r),r);
+  }
+  selectionChanged();
+}
+$('select-site-page').addEventListener('click',()=>selectComparisonPage('cloud'));
+$('select-local-page').addEventListener('click',()=>selectComparisonPage('local'));
+$('clear-selection').addEventListener('click',()=>{selection.clear();selectionChanged();});
+function activateView(next) {
+  view=next; libraryOffset=0; librarySequence++;
+  document.querySelectorAll('#view-tabs button').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',String(b.dataset.view===view));});
+  $('comparison-view').hidden=view!=='comparison'; $('library-view').hidden=view==='comparison';
+  document.querySelector('.advanced').hidden=view!=='comparison'; $('site-team').parentElement.hidden=view==='local';
+  $('source-url').disabled=view!=='comparison';$('publish-start').disabled=view!=='comparison';$('publish-end').disabled=view!=='comparison';$('site-team').disabled=view==='local';
+  $('query-title').textContent=view==='comparison'?'选择核对范围':view==='local'?'筛选本地上传战报':'筛选云端归档战报';
+  $('query-description').textContent=view==='comparison'?'默认查询上个月的友谊战报':view==='local'?'包含本地上传的友谊和踢馆记录':'按网站ID独立保存，不计入本地战绩';
+  $('query-hint').textContent=view==='comparison'?'完整拉取后保存云端副本，本地战报不变。':'跨页保留勾选，可批量私聊发送到QQ。';
+  $('start').textContent=view==='comparison'?'开始核对 ↗':'刷新列表'; setRunning(running);
+  $('local-kind-label').hidden=view!=='local'; $('fetch-cloud').hidden=view!=='cloud';
+  $('library-title').textContent=view==='local'?'本地战报':'云端战报';
+  $('library-author-heading').textContent=view==='local'?'上传人 / 上传时间':'发布人 / 最近抓取';
+  $('library-description').textContent=view==='local'?'按本地比赛编号显示，不依赖是否抓取过网站。':'完整拉取后按云端ID保存一份；再次拉取刷新原记录。';
+  if (view!=='comparison' && dbReady && $('team').value && $('month').value) loadLibrary();
+}
+document.querySelectorAll('#view-tabs button').forEach(b=>b.addEventListener('click',()=>activateView(b.dataset.view)));
+function storedTime(value) { return value ? new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(Number(value)*1000)) : '未记录'; }
+async function loadLibrary() {
+  if (view==='comparison') return;
+  const selectedView=view, version=++librarySequence;
+  $('start').disabled=true; notice();libraryData=null;$('library-records').replaceChildren();$('library-pagination').hidden=true;
+  $('library-empty').hidden=false;$('library-empty').querySelector('h3').textContent='正在读取战报';$('library-empty').querySelector('p').textContent='';
+  try {
+    const data=await bridge.apiGet(`comparison/${view==='local'?'local-reports':'cloud-reports'}`,{
+      team:$('team').value.trim(),site_team:view==='cloud'?$('site-team').value.trim():'',month:$('month').value,
+      kind:$('local-kind').value,offset:libraryOffset,limit:30});
+    if (version!==librarySequence || selectedView!==view) return;
+    libraryData=data;
+    $('library-scope').textContent=`${data.query.team} · ${data.query.start} 至 ${data.query.end} · 共 ${data.total} 份`;
+    $('library-records').replaceChildren(...data.records.map(r=>{
+      const tr=node('tr'), select=node('td');select.append(selectLabel(r,false));tr.append(select);
+      const identity=node('td');identity.append(node('strong',`#${r.id} · ${r.team_a || '待解析'} VS ${r.team_b || '待解析'}`));tr.append(identity);
+      const kind=node('td',r.kind==='raid'?'踢馆':r.kind==='friendly'?'友谊':'待解析');
+      if (r.source==='local') kind.append(node('small',r.export_sent?'已标记发送':'未标记发送')); else kind.append(node('small','云端归档'));tr.append(kind);
+      const date=node('td',r.match_time || '日期未知');if(r.publish_date)date.append(node('small',`发布 ${r.publish_date}`));tr.append(date);
+      const who=node('td',r.publisher || '未记录');who.append(node('small',storedTime(r.uploaded_at)));tr.append(who);
+      const action=node('td'), button=node('button','查看原文','secondary');button.addEventListener('click',()=>detail({site:r.source==='cloud'?[r]:[],local:r.source==='local'?[r]:[],note:r.source==='cloud'?'云端独立归档记录。':'本地上传战报。'}));action.append(button);tr.append(action);return tr;
+    }));
+    $('library-empty').hidden=data.records.length>0;$('library-empty').querySelector('h3').textContent='暂无记录';$('library-empty').querySelector('p').textContent='当前战队和月份没有符合条件的战报。'; $('library-pagination').hidden=!data.total;
+    $('library-page-label').textContent=`第 ${libraryOffset+1}–${Math.min(libraryOffset+data.limit,data.total)} 项，共 ${data.total} 项`;
+    $('library-prev').disabled=!libraryOffset; $('library-next').disabled=libraryOffset+data.limit>=data.total;
+    selectionChanged();
+  } catch(e) {if(version===librarySequence){notice(e.message);$('library-empty').querySelector('h3').textContent='未能读取战报';$('library-empty').querySelector('p').textContent='请检查范围或连接后重新刷新。';}} finally {if(version===librarySequence)setRunning(running);}
+}
+$('local-kind').addEventListener('change',()=>{libraryOffset=0;loadLibrary();});
+$('library-prev').addEventListener('click',()=>{libraryOffset=Math.max(0,libraryOffset-30);loadLibrary();});
+$('library-next').addEventListener('click',()=>{if(libraryData&&libraryOffset+30<libraryData.total){libraryOffset+=30;loadLibrary();}});
+$('library-select-all').addEventListener('change',()=>{for(const r of libraryData?.records||[]){if($('library-select-all').checked)selection.set(selectKey(r),r);else selection.delete(selectKey(r));}selectionChanged();});
+$('fetch-cloud').addEventListener('click',()=>{activateView('comparison');$('query-form').requestSubmit();});
+
+function dispatchNotice(text='') {$('dispatch-notice').textContent=text;$('dispatch-notice').hidden=!text;}
+function invalidateDispatch() {if(dispatchRunning)return;dispatchId='';$('dispatch-confirm').disabled=true;$('dispatch-retry').hidden=true;$('dispatch-preview').replaceChildren();$('dispatch-results').replaceChildren();}
+async function loadAdmins() {
+  invalidateDispatch();$('dispatch-admins').replaceChildren();
+  if($('dispatch-mode').value!=='admins'||!$('dispatch-team').value.trim())return;
+  try {
+    const data=await bridge.apiGet('comparison/dispatch/admins',{team:$('dispatch-team').value.trim()});
+    $('dispatch-admins').replaceChildren(...data.admins.map(qq=>{const label=node('label',null,'report-select'),input=node('input');input.type='checkbox';input.value=qq;label.append(input,node('span',qq));return label;}));
+    if(!data.admins.length)$('dispatch-admins').append(node('p','该战队尚未设置管理员。','hint'));
+  }catch(e){dispatchNotice(e.message);}
+}
+async function openDispatch(historyOnly=false) {
+  dispatchNotice();$('dispatch-dialog').showModal();$('dispatch-prepare').disabled=true;
+  try{
+    const data=await bridge.apiGet('comparison/dispatch/options');
+    const active=data.history.find(batch=>batch.status==='running');
+    dispatchRunning=!!active;
+    if(!historyOnly&&!active)invalidateDispatch();
+    const options=[];
+    for(const connection of data.connections){for(const account of (connection.accounts.length?connection.accounts:[''])){const option=node('option',`${connection.label}${account?' · QQ '+account:''}`);option.value=JSON.stringify({platform_id:connection.id,self_id:account});options.push(option);}}
+    $('dispatch-platform').replaceChildren(...options);
+    if(!options.length){const option=node('option','没有可用的OneBot连接');option.value='';$('dispatch-platform').append(option);dispatchNotice('需要已连接的 SnowLuma／OneBot 机器人才能发送QQ私聊。');}
+    $('dispatch-teams').replaceChildren(...data.admin_teams.map(team=>{const option=node('option');option.value=team;return option;}));
+    const empty=node('option','最近发送批次');empty.value='';$('dispatch-history').replaceChildren(empty,...data.history.map(batch=>{const option=node('option',`${storedTime(batch.created_at)} · ${batch.report_count}份 · ${dispatchLabels[batch.status] || '未知状态'}`);option.value=batch.id;return option;}));
+    if(!$('dispatch-team').value)$('dispatch-team').value=$('team').value;
+    $('dispatch-prepare').disabled=!selection.size || !options.length || dispatchRunning;
+    if(active){dispatchId=active.id;await pollDispatch(true);}
+    else if(historyOnly && data.history.length){dispatchId=data.history[0].id;await pollDispatch(true);}
+  }catch(e){dispatchNotice(e.message);}
+}
+$('send-qq').addEventListener('click',()=>openDispatch(false));$('dispatch-history-open').addEventListener('click',()=>openDispatch(true));
+$('dispatch-close').addEventListener('click',()=>{$('dispatch-dialog').close();clearTimeout(dispatchTimer);});
+$('dispatch-dialog').addEventListener('close',()=>clearTimeout(dispatchTimer));
+$('dispatch-mode').addEventListener('change',()=>{invalidateDispatch();const admins=$('dispatch-mode').value==='admins';$('dispatch-custom-label').hidden=admins;$('dispatch-team-label').hidden=!admins;$('dispatch-admins').hidden=!admins;if(admins)loadAdmins();});
+$('dispatch-team').addEventListener('change',loadAdmins);
+for(const id of ['dispatch-qqs','dispatch-platform'])$(id).addEventListener('input',invalidateDispatch);
+$('dispatch-admins').addEventListener('change',invalidateDispatch);
+$('dispatch-history').addEventListener('change',()=>{if($('dispatch-history').value){dispatchId=$('dispatch-history').value;pollDispatch(true);}});
+$('dispatch-prepare').addEventListener('click',async()=>{
+  $('dispatch-prepare').disabled=true;dispatchNotice();
+  try{
+    const connection=JSON.parse($('dispatch-platform').value || '{}');
+    const plan=await bridge.apiPost('comparison/dispatch/prepare',{...connection,reports:[...selection.values()].map(r=>({source:r.source,id:r.id,home_team:r.home_team || ''})),
+      target_mode:$('dispatch-mode').value,qq_ids:$('dispatch-qqs').value,admin_team:$('dispatch-team').value.trim(),admin_ids:[...$('dispatch-admins').querySelectorAll('input:checked')].map(i=>i.value)});
+    dispatchId=plan.id;renderDispatch(plan,true);
+  }catch(e){dispatchNotice(e.message);}finally{$('dispatch-prepare').disabled=!selection.size || dispatchRunning;}
+});
+function renderDispatch(plan,preview=false) {
+  dispatchRunning=plan.status==='running';$('dispatch-confirm').disabled=plan.status!=='prepared';
+  $('dispatch-stop').hidden=!dispatchRunning;$('dispatch-retry').hidden=dispatchRunning || !(plan.counts.failed+plan.counts.cancelled);
+  for(const id of ['dispatch-platform','dispatch-mode','dispatch-qqs','dispatch-team','dispatch-history'])$(id).disabled=dispatchRunning;
+  $('dispatch-prepare').disabled=!selection.size || dispatchRunning;
+  const summary=node('p',`${dispatchLabels[plan.status] || '未知状态'} · 机器人 QQ ${plan.self_id} · ${plan.report_count}份战报 → ${plan.recipients.join('、')}`);
+  if(preview){
+    const contents=node('details'), title=node('summary','查看本次将发送的原文');contents.append(title);
+    for(const report of plan.reports){const section=node('article',null,'report-block');section.append(node('strong',`${report.source==='cloud'?'云端':'本地'} #${report.id} · ${report.team_a} VS ${report.team_b}`),node('pre',report.body));contents.append(section);}
+    $('dispatch-preview').replaceChildren(summary,contents,node('p',plan.status==='prepared'?'请核对接收QQ和原文后点击“确认发送”。':'本批次保留的发送原文快照。','hint'));
+  }else $('dispatch-preview').replaceChildren(summary);
+  const results=plan.entries.map(e=>{const labels={pending:'等待发送',sending:'发送中',sent:'已确认成功',failed:'失败',unknown:'结果未确认',cancelled:'未发送'};return node('p',`QQ ${e.qq} · 第${e.start+1}–${e.start+e.count}份：${labels[e.status]}${e.error?' · '+e.error:''}`);});
+  $('dispatch-results').replaceChildren(...results);
+  if(plan.counts.unknown)dispatchNotice('存在未确认的发送结果，请先到QQ核实；重试按钮不会重发这些部分。');
+}
+async function pollDispatch(preview=false){
+  clearTimeout(dispatchTimer);if(!dispatchId)return;const id=dispatchId,version=++dispatchSequence;
+  try{const data=await bridge.apiGet(`comparison/dispatch/${id}`,{preview:preview?'1':'0'});if(id!==dispatchId||version!==dispatchSequence)return;renderDispatch(data,data.reports.some(r=>typeof r.body==='string'));if(dispatchRunning&&$('dispatch-dialog').open)dispatchTimer=setTimeout(pollDispatch,1200);}catch(e){dispatchNotice(e.message);}
+}
+async function confirmDispatch(retry=false){
+  if(!dispatchId)return;$('dispatch-confirm').disabled=true;$('dispatch-retry').disabled=true;dispatchNotice();
+  try{const data=await bridge.apiPost(`comparison/dispatch/${dispatchId}/send`,{retry});renderDispatch(data);if(dispatchRunning)dispatchTimer=setTimeout(pollDispatch,700);}catch(e){dispatchNotice(e.message);await pollDispatch();}finally{$('dispatch-retry').disabled=false;}
+}
+$('dispatch-confirm').addEventListener('click',()=>confirmDispatch());$('dispatch-retry').addEventListener('click',()=>confirmDispatch(true));
+$('dispatch-stop').addEventListener('click',async()=>{try{renderDispatch(await bridge.apiPost(`comparison/dispatch/${dispatchId}/cancel`,{}));clearTimeout(dispatchTimer);}catch(e){dispatchNotice(e.message);}});

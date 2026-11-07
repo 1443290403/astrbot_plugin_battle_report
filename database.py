@@ -8,6 +8,8 @@ import re
 import time
 import hashlib
 import secrets
+import json
+from datetime import date
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -30,7 +32,7 @@ except ImportError:  # 单元测试以顶层模块方式导入 database
         KIND_FRIENDLY, KIND_RAID, RAID_PLACEHOLDER, report_fingerprint,
     )
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -218,31 +220,28 @@ class Database:
                         INDEX idx_team_user (home_team, user_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
-                # v20：QQ 与官方 OpenID 同一身份的附加关联，保留 users.qq_id。
+                # v21：云端站点记录独立存档；不进入 matches/duels 与本地统计。
                 await cur.execute(
-                    """CREATE TABLE IF NOT EXISTS official_user_accounts (
-                        appid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-                        openid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        qq_id VARCHAR(64) NOT NULL,
+                    """CREATE TABLE IF NOT EXISTS cloud_battle_reports (
+                        cloud_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                        team_a VARCHAR(64) NOT NULL DEFAULT '',
+                        team_b VARCHAR(64) NOT NULL DEFAULT '',
+                        match_time DATE NULL,
+                        publish_date DATE NULL,
+                        winner_site VARCHAR(64) NOT NULL DEFAULT '',
+                        loser_site VARCHAR(64) NOT NULL DEFAULT '',
+                        publisher VARCHAR(255) NOT NULL DEFAULT '',
+                        query_team VARCHAR(64) NOT NULL DEFAULT '',
+                        source_url TEXT NOT NULL,
+                        body LONGTEXT NOT NULL,
+                        parsed_json LONGTEXT NOT NULL,
+                        content_hash CHAR(64) CHARACTER SET ascii NOT NULL,
                         created_at BIGINT NOT NULL,
-                        PRIMARY KEY (appid, openid),
-                        UNIQUE KEY uk_official_qq (appid, qq_id),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-                )
-                await cur.execute(
-                    """CREATE TABLE IF NOT EXISTS official_link_requests (
-                        token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
-                        home_team VARCHAR(64) NOT NULL,
-                        appid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-                        openid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        owner_qq VARCHAR(64) NOT NULL,
-                        expires_at BIGINT NOT NULL,
-                        created_at BIGINT NOT NULL,
-                        INDEX idx_official_request (appid, openid),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        last_seen_at BIGINT NOT NULL,
+                        INDEX idx_cloud_match (match_time, cloud_id),
+                        INDEX idx_cloud_publish (publish_date, cloud_id),
+                        INDEX idx_cloud_team_a (team_a, match_time),
+                        INDEX idx_cloud_team_b (team_b, match_time)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
                 )
                 # 新增表用 CREATE TABLE IF NOT EXISTS 就够，**不需要 information_schema
@@ -480,6 +479,34 @@ class Database:
                 # 那句统一的「写版本行」推进。v18 的 team_admins 同样使用幂等建表。
                 if current < 19:
                     await ensure_column("matches", "export_sent", "TINYINT NOT NULL DEFAULT 0")
+                # 旧INT用户表须先完成v10扩容，再建立BIGINT身份外键；此处仍幂等。
+                # v20：QQ 与官方 OpenID 同一身份的附加关联，保留 users.qq_id。
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS official_user_accounts (
+                        appid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        openid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        qq_id VARCHAR(64) NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        PRIMARY KEY (appid, openid),
+                        UNIQUE KEY uk_official_qq (appid, qq_id),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
+                await cur.execute(
+                    """CREATE TABLE IF NOT EXISTS official_link_requests (
+                        token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+                        home_team VARCHAR(64) NOT NULL,
+                        appid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        openid VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        owner_qq VARCHAR(64) NOT NULL,
+                        expires_at BIGINT NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        INDEX idx_official_request (appid, openid),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                )
                 if current < SCHEMA_VERSION:
                     await cur.execute("INSERT INTO schema_version (version) VALUES (%s)", (SCHEMA_VERSION,))
 
@@ -2015,7 +2042,8 @@ class Database:
         return await self.get_reports_for_export(home_team, date_from, date_to, include_team_sides=True)
 
     async def get_reports_for_export(self, home_team: str, date_from: str | None = None, date_to: str | None = None,
-                                     *, include_team_sides: bool = False) -> list[dict]:
+                                     *, include_team_sides: bool = False, match_ids: list[int] | None = None,
+                                     include_upload_info: bool = False) -> list[dict]:
         """按战报聚合返回某战队战报（含原始文本与按 seq 排序的对局），供合并转发导出，按战队跨群、可按日期过滤。
 
         每份战报一个 dict：match_id / team_a / team_b / match_time / rule / location /
@@ -2026,15 +2054,22 @@ class Database:
         params = [home_team]
         if date_from or date_to:
             params += [d1, d2]
+        id_clause = ''
+        if match_ids is not None:
+            if not match_ids:
+                return []
+            id_clause = ' AND m.id IN (' + ','.join(['%s'] * len(match_ids)) + ')'
+            params += match_ids
         team_columns = ', d.player_a_team, d.player_b_team' if include_team_sides else ''
+        upload_columns = ', m.group_id, m.created_at' if include_upload_info else ''
         rows = await self._query(
             f"""SELECT m.id AS match_id, m.team_a, m.team_b, m.match_time, m.rule, m.location,
                       m.winner, m.home_team, m.raw_text, m.submitted_by, m.submitted_name,
                       m.kind, m.export_sent,
                       d.seq, d.round_no, d.player_a, d.score_a, d.player_b, d.score_b,
-                      d.a_sub, d.b_sub, d.ruled, d.owner{team_columns}
+                      d.a_sub, d.b_sub, d.ruled, d.owner{team_columns}{upload_columns}
                FROM matches m LEFT JOIN duels d ON d.match_id = m.id
-               WHERE m.home_team = %s{date_clause}
+               WHERE m.home_team = %s{date_clause}{id_clause}
                ORDER BY m.id, d.seq, d.id""",
             tuple(params),
         )
@@ -2059,6 +2094,8 @@ class Database:
                     "duels": [],
                 }
                 reports.append(current)
+                if include_upload_info:
+                    current.update(group_id=r['group_id'], created_at=int(r['created_at']))
             if r["player_a"] is not None:
                 current["duels"].append({
                     "seq": r["seq"] or 0,
@@ -2075,6 +2112,101 @@ class Database:
                 if include_team_sides:
                     current['duels'][-1].update(player_a_team=r['player_a_team'], player_b_team=r['player_b_team'])
         return reports
+
+    async def get_webui_local_reports(self, home_team: str, start: str, end: str, kind: str,
+                                       offset: int, limit: int) -> dict:
+        """本地上传列表；先分页比赛ID，再读取所选页对局，避免按duel分页。"""
+        where = 'home_team = %s AND match_time BETWEEN %s AND %s'
+        params = [home_team, start, end]
+        if kind != 'all':
+            if kind not in ('friendly', 'raid'):
+                raise ValueError('战报类型无效。')
+            where += ' AND kind = %s'
+            params.append(kind)
+        count = await self._query('SELECT COUNT(*) AS n FROM matches WHERE ' + where, tuple(params))
+        ids = await self._query('SELECT id FROM matches WHERE ' + where + ' ORDER BY id DESC LIMIT %s OFFSET %s',
+                                tuple(params + [limit, offset]))
+        reports = await self.get_webui_local_reports_by_ids(home_team, [int(r['id']) for r in ids])
+        return dict(total=int(count[0]['n']), records=sorted(reports, key=lambda r: r['match_id'], reverse=True))
+
+    async def get_webui_local_reports_by_ids(self, home_team: str, ids: list[int]) -> list[dict]:
+        return await self.get_reports_for_export(home_team, match_ids=ids, include_upload_info=True)
+
+    async def archive_cloud_reports(self, records: list[dict], query_team: str, source_url: str) -> dict:
+        """完整抓取后原子UPSERT；云端ID唯一，不触碰matches/duels。"""
+        def valid_date(value):
+            try:
+                return date.fromisoformat(str(value)).isoformat()
+            except (ValueError, TypeError):
+                return None
+        rows = []
+        seen = set()
+        now = int(time.time())
+        for record in records:
+            raw_id = str(record.get('id', ''))
+            if not re.fullmatch(r'[0-9]{1,20}', raw_id) or not 0 < int(raw_id) < 2**64:
+                raise ValueError('云端战报编号无效。')
+            cloud_id = int(raw_id)
+            if cloud_id in seen:
+                raise ValueError('本次抓取出现重复云端编号。')
+            seen.add(cloud_id)
+            body = record['body']
+            data = dict(record, id=str(cloud_id))
+            rows.append((cloud_id, str(data.get('team_a') or '')[:64], str(data.get('team_b') or '')[:64],
+                         valid_date(data.get('match_time')), valid_date(data.get('publish_date')),
+                         str(data.get('winner_site') or '')[:64], str(data.get('loser_site') or '')[:64],
+                         str(data.get('publisher') or '')[:255], query_team, source_url, body,
+                         json.dumps(data, ensure_ascii=False, allow_nan=False),
+                         hashlib.sha256(body.encode('utf-8')).hexdigest(), now, now))
+        inserted = refreshed = 0
+        if not rows:
+            return dict(total=0, inserted=0, refreshed=0)
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    for row in sorted(rows, key=lambda r: r[0]):
+                        await cur.execute(
+                            """INSERT INTO cloud_battle_reports
+                               (cloud_id, team_a, team_b, match_time, publish_date, winner_site, loser_site,
+                                publisher, query_team, source_url, body, parsed_json, content_hash, created_at, last_seen_at)
+                               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS new
+                               ON DUPLICATE KEY UPDATE team_a=new.team_a, team_b=new.team_b,
+                               match_time=new.match_time, publish_date=new.publish_date,
+                               winner_site=new.winner_site, loser_site=new.loser_site, publisher=new.publisher,
+                               query_team=new.query_team, source_url=new.source_url, body=new.body,
+                               parsed_json=new.parsed_json, content_hash=new.content_hash, last_seen_at=new.last_seen_at""", row)
+                        if cur.rowcount == 1:
+                            inserted += 1
+                        else:
+                            refreshed += 1
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+        return dict(total=len(rows), inserted=inserted, refreshed=refreshed)
+
+    async def get_cloud_reports(self, start: str, end: str, team: str, offset: int, limit: int) -> dict:
+        where = 'COALESCE(match_time, publish_date) BETWEEN %s AND %s'
+        params = [start, end]
+        if team:
+            where += ' AND (team_a=%s OR team_b=%s OR winner_site=%s OR loser_site=%s OR query_team=%s)'
+            params += [team] * 5
+        count = await self._query('SELECT COUNT(*) AS n FROM cloud_battle_reports WHERE ' + where, tuple(params))
+        rows = await self._query('SELECT * FROM cloud_battle_reports WHERE ' + where
+                                 + ' ORDER BY cloud_id DESC LIMIT %s OFFSET %s', tuple(params + [limit, offset]))
+        return dict(total=int(count[0]['n']), records=rows)
+
+    async def get_cloud_reports_by_ids(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        return await self._query('SELECT * FROM cloud_battle_reports WHERE cloud_id IN ('
+                                 + ','.join(['%s'] * len(ids)) + ')', tuple(ids))
+
+    async def get_dispatch_admin_teams(self) -> list[str]:
+        rows = await self._query('SELECT DISTINCT home_team FROM team_admins ORDER BY home_team')
+        return [row['home_team'] for row in rows]
 
     async def set_reports_export_sent_through(self, home_team: str, cutoff_id: int, sent: bool) -> int:
         """标记本队 ID≤截止 ID 的所有战报；截止战报必须存在且属于本队。

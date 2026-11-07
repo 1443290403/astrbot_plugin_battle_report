@@ -253,3 +253,12 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - report_site/report_comparison与离线CLI共用逻辑；只比较friendly，按home_team跨群。网站发布时间与正文比赛日期分开。完整分页和唯一ID校验失败不得输出局部差异。
 - 比较键包含规则、轮内顺序、原ID内部空格、替补和判罚，按对局实际战队侧对齐；不得改已有report_fingerprint。网站未检出与同日同地点内容不同只是待核，不自动改库/合并/删报。
 - 最近20次任务JSON保存在data_dir/report_comparisons；最多93天、200页/10000条、5分钟。重启中断不自动重跑；只允许固定战报站HTTPS，禁止跨站跳转及匿名API访问。
+
+
+## v1.29.0 云端归档、本地列表与 QQ 发送
+
+- schema21 的 cloud_battle_reports 与本地 matches/duels 独立，网站 ID 主键，完整抓取校验后事务 UPSERT，同 ID 更新原记录；不进入本地战绩，不随20次核对历史淘汰。旧 INT users 库先完成 v10 BIGINT 迁移，再建官方身份外键表。
+- 后台三Tab，核对仍仅友谊，本地列表可选全部/友谊/踢馆，云端列表直接读归档。source+ID跨页去重；本地再校验home_team。准备发送由服务端重读正文，禁止信任客户端正文。
+- QQReportDispatch仅aiocqhttp原生私聊合并转发；自定义QQ或目标战队指定管理员，确认时再校验名单和bot QQ。先冻结预览、显式确认，typed text节点；最多200份/20收件人/8MiB，每50节点分包。
+- 回执按收件人/包落盘；有message_id才成功，unknown不得自动/手动重试，失败/未发送可显式重试；重启不重放。预览30分钟/重试24小时、单请求25秒/批15分钟，发送历史保留20批及活动批。不得修改人工export_sent；关闭发送/核对失败仍清理本实例路由，然后关DB。
+- 新测试test_report_dispatch与可选test_report_archive_mysql；浏览器使用真实AstrBot v4.27.3 bridge/Web SDK+隔离MySQL+模拟OneBot，不声称真实QQ或线上战报站已验证。

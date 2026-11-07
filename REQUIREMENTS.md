@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.27.0`｜数据库 `SCHEMA_VERSION = 20`｜最后核对：2026-11-07
+> 对应版本：`1.29.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-07
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -157,6 +157,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | **official_link_requests** | token_hash、home_team、appid、openid、user_id、owner_qq、expires_at、created_at | 10分钟一次性确认请求，只存码的哈希 |
 | **player_ids** | `id`, `home_team`, `player_name`, `user_id`, `created_at` | 参赛ID池 + 绑定。`user_id` NULL = 未绑定。`UNIQUE(home_team, player_name)` |
 | **settlements** | `id`, `home_team`, `month`, `player_name`, `rank_no`, `total_points`, `bonus`, `created_at` | 月度结算结果（见 §5-M14）。`month` 为 `'YYYY-MM'`；`player_name` 是**解析后的展示名**（M-03 口径，与 `get_player_ranking` 的 `player` 同源）；`UNIQUE(home_team, month, player_name)` 让重结算可以直接覆盖 |
+| **cloud_battle_reports** | `cloud_id` BIGINT UNSIGNED 主键、`team_a/team_b`、`match_time/publish_date`、`winner_site/loser_site`、`publisher`、`query_team`、`source_url`、`body`、`parsed_json`、`content_hash`、`created_at/last_seen_at` | 网站 ID 全局唯一；独立归档云端原文及解析快照，重复 ID 更新，不进入本地 matches/duels 或统计 |
 | **schema_version** | `version` | 迁移游标，单行 |
 
 **关系：** `matches 1─N duels`；`player_ids.user_id → users.id`；`player_ids` 同时充当"参赛ID池"和"绑定关系"两张脸的单一表。
@@ -181,7 +182,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 | v17 | 新建 `settlements`（月度结算，见 §5-M14）。**没有 `current < 17` 分支** —— 表用 `CREATE TABLE IF NOT EXISTS` 与其它基础表并列无条件建好，语句本身幂等，不需要 `information_schema` 探测（探测只对 `ALTER` 是必需的），也没有存量数据要迁；靠末尾那句统一的「写版本行」把版本推到 17 |
 | v18 | 新建 `team_admins`，`CREATE TABLE IF NOT EXISTS` 幂等创建，末尾推进版本；不修改现有战报/ID/群配置，不自动授权任何人 |
 | v19 | matches 增加 `export_sent TINYINT NOT NULL DEFAULT 0`，先探测字段再 ALTER，可在中断后重放；历史数据默认未发送，不改内容指纹/战绩 |
-| v20 | 新建 official_user_accounts / official_link_requests，保留 users.qq_id；CREATE TABLE IF NOT EXISTS 可重放，无角色/QQ/战绩回填 |
+| v20 | 新建 official_user_accounts / official_link_requests，保留 users.qq_id；CREATE TABLE IF NOT EXISTS 可重放，无角色/QQ/战绩回填；建表在 v10 BIGINT 迁移之后，兼容旧 INT 用户库外键 |
+| v21 | CREATE TABLE IF NOT EXISTS cloud_battle_reports，以 cloud_id 唯一归档公开战报；无本地战报回填，旧核对 JSON 不自动迁移，重拉后入表；版本游标末尾统一推进，可重放 |
 
 > ⚠️ **写迁移的坑**（已在 v14 踩过）：MySQL 不允许 `UPDATE duels` 的子查询里直接 `SELECT FROM duels`（错误 1093）。必须把子查询包成派生表 `(…) r1` 强制物化，否则 `initialize()` 抛异常 → 全插件报"数据库未连接"。
 >
@@ -423,7 +425,13 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 `Database.get_comparison_reports`复用get_reports_for_export只读SELECT，include_team_sides仅用于核对快照，不改变普通导出字段；按每条duel实际战队侧对齐，并重建本地正文。比较键是比赛日期、双方战队、地点、规则及完整有比分对局序列，保留轮内顺序/ID内部空格/替补/判罚，忽略0:0未打占位。左右战队互换可对齐。此键只用于核对，**不得改已有report_fingerprint及历史提交去重**。网站/本地重复按同规范内容分组；同日同队同地点而内容不同只是候选，不自动删除/合并，也不将网站独有或未检出作为真实性证明。网站无法解析/日期越界/其他队名分列，不混进匹配。
 
-网站HTML及用户原文只按文本渲染，分页展示、历史与下载均要求后台登录；不暴露本地提交QQ或数据库凭据。旧CLI入口继续可用，共用解析/比较模块，HTML缓存按查询指纹隔离，不复用其他队伍/日期的网页。MySQL schema20、统计/提交/发送状态均不变。
+网站HTML及用户原文只按文本渲染，分页展示、历史与下载均要求后台登录；不暴露本地提交QQ或数据库凭据。旧CLI入口继续可用，共用解析/比较模块，HTML缓存按查询指纹隔离，不复用其他队伍/日期的网页。
+
+**云端归档与批量 QQ 发送（v1.29.0，覆盖上述 v1.28 仅 SELECT 范围）：** 全部分页校验通过后，事务 UPSERT 独立 `cloud_battle_reports`（schema v21）。正整数网站 ID 主键，原文/解析快照/日期/来源/首次及最近抓取时间持久化，同 ID 更新不重复插入；整批失败回滚，不发布残缺差异，不改 matches/duels/统计/指纹。归档不随最近20次任务淘汰，网站未再检出的旧记录不自动删除。旧 JSON 历史未归档的云端记录须重新拉取。
+
+WebUI 三 Tab：核对、本地上传、云端归档。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
+
+每收件人/分包保存回执，只有 message_id 确认才标记成功；网络/超时/缺回执为 unknown，不自动重试。手动重试仅 failed/cancelled，跳过成功和 unknown；重启/卸载不自动重放，进行中标记未知、尚未发送标记中断。每次请求25秒，整批15分钟，预览30分钟有效、重试24小时内。最近20批快照原子存 data_dir/report_dispatches（活动批保留），按后台用户名隔离历史和操作；关闭先停发送和核对任务、再关DB，失败仍移除本实例路由。发送回执独立于 matches.export_sent，不自动改变人工外发标记。
 
 
 
@@ -819,7 +827,9 @@ year = now.year - 1 if month > now.month else now.year
 | **F-41** | QQ群命令与默认对话隔离 | OfficialQueueFilter / official_queue_cmd / command_guard | 群内斜杠命令及已注册裸命令不回落默认LLM；保留插件分发、原参数及普通聊天，不依赖chat前缀 | M-10 | 不写数据库/队列 |
 | **F-42** | 按机器人连接ID手动分配本插件指令 | platform_policy / _install_platform_permissions / _filter_platform_handlers | 命名配置、多选/全部开放/全部屏蔽、别名统一、参数前静默拒绝、AI排表同权限；其他插件与原业务权限保留 | M-10 | 仅插件配置，无DB/队列迁移 |
 | **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，发送尝试前存档、失败和超时不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
-| **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定战报站分页抓取、按战队/月份只读对照、原文分页/进度/取消/最近20次/JSON；发布时间与比赛日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | 插件data_dir/report_comparisons任务JSON；无DB迁移 |
+| **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
+| **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
+| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地全部/友谊/踢馆独立分页、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1024,6 +1034,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
 | **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 原文文本渲染、浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
 | **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
@@ -1137,7 +1148,8 @@ year = now.year - 1 if month > now.month else now.year
 | [chart.py](chart.py) | ~300 | Pillow 趋势图 + 排行表格图（`make_ranking_image` 的 `panel` 参数只负责画，不懂语义） | Pillow |
 | [tests/](tests/) | ~3440 | 13 个纯逻辑测试 + 1 个 DB 集成测试（见 §12） | pytest |
 | [report_site.py](report_site.py) / [report_comparison.py](report_comparison.py) | — | 站点查询/解析/限流完整分页及与CLI共用的比较口径 | 标准库/既有解析器 |
-| [report_webui.py](report_webui.py) / [pages/report-comparison/](pages/report-comparison/) | — | 后台页面/API、原子任务及历史、bridge静态资源 | AstrBot 4.27.3官方Web SDK |
+| [report_webui.py](report_webui.py) / [pages/report-comparison/](pages/report-comparison/) | — | 三Tab与后台认证API、核对任务、云端归档/本地分页/混合勾选、bridge静态资源 | AstrBot 4.27.3官方Web SDK |
+| [report_dispatch.py](report_dispatch.py) | — | QQ私聊发送的冻结预览、确认、收件人校验、逐包回执/原子历史与取消重试 | 原生OneBot call_action；标准库 |
 | [scripts/](scripts/) | — | 一次性数据修复脚本（见下） | — |
 
 ### 8.2 死代码（v1.13.0 已清理）
@@ -1339,6 +1351,9 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 | 测试文件 | 覆盖 |
 |---|---|
+| `test_report_dispatch.py` | 模拟 OneBot：准备不发送、确认幂等、typed text/双空格、分包/多收件人、跳过成功/unknown、管理员复核、官方连接拒绝、账号校验、深拷贝/过期、重启不重放、取消和落盘失败 |
+| `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围 |
+| `test_report_comparison_webui.py` | 抓取/归档/比较顺序与失败、鉴权/13路由/生命周期、服务端来源重读和忽略伪造正文 |
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
 | `test_official_identity.py` | SQLite 事务执行真实 SQL：哈希码/QQ确认/一次性/过期/归属变化/唯一关联/AppID/撤销/回滚/首次设置；另有可选原生 MySQL 用例 |
 | `test_official_queue.py` | 240/600秒边界、首次满员粘性标志、进退队/并发/解散/跨日编号、合并广播、v1到v2迁移/重启/待发/原子写回滚、作用域与旧按钮去重、原生填入及三列按钮；不连接 QQ |
@@ -1449,7 +1464,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.28.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1472,3 +1487,6 @@ v1.27.2 验证：**1259 项测试通过，1 项跳过**。覆盖呼叫全体与�
 v1.27.3 验证：**1260 项测试通过，1 项跳过**。覆盖呼叫结果/手动查看/定时广播冷却时隐藏按钮、原六按钮和顺序保留、跨群独立、重启保持及1800秒精确边界后恢复；官方WS/Webhook及模板键盘同步验证，旧按钮与文字入口仍受冷却保护。另通过真实AstrBot v4.27.3注册/分发的184项隔离场景；未进行真实QQ客户端验证。
 
 v1.28.0 验证：**1301 项测试通过，1 项跳过**。覆盖用户查询地址/日期与固定域名限制、分页/空结果/错误页/编号/完整性、左右侧对齐、规则/比分/替补/判罚/轮内顺序/内部空格、友谊隔离/日期越界/相近队名、只读快照与原导出字段保留、取消/重启/落盘失败/最近20次、构造注册与重载清理；另通过真实AstrBot v4.27.3注册/分发的184项隔离场景。使用真实v4.27.3页面bridge和Web SDK的本地Chromium测试覆盖创建、抓取样本、分类分页、原文文本安全、390px手机/深色布局、匿名401和JSON下载。站点与数据库使用隔离样本；开发网络白名单未放行rep.ygobbs2.com，未验证线上十月数据或连接生产数据库。
+
+
+v1.29.0 验证：1321 项默认回归通过、5 项跳过；隔离 MySQL 8.4 的74项回归全部通过（含旧 INT 库升级、schema21重放、云端事务/并发/分页）。真实 v4.27.3 注册/分发184项隔离检查，以及官方bridge/Web SDK的Chromium验证覆盖三Tab、混合勾选、两种收件人、预览与模拟发送、重拉去重、390px/深色、匿名401和JSON下载。未连接生产数据库或发送真实QQ；开发网络未放行战报站，线上页面未实测。
