@@ -2429,7 +2429,7 @@ def test_constructor_and_reload_install_current_instance_policy_before_commands(
     assert first.db is None and second.db is None
 
 
-@pytest.mark.parametrize('command', ['/进队等车', '/等车', '/帮助 等车', '/友谊等车帮助'])
+@pytest.mark.parametrize('command', ['/进队等车', '/等车', '/帮助 等车', '/友谊等车帮助', '/呼叫全体'])
 def test_platform_denied_queue_aliases_are_silent_before_services(official_waiting, command):
     obj, ev, api, _ = official_waiting
     ev.get_message_str = lambda: command
@@ -2441,6 +2441,34 @@ def test_platform_denied_queue_aliases_are_silent_before_services(official_waiti
     ev.send.assert_not_awaited()
     api.post_group_message.assert_not_awaited()
     obj.db.get_group_ban.assert_not_awaited()
+
+
+@pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])
+@pytest.mark.parametrize('template', ['', 'approved-template'])
+def test_call_all_uses_native_official_markdown_and_selected_permission(official_waiting, platform_name, template):
+    obj, ev, api, platform = official_waiting
+    ev.get_platform_name = lambda: platform_name
+    platform.meta = lambda: SimpleNamespace(name=platform_name)
+    ev.get_message_str = lambda: '/呼叫全体'
+    set_platform_commands(obj, ev, ['呼叫全体'])
+    obj.config['official_queue_markdown_template_id'] = template
+    async def scenario():
+        await obj.official_queue_cmd(ev)
+        api.post_group_message.assert_awaited_once()
+        params = api.post_group_message.await_args.kwargs
+        assert params['group_openid'] == 'group-openid' and params['msg_type'] == 2
+        markdown = params['markdown']
+        text = markdown['params'][0]['values'][0] if template else markdown['content']
+        assert text.count('<qqbot-at-everyone />') == 1 and '友谊' in text
+        assert params['keyboard']['content']['rows'][-1]['buttons'][0]['action']['data'] == '/呼叫全体'
+        ev.message_obj.message_id = 'incoming-2'
+        await obj.official_queue_cmd(ev)
+        assert api.post_group_message.await_count == 2
+        latest = api.post_group_message.await_args.kwargs['markdown']
+        text = latest['params'][0]['values'][0] if template else latest['content']
+        assert '冷却中' in text and '<qqbot-at-everyone' not in text
+        ev.send.assert_not_awaited()
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('platform', ['qq_official', 'aiocqhttp'])
@@ -2513,7 +2541,7 @@ def test_official_bot_cannot_bypass_queue_only_routing_via_llm_lineup_tool(offic
     '/等车', '蹲车', '/我也要等车 C1_abcd1234', '/跑路了再见',
     '/人齐了发车 C1_abcd1234 123456789', '/再开一车',
     '/等车ID "示例 玩家"', '/等车帮助', '/帮助 等车', '帮助 等车',
-    '/战报帮助 等车', '战报帮助 等车',
+    '/战报帮助 等车', '战报帮助 等车', '/呼叫全体', '呼叫全体',
 ])
 @pytest.mark.parametrize('group,ready', [('100', True), ('', True), ('100', False)])
 def test_onebot_waiting_commands_stop_silently_before_any_services(plugin_module, tmp_path, text, group, ready):

@@ -21,15 +21,17 @@ except ImportError:
 
 REFRESH = 240
 GATHER_TIMEOUT = READY_TIMEOUT = 600
+CALL_ALL_COOLDOWN = 1800
 PLATFORMS = {'qq_official', 'qq_official_webhook'}
 COMMANDS = ('友谊等车帮助', '友谊等车', '进队等车', '发送群号', '解散队伍', '离队', '解散', '人齐了发车', '跑路了再见',
-            '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车')
+            '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车', '呼叫全体')
 _LEGACY_GROUP_NUMBER_RE = re.compile(
     r'^(?P<heading>[0-9]+号车发车啦！)群号：<qqbot-cmd-input text="(?P<number>[1-9][0-9]{4,11})" '
     r'show="(?P=number)" reference="false" />\n')
 HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n/再开一车：新增队伍\n'
         '/进队等车 [车号]：加入\n/离队：退出当前队伍\n'
         '/发送群号 群号：通知同车成员并结束该车\n/解散：解散当前队伍\n'
+        '/呼叫全体：@全体成员摇人友谊，同群冷却30分钟\n'
         '入队后自动定位你的队伍，不用填写车号。\n'
         '/等车ID 角色或参赛ID：关联原账号，首次用原 QQ /确认关联 确认码\n'
         '每4分钟统一广播；建队10分钟清理，首次满3人重新计10分钟并提醒接友谊。\n'
@@ -94,18 +96,19 @@ def avatar(appid, uid):
 
 
 def keyboard(car=None):
-    # 所有队伍共用两行操作；按本人队伍离开/发送/解散，加入指定车可点面板车次旁的链接。
+    # 所有队伍共用操作，每行至多三个；呼叫全体与车次无关。
     actions = [('join', '进队等车', '/进队等车', True),
                ('leave', '跑路了再见', '/离队', True),
                ('go', '发送群号', '/发送群号 ', False),
                ('new', '再开一车', '/再开一车', True),
                ('dissolve', '解散队伍', '/解散', True),
-               ('help', '等车帮助', '/等车帮助', True)]
+               ('help', '等车帮助', '/等车帮助', True),
+               ('call_all', '呼叫全体', '/呼叫全体', True)]
     buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
                 'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
                            'enter': enter, 'reply': True, 'unsupport_tips': '请发送对应文字指令'}}
                for key, label, data, enter in actions]
-    return {'content': {'rows': [{'buttons': buttons[:3]}, {'buttons': buttons[3:]}]}}
+    return {'content': {'rows': [{'buttons': buttons[i:i + 3]} for i in range(0, len(buttons), 3)]}}
 
 
 class WaitingQueues:
@@ -133,6 +136,9 @@ class WaitingQueues:
                         or type(room.get('next_number')) is not int or room['next_number'] < 1):
                     raise ValueError('等车存档格式错误')
                 users = set()
+                cooldown = room.get('call_all_until', 0)
+                if type(cooldown) not in (int, float) or not math.isfinite(cooldown) or cooldown < 0:
+                    raise ValueError('等车呼叫全体冷却格式错误')
                 for car in room['cars']:
                     if (not isinstance(car.get('id'), str) or not car['id'].startswith('C')
                             or type(car.get('number')) is not int or car['number'] < 1
@@ -379,6 +385,24 @@ class WaitingQueues:
                 args = [arg.value for arg in parse_command_args(raw)]
                 if action == '等车帮助':
                     await self.emit(scope, room, HELP)
+                    return
+                if action == '呼叫全体':
+                    if args:
+                        raise ValueError('用法喵：/呼叫全体')
+                    remaining = math.ceil(room.get('call_all_until', 0) - self.clock())
+                    if remaining > 0:
+                        raise ValueError(f'呼叫全体冷却中，还需{remaining // 60}分{remaining % 60:02}秒喵。')
+                    # 发送前落盘；即使超时、取消或重启，也不自动重试全体提醒。
+                    # 与普通成员 outbox 分开，避免未知送达结果引起重复 @全体。
+                    with self.edit():
+                        room['call_all_until'] = self.clock() + CALL_ALL_COOLDOWN
+                    try:
+                        await self.emit(scope, room, '<qqbot-at-everyone />\n'
+                                        '来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～', keyboard())
+                    except Exception:
+                        if self.log:
+                            self.log.exception('QQ 官方等车呼叫全体发送未确认，保留冷却且不自动重试')
+                        await self.emit(scope, room, '呼叫全体发送未确认，请检查 @全体权限和平台额度喵。')
                     return
                 if action == '等车ID':
                     query = single_name(raw)

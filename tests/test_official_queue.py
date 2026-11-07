@@ -33,13 +33,14 @@ def test_shared_keyboard_has_three_buttons_per_row_and_no_car_required_for_own_a
     _, _, send, act = setup_queue
     asyncio.run(act())
     rows = send.await_args.args[2]['content']['rows']
-    assert [len(r['buttons']) for r in rows] == [3, 3]
+    assert [len(r['buttons']) for r in rows] == [3, 3, 1]
     buttons = [b for r in rows for b in r['buttons']]
-    assert [b['render_data']['label'] for b in buttons] == ['进队等车', '跑路了再见', '发送群号', '再开一车', '解散队伍', '等车帮助']
+    assert [b['render_data']['label'] for b in buttons] == ['进队等车', '跑路了再见', '发送群号', '再开一车', '解散队伍', '等车帮助', '呼叫全体']
     assert buttons[1]['action']['data'] == '/离队'
     assert buttons[2]['action']['data'] == '/发送群号 ' and buttons[2]['action']['enter'] is False
     assert buttons[4]['action']['data'] == '/解散'
     assert buttons[5]['action']['data'] == '/等车帮助'
+    assert buttons[6]['action']['data'] == '/呼叫全体' and buttons[6]['action']['enter'] is True
     assert all(b['action']['type'] == 2 and b['action']['permission']['type'] == 2 for b in buttons)
 
 
@@ -427,10 +428,145 @@ def test_corrupt_store_is_not_overwritten(tmp_path):
     ('/解散队伍', ('解散队伍', '')), ('/友谊等车', ('等车', '')), ('等车', ('等车', '')),
     ('/我也要等车 C1_old', ('我也要等车', 'C1_old')), ('/人齐了发车 123456789', ('人齐了发车', '123456789')),
     ('/帮助 友谊等车', ('等车帮助', '')), ('/等车帮助', ('等车帮助', '')),
-    ('/友谊等车帮助', ('等车帮助', '')),
+    ('/友谊等车帮助', ('等车帮助', '')), ('/呼叫全体', ('呼叫全体', '')),
+    ('呼叫全体', ('呼叫全体', '')), ('/呼叫全体天气', None),
     ('/友谊等车天气', None), ('普通聊天', None), ('/帮助 等车 其他', None)])
 def test_command_filter_is_strict_and_old_aliases_work(text, expected):
     assert queue.parse_command(text) == expected
+
+
+def test_call_all_cooldown_is_shared_by_users_and_cars_without_changing_timers(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        await act()
+        await act('再开一车', uid='u2')
+        before = [(c['id'], c['deadline'], dict(c['members'])) for c in service.room(SCOPE)['cars']]
+        clock[0] = 50
+        await act('呼叫全体')
+        calls = texts(send, '<qqbot-at-everyone />')
+        assert len(calls) == 1 and '友谊' in calls[0]
+        assert 'qqbot-at-user' not in calls[0]
+        await act('呼叫全体', uid='u2')
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+        assert '30分00秒' in texts(send)[-1]
+        clock[0] = 50.1
+        await act('呼叫全体', uid='outsider')
+        assert '30分00秒' in texts(send)[-1]
+        assert before == [(c['id'], c['deadline'], dict(c['members'])) for c in service.room(SCOPE)['cars']]
+        assert service.room(SCOPE)['next_refresh'] == 240
+        assert not service.room(SCOPE)['outbox']
+    asyncio.run(scenario())
+
+
+def test_call_all_expiry_boundary_survives_restart_empty_room_and_midnight(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        clock[0] = datetime(2026, 11, 7, 15, 59, tzinfo=timezone.utc).timestamp()
+        await act()
+        await act('呼叫全体')
+        until = clock[0] + 1800
+        clock[0] += 600
+        await service.tick()
+        restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
+        assert not restored.room(SCOPE)['cars']
+        clock[0] = until - 0.01
+        await restored.execute(SCOPE, '呼叫全体', '', 'u2', '萌新', 'restored-1')
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+        assert '0分01秒' in texts(send)[-1]
+        clock[0] = until
+        await restored.execute(SCOPE, '呼叫全体', '', 'u2', '萌新', 'restored-2')
+        assert len(texts(send, '<qqbot-at-everyone />')) == 2
+        assert restored.room(SCOPE)['call_all_until'] == until + 1800
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('other', [('official-b', 'app-a', SCOPE[2]), ('official-a', 'app-b', SCOPE[2]), ('official-a', 'app-a', 'other')])
+def test_call_all_cooldown_isolated_by_original_connection_app_and_group(setup_queue, other):
+    _, _, send, act = setup_queue
+    async def scenario():
+        await act('呼叫全体')
+        await act('呼叫全体', scope=other)
+        assert len(texts(send, '<qqbot-at-everyone />')) == 2
+        assert [c.args[0] for c in send.await_args_list] == [SCOPE, other]
+    asyncio.run(scenario())
+
+
+def test_concurrent_call_all_and_redelivery_send_only_once(setup_queue):
+    service, _, send, act = setup_queue
+    async def scenario():
+        await asyncio.gather(*(act('呼叫全体', uid=f'u{i}', msg=f'call-{i}') for i in range(5)))
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+        before = send.await_count
+        await act('呼叫全体', msg='call-0')
+        assert send.await_count == before
+        assert not service.room(SCOPE)['outbox']
+    asyncio.run(scenario())
+
+
+def test_call_all_failure_is_not_retried_by_interaction_tick_or_restart(setup_queue):
+    service, clock, send, act = setup_queue
+    async def scenario():
+        send.side_effect = [TimeoutError('unknown delivery'), {'id': 'failure-notice'}]
+        await act('呼叫全体')
+        assert '发送未确认' in texts(send)[-1]
+        assert service.room(SCOPE)['call_all_until'] == 1800
+        assert not service.room(SCOPE)['outbox']
+        send.side_effect = None
+        clock[0] = 240
+        await service.tick()
+        await act('等车帮助')
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+        restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
+        await restored.execute(SCOPE, '呼叫全体', '', 'u2', '萌新', 'retry')
+        assert len(texts(send, '<qqbot-at-everyone />')) == 1
+    asyncio.run(scenario())
+
+
+def test_cancelled_call_all_keeps_persisted_cooldown_without_retry(setup_queue):
+    service, _, send, act = setup_queue
+    send.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(act('呼叫全体'))
+    restored = queue.WaitingQueues(service.path, None, None, None)
+    assert restored.room(SCOPE)['call_all_until'] == 1800
+    assert not restored.room(SCOPE)['outbox']
+
+
+def test_invalid_call_all_arguments_do_not_consume_cooldown(setup_queue):
+    service, _, send, act = setup_queue
+    asyncio.run(act('呼叫全体', '1'))
+    assert '用法' in texts(send)[-1]
+    assert not service.room(SCOPE).get('call_all_until')
+    assert not texts(send, '<qqbot-at-everyone />')
+
+
+def test_call_all_persistence_failure_never_sends_mass_mention(setup_queue, monkeypatch):
+    service, _, send, act = setup_queue
+    asyncio.run(act())
+    send.reset_mock()
+    original = queue.os.replace
+    def fail_reservation(*args):
+        if service.room(SCOPE).get('call_all_until'):
+            raise OSError('disk full')
+        return original(*args)
+    monkeypatch.setattr(queue.os, 'replace', fail_reservation)
+    with pytest.raises(OSError, match='disk full'):
+        asyncio.run(act('呼叫全体'))
+    assert not service.room(SCOPE).get('call_all_until')
+    send.assert_not_awaited()
+
+
+@pytest.mark.parametrize('value', ['bad', True, -1, float('nan'), float('inf')])
+def test_invalid_call_all_cooldown_does_not_overwrite_store(setup_queue, value):
+    service, _, _, act = setup_queue
+    asyncio.run(act())
+    saved = json.loads(service.path.read_text())
+    next(iter(saved['rooms'].values()))['call_all_until'] = value
+    original = json.dumps(saved)
+    service.path.write_text(original)
+    with pytest.raises(ValueError, match='冷却'):
+        queue.WaitingQueues(service.path, None, None, None)
+    assert service.path.read_text() == original
 
 
 @pytest.mark.parametrize('source,expected', [
