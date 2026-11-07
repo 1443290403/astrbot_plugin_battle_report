@@ -41,7 +41,9 @@ def plugin_module(monkeypatch):
         def decorate(fn):
             fn.command_name = name
             fn.aliases = alias or set()
-            command_handlers.append(SimpleNamespace(event_filters=[CommandFilter(name, fn.aliases)]))
+            command_handlers.append(SimpleNamespace(
+                handler_module_path=fn.__module__, handler_name=fn.__name__, handler=fn,
+                event_type='message', event_filters=[CommandFilter(name, fn.aliases)]))
             return fn
         return decorate
 
@@ -62,6 +64,9 @@ def plugin_module(monkeypatch):
         def decorate(fn):
             fn.custom_filter = instance
             fn.filter_options = kwargs
+            command_handlers.append(SimpleNamespace(
+                handler_module_path=fn.__module__, handler_name=fn.__name__, handler=fn,
+                event_type='message', event_filters=[instance]))
             return fn
         return decorate
 
@@ -74,6 +79,10 @@ def plugin_module(monkeypatch):
         def fromFileSystem(cls, path):
             return cls(file=path)
 
+    class Star:
+        def __init__(self, context):
+            self.context = context
+
     module('astrbot')
     module('astrbot.api', AstrBotConfig=dict, logger=logging.getLogger('test_plugin'))
     module('astrbot.api.event', AstrMessageEvent=object, filter=SimpleNamespace(
@@ -81,13 +90,15 @@ def plugin_module(monkeypatch):
     module('astrbot.api.event.filter', CustomFilter=CustomFilter)
     module('astrbot.api.message_components', **{
         name: type(name, (Component,), {}) for name in ['At', 'File', 'Image', 'Node', 'Nodes', 'Plain', 'Reply']})
-    module('astrbot.api.star', Star=object, StarTools=object, register=lambda *a: lambda cls: cls)
+    module('astrbot.api.star', Star=Star, StarTools=object, register=lambda *a: lambda cls: cls)
     module('astrbot.core.star.filter.command', CommandFilter=CommandFilter)
     module('astrbot.core.star.filter.command_group', CommandGroupFilter=CommandGroupFilter)
     module('astrbot.core.star.star_handler', EventType=SimpleNamespace(AdapterMessageEvent='message'),
            star_handlers_registry=SimpleNamespace(
                handlers=command_handlers,
-               get_handlers_by_event_type=Mock(side_effect=lambda *a, **kw: command_handlers)))
+               get_handlers_by_event_type=Mock(side_effect=lambda *a, **kw: command_handlers),
+               get_handlers_by_module_name=lambda name: [h for h in command_handlers
+                   if getattr(h, 'handler_module_path', None) == name]))
     package = module('_review_plugin')
     package.__path__ = [str(Path(__file__).resolve().parents[1])]
     loaded = importlib.import_module('_review_plugin.main')
@@ -2243,7 +2254,7 @@ def official_waiting(plugin_module, tmp_path):
     return obj, ev, api, platform
 
 
-@pytest.mark.parametrize('platform,expected', [('qq_official', True), ('qq_official_webhook', True), ('aiocqhttp', True), ('webchat', False)])
+@pytest.mark.parametrize('platform,expected', [('qq_official', True), ('qq_official_webhook', True), ('aiocqhttp', True), ('webchat', True)])
 def test_waiting_filter_handles_official_commands_and_silent_onebot_guard(plugin_module, platform, expected):
     ev = event('/等车')
     ev.get_platform_name = lambda: platform
@@ -2335,6 +2346,135 @@ def test_official_router_with_only_own_handlers_still_stops_silently(
     ev.send.assert_not_awaited()
     api.post_group_message.assert_not_awaited()
     obj.db.get_group_ban.assert_not_awaited()
+
+
+def set_platform_commands(obj, ev, commands, mode='仅开放勾选指令'):
+    ev.get_platform_id = lambda: 'platform-A'
+    obj.config['platform_command_profiles'] = [{
+        '__template_key': 'platform', 'name': '示例配置', 'platform_ids': ['platform-A'],
+        'mode': mode, 'allowed_commands': commands,
+    }]
+
+
+@pytest.mark.parametrize('platform', ['qq_official', 'qq_official_webhook', 'aiocqhttp', 'webchat'])
+def test_platform_profile_selectively_keeps_own_handlers_and_foreign_plugins(official_waiting, plugin_module, platform):
+    obj, ev, _, _ = official_waiting
+    ev.get_platform_name = lambda: platform
+    ev.get_message_str = lambda: '/排行'
+    set_platform_commands(obj, ev, ['排行'])
+    gate = SimpleNamespace(handler_module_path=plugin_module.__name__, handler_name='official_queue_cmd', handler=obj.official_queue_cmd)
+    rank = SimpleNamespace(handler_module_path=plugin_module.__name__, handler_name='ranking', handler=obj.ranking)
+    submit = SimpleNamespace(handler_module_path=plugin_module.__name__, handler_name='submit_report', handler=obj.submit_report)
+    foreign = SimpleNamespace(handler_module_path='other_plugin.main', handler_name='official_queue_cmd', handler=AsyncMock())
+    handlers = [gate, rank, submit, foreign]
+    ev.set_extra('activated_handlers', handlers)
+    asyncio.run(obj.official_queue_cmd(ev))
+    assert handlers == [gate, rank, foreign]
+    ev.should_call_llm.assert_called_once_with(True)
+    ev.stop_event.assert_not_called()
+    ev.send.assert_not_awaited()
+    obj.db.get_group_ban.assert_not_awaited()
+
+
+def test_platform_filter_is_installed_before_argument_parsing_and_reinstall_is_idempotent(
+        official_waiting, plugin_module):
+    obj, ev, _, _ = official_waiting
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    set_platform_commands(obj, ev, ['排行'])
+    registry = sys.modules['astrbot.core.star.star_handler'].star_handlers_registry
+    target = next(h for h in registry.handlers if h.handler_name == 'delete')
+    original = list(target.event_filters)
+    original[0].filter = Mock(side_effect=ValueError('invalid integer argument'))
+    target.enabled = False
+    obj._install_platform_permissions()
+    obj._install_platform_permissions()
+    assert len(target.event_filters) == len(original) + 1
+    assert target.event_filters[1:] == original
+    assert not target.event_filters[0].filter(ev, {})
+    original[0].filter.assert_not_called()
+    obj.config['platform_command_profiles'][0]['allowed_commands'].append('战报删除')
+    assert target.event_filters[0].filter(ev, {})
+    obj.db.get_group_ban.assert_not_awaited()
+
+
+def test_platform_installation_does_not_modify_other_plugins_filters(official_waiting, plugin_module):
+    obj, ev, _, _ = official_waiting
+    set_platform_commands(obj, ev, [], '全部屏蔽')
+    registry = sys.modules['astrbot.core.star.star_handler'].star_handlers_registry
+    foreign_filters = [Mock()]
+    foreign = SimpleNamespace(handler_module_path='other.main', handler_name='ranking',
+                              event_type='message', event_filters=foreign_filters)
+    registry.handlers.append(foreign)
+    obj._install_platform_permissions()
+    assert foreign.event_filters is foreign_filters and len(foreign_filters) == 1
+
+
+def test_constructor_and_reload_install_current_instance_policy_before_commands(plugin_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin_module, 'StarTools', SimpleNamespace(get_data_dir=lambda: tmp_path))
+    registry = sys.modules['astrbot.core.star.star_handler'].star_handlers_registry
+    target = next(h for h in registry.handlers if h.handler_name == 'ranking')
+    ev = event('/排行')
+    ev.get_platform_name = lambda: 'qq_official'
+    ev.get_platform_id = lambda: 'platform-A'
+    config = {'platform_command_profiles': [{'platform_ids': ['platform-A'],
+              'mode': '仅开放勾选指令', 'allowed_commands': ['排行']}]}
+    first = plugin_module.BattleReportPlugin(SimpleNamespace(), config)
+    assert target.event_filters[0].filter(ev, {})
+    first_filter = target.event_filters[0]
+    second = plugin_module.BattleReportPlugin(SimpleNamespace(), {'platform_command_profiles': [
+        {'platform_ids': ['platform-A'], 'mode': '全部屏蔽', 'allowed_commands': []}]})
+    assert target.event_filters[0] is not first_filter
+    assert not target.event_filters[0].filter(ev, {})
+    assert sum(bool(getattr(f, '_battle_platform_policy', False)) for f in target.event_filters) == 1
+    assert first.db is None and second.db is None
+
+
+@pytest.mark.parametrize('command', ['/进队等车', '/等车', '/帮助 等车', '/友谊等车帮助'])
+def test_platform_denied_queue_aliases_are_silent_before_services(official_waiting, command):
+    obj, ev, api, _ = official_waiting
+    ev.get_message_str = lambda: command
+    set_platform_commands(obj, ev, ['排行'])
+    obj._get_waiting_queues = Mock(side_effect=AssertionError('denied queue must not run'))
+    asyncio.run(obj.official_queue_cmd(ev))
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+    ev.send.assert_not_awaited()
+    api.post_group_message.assert_not_awaited()
+    obj.db.get_group_ban.assert_not_awaited()
+
+
+@pytest.mark.parametrize('platform', ['qq_official', 'aiocqhttp'])
+def test_platform_lineup_permission_cannot_be_bypassed_by_llm_tool(official_waiting, platform):
+    obj, ev, _, _ = official_waiting
+    ev.get_platform_name = lambda: platform
+    set_platform_commands(obj, ev, ['排行'])
+    obj._prepare_lineup = AsyncMock(side_effect=AssertionError('denied tool must not prepare'))
+    assert asyncio.run(obj.lineup_tool(ev, 'a队:云玩家\nb队:萌新')) is None
+    obj._prepare_lineup.assert_not_awaited()
+    ev.stop_event.assert_called_once()
+    ev.clear_result.assert_called_once()
+
+
+def test_platform_can_explicitly_enable_official_lineup_tool(official_waiting):
+    obj, ev, _, _ = official_waiting
+    set_platform_commands(obj, ev, ['排表'])
+    obj._prepare_lineup = AsyncMock(return_value=([], SimpleNamespace(template='原格式战报', warnings=[])))
+    obj._send_report_text = AsyncMock()
+    assert asyncio.run(obj.lineup_tool(ev, 'a队:云玩家\nb队:萌新')) is None
+    obj._prepare_lineup.assert_awaited_once_with(ev, 'a队:云玩家\nb队:萌新')
+    obj._send_report_text.assert_awaited_once_with(ev, '原格式战报')
+
+
+def test_platform_queue_routing_preserves_whitespace_inside_quoted_id(official_waiting, plugin_module):
+    obj, ev, _, _ = official_waiting
+    ev.get_messages = lambda: [plugin_module.Plain(text='/等车ID "示例  玩家"')]
+    ev.get_message_str = lambda: '等车ID "示例 玩家"'
+    set_platform_commands(obj, ev, ['等车ID'])
+    queue = SimpleNamespace(execute=AsyncMock())
+    obj._get_waiting_queues = Mock(return_value=queue)
+    asyncio.run(obj.official_queue_cmd(ev))
+    args = queue.execute.await_args.args
+    assert args[1:3] == ('等车ID', '"示例  玩家"')
 
 
 @pytest.mark.parametrize('platform_name', ['qq_official', 'qq_official_webhook'])

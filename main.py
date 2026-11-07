@@ -32,7 +32,8 @@ from . import chart, help_guide, lineup, stats
 from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
 from .official_queue import group_nickname as queue_group_nickname
 from .command_args import parse_command_args, parse_managed_ids, single_name
-from .command_guard import is_command_message
+from .command_guard import command_candidates, is_command_message, message_text as command_message_text
+from . import platform_policy
 from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
 from .battle_report_parser import (
@@ -101,6 +102,33 @@ def _registered_command_names():
                 yield from handler_filter.get_complete_command_names()
 
 
+def _message_command(event, wake_prefixes=()):
+    for text in command_candidates(event, Plain, wake_prefixes):
+        queue = parse_queue_command(text)
+        if queue:
+            return platform_policy.QUEUE_COMMANDS[queue[0]]
+        if _ROUND_CMD_RE.match(text):
+            return '第N轮'
+        command = platform_policy.match_command(re.sub(r'\s+', ' ', text).strip())
+        if command:
+            return command
+    if callable(getattr(event, 'get_self_id', None)) and RequestReviewFilter().filter(event, {}):
+        return '申请审批'
+    return None
+
+
+class PlatformCommandPermissionFilter(CustomFilter):
+    """插入本插件处理器首位，在参数转换前静默检查平台配置。"""
+    _battle_platform_policy = True
+
+    def __init__(self, command, allowed):
+        super().__init__(False)
+        self.command, self.allowed = command, allowed
+
+    def filter(self, event, cfg):
+        return self.allowed(event, self.command)
+
+
 class OfficialQueueFilter(CustomFilter):
     def filter(self, event, cfg) -> bool:
         name = getattr(event, "get_platform_name", None)
@@ -111,11 +139,12 @@ class OfficialQueueFilter(CustomFilter):
         # OneBot 等车指令静默；其他群命令仅禁止默认 LLM，不终止插件分发。
         if platform in QUEUE_PLATFORMS:
             return True
+        prefixes = cfg.get('wake_prefix', [])
+        if _message_command(event, prefixes):
+            return True
         if platform != 'aiocqhttp':
             return False
-        if parse_queue_command(event.get_message_str() or ''):
-            return True
-        return bool(event.get_group_id() and is_command_message(event, Plain, _registered_command_names))
+        return bool(event.get_group_id() and is_command_message(event, Plain, _registered_command_names, prefixes))
 
 
 class RequestReviewFilter(CustomFilter):
@@ -216,7 +245,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.6")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.27.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -232,6 +261,41 @@ class BattleReportPlugin(Star):
             logger.warning(f"get_data_dir 失败，使用兜底目录: {e}")
             self.data_dir = Path("data/plugin_data/battle_report")
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._install_platform_permissions()
+
+    def _command_allowed(self, event, command):
+        platform = getattr(event, 'get_platform_name', lambda: '')()
+        platform_id = str(getattr(event, 'get_platform_id', lambda: '')() or '')
+        return platform_policy.command_allowed(self.config, platform, platform_id, command)
+
+    def _install_platform_permissions(self):
+        from astrbot.core.star.star_handler import EventType, star_handlers_registry
+        for handler in star_handlers_registry.get_handlers_by_module_name(__name__):
+            if handler.event_type != EventType.AdapterMessageEvent or handler.handler_name == 'official_queue_cmd':
+                continue
+            command = platform_policy.handler_command(handler)
+            if command is None:
+                continue
+            filters = handler.event_filters
+            filters[:] = [f for f in filters if not getattr(f, '_battle_platform_policy', False)]
+            filters.insert(0, PlatformCommandPermissionFilter(command, self._command_allowed))
+
+    def _filter_platform_handlers(self, event):
+        handlers = event.get_extra('activated_handlers')
+        if not isinstance(handlers, list):
+            return False
+
+        def own(handler):
+            return (getattr(handler, 'handler_module_path', None) == __name__
+                    or getattr(getattr(handler, 'handler', None), '__self__', None) is self)
+
+        def keep(handler):
+            return (not own(handler) or getattr(handler, 'handler_name', '') == 'official_queue_cmd'
+                    or self._command_allowed(event, platform_policy.handler_command(handler)))
+
+        # 当前入口必须留在原位，避免 StarRequestSubStage 的迭代下标跳过下一项。
+        handlers[:] = [handler for handler in handlers if keep(handler)]
+        return any(not own(h) or getattr(h, 'handler_name', '') != 'official_queue_cmd' for h in handlers)
 
     async def initialize(self):
         """初始化：覆写 /第N轮 处理器显示名 + 连接 MySQL。"""
@@ -383,31 +447,19 @@ class BattleReportPlugin(Star):
     @filter.custom_filter(OfficialQueueFilter, priority=10000)
     async def official_queue_cmd(self, event: AstrMessageEvent):
         """官方等车，以及 QQ 两种接入的命令与默认对话分流。"""
-        command = parse_queue_command(event.get_message_str() or '')
-        if event.get_platform_name() == 'aiocqhttp' and command is None:
-            # True 表示禁止默认 LLM；保留本机已启用的插件和主动模型请求。
+        command = (parse_queue_command(command_message_text(event, Plain))
+                   or parse_queue_command(event.get_message_str() or ''))
+        if command is None:
             event.should_call_llm(True)
-            return
-        if event.get_platform_name() in QUEUE_PLATFORMS and command is None:
-            # AstrBot 的 call_llm 标志表示“禁止默认 LLM”，True 才禁用。
-            event.should_call_llm(True)
-            handlers = event.get_extra('activated_handlers')
-            if isinstance(handlers, list):
-                def belongs_here(handler):
-                    return (getattr(handler, 'handler_module_path', None) == __name__
-                            or getattr(getattr(handler, 'handler', None), '__self__', None) is self)
-
-                # StarRequestSubStage 已持有此列表，必须原地过滤。保留当前入口，
-                # 避免遍历下标移动而跳过下一个第三方处理器；不碰其参数与优先级。
-                handlers[:] = [handler for handler in handlers
-                               if not belongs_here(handler)
-                               or getattr(handler, 'handler_name', '') == 'official_queue_cmd']
-                if any(not belongs_here(handler) for handler in handlers):
-                    return
-            event.stop_event()
-            event.clear_result()
+            has_handlers = self._filter_platform_handlers(event)
+            if event.get_platform_name() in QUEUE_PLATFORMS and not has_handlers:
+                event.stop_event()
+                event.clear_result()
             return
         event.stop_event()
+        if not self._command_allowed(event, platform_policy.QUEUE_COMMANDS[command[0]]):
+            event.clear_result()
+            return
         try:
             if event.get_platform_name() not in QUEUE_PLATFORMS:
                 return
@@ -906,8 +958,7 @@ class BattleReportPlugin(Star):
                 例如“a队:云玩家 萌新\nb队:遗老 鸽子”。含空格的完整 ID 用英文双引号包住，
                 例如“a队:"示例 玩家" 萌新\nb队:遗老 鸽子”。不要附加解释或 Markdown 代码块。
         """
-        platform = getattr(event, 'get_platform_name', None)
-        if callable(platform) and platform() in QUEUE_PLATFORMS:
+        if not self._command_allowed(event, '排表'):
             event.stop_event()
             event.clear_result()
             return None

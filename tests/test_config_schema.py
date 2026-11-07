@@ -20,6 +20,19 @@ def _schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
+def _items(schema, prefix=''):
+    for key, item in schema.items():
+        path = prefix + key
+        yield path, item
+        if item.get('type') == 'template_list':
+            assert isinstance(item.get('templates'), dict) and item['templates'], path
+            for name, template in item['templates'].items():
+                assert template.get('name'), path + '.' + name
+                yield from _items(template['items'], path + '.' + name + '.')
+        elif item.get('type') == 'object':
+            yield from _items(item['items'], path + '.')
+
+
 def test_schema_is_valid_json_object():
     schema = _schema()
     assert isinstance(schema, dict) and schema
@@ -27,10 +40,10 @@ def test_schema_is_valid_json_object():
 
 def test_every_entry_is_well_formed():
     """每个配置项都要有 description / type / default，否则仪表盘渲染会缺字段。"""
-    for key, item in _schema().items():
+    for key, item in _items(_schema()):
         assert isinstance(item, dict), key
         assert item.get("description"), f"{key} 缺 description"
-        assert item.get("type") in ("string", "int", "bool", "float", "list", "object"), \
+        assert item.get("type") in ("string", "int", "bool", "float", "list", "object", "template_list"), \
             f"{key} 的 type 非法: {item.get('type')!r}"
         assert "default" in item, f"{key} 缺 default"
         # default 的类型要和声明的 type 对得上（bool 是 int 的子类，先排掉）
@@ -41,6 +54,8 @@ def test_every_entry_is_well_formed():
             assert isinstance(item["default"], bool), f"{key} 声明 bool 但默认值不是 bool"
         elif item["type"] == "string":
             assert isinstance(item["default"], str), f"{key} 声明 string 但默认值不是 string"
+        elif item['type'] in ('list', 'template_list'):
+            assert isinstance(item['default'], list), f'{key} 默认值须为列表'
 
 
 def test_dead_config_keys_stay_deleted():

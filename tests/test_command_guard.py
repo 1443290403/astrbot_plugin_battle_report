@@ -40,3 +40,12 @@ def test_fragmented_plain_and_mentions_preserve_original_slash():
     event = SimpleNamespace(get_messages=lambda: parts, get_message_str=lambda: '未知指令 参数')
     assert is_command_message(event, Plain, lambda: [])
     assert [p.text for p in parts if isinstance(p, Plain)] == [' /', '未知指令 参数']
+
+
+@pytest.mark.parametrize('raw,prefixes,expected', [
+    ('chat /未知指令', ['chat'], True), ('chat /未知指令', [], False),
+    ('/未知指令', ['/'], True), ('你好', ['chat'], False),
+])
+def test_configured_wake_prefix_is_optional_and_does_not_erase_command_intent(raw, prefixes, expected):
+    event = SimpleNamespace(get_messages=lambda: [Plain(raw)], get_message_str=lambda: raw)
+    assert is_command_message(event, Plain, lambda: [], prefixes) is expected
