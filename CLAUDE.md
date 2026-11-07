@@ -180,7 +180,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 ## v1.25.5 官方端仅友谊等车
 
-- OfficialQueueFilter priority=10000 接收官方两种接入的全部消息；处理器白名单只执行等车相关命令，v1.26.5 起其他消息在服务检查前只过滤本插件已匹配的处理器并禁用默认LLM，保留第三方插件分发；无第三方处理器才 stop_event + clear_result。OneBot 仍只静默拦等车消息，非等车原路径保留。
+- OfficialQueueFilter priority=10000 接收官方两种接入的全部消息；处理器白名单只执行等车相关命令，v1.26.5 起其他消息在服务检查前只过滤本插件已匹配的处理器并禁用默认LLM，保留第三方插件分发；无第三方处理器才 stop_event + clear_result。OneBot 等车仍静默终止；v1.26.6 其他QQ群命令只关闭默认LLM，插件分发和普通聊天保留。
 - lineup_tool 对官方平台提前终止并返回 None；身份表、原账号权限数据与原队列不删除、不迁移，账号管理等原功能在 SnowLuma 使用。
 
 ## v1.25.6 新人入队
@@ -220,3 +220,9 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 官方端非等车消息不得全局 stop_event 拦住音乐等其他插件。原地过滤 activated_handlers 中本模块或绑定当前实例的处理器，保留 official_queue_cmd 自身防止遍历下标移动；不重新排序、不清除第三方参数、不直接调用第三方处理器。
 - should_call_llm(True) 只关闭框架默认聊天，不关闭其他插件自己的 LLM 请求。没有其他处理器时静默停止；队列命令仍独占，OneBot 平台规则保持不变。
 - 参数解析早于处理器执行，能收到参数错误不代表正常命令已经执行。现场 /登录Q音、/查歌词、/点歌 无回复由此前全局停止引起，修复后音源及真实官方发送需单独验证。
+
+## v1.26.6 QQ群命令隔离
+
+- OfficialQueueFilter 的 OneBot 分支另匹配群命令：原始顶层 Plain 中的斜杠优先；裸形式只读全局注册表的标准命令/组及别名，only_activated=False，不调用第三方过滤器，不缓存重载后的过期名单，不将被引用的命令当本条命令。
+- 非等车 OneBot 群命令仅 should_call_llm(True)，不 stop/clear、不改已匹配处理器及参数、不查DB/队列。这样未知命令也不会进入默认LLM/活跃对话，已启用插件和主动AI功能保留。
+- 不要求 chat 前缀；普通聊天、私聊和其他平台不新增限制，官方群仍沿用原范围。必须在双连接的配置中均启用插件。未知自定义裸指令需显式加/。

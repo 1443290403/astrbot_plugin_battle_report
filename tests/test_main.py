@@ -25,10 +25,23 @@ def plugin_module(monkeypatch):
         monkeypatch.setitem(sys.modules, name, obj)
         return obj
 
+    command_handlers = []
+
+    class CommandFilter:
+        def __init__(self, name, alias=()):
+            self.command_name, self.alias = name, alias
+
+        def get_complete_command_names(self):
+            return [self.command_name, *self.alias]
+
+    class CommandGroupFilter(CommandFilter):
+        pass
+
     def command(name, alias=None):
         def decorate(fn):
             fn.command_name = name
             fn.aliases = alias or set()
+            command_handlers.append(SimpleNamespace(event_filters=[CommandFilter(name, fn.aliases)]))
             return fn
         return decorate
 
@@ -69,13 +82,23 @@ def plugin_module(monkeypatch):
     module('astrbot.api.message_components', **{
         name: type(name, (Component,), {}) for name in ['At', 'File', 'Image', 'Node', 'Nodes', 'Plain', 'Reply']})
     module('astrbot.api.star', Star=object, StarTools=object, register=lambda *a: lambda cls: cls)
+    module('astrbot.core.star.filter.command', CommandFilter=CommandFilter)
+    module('astrbot.core.star.filter.command_group', CommandGroupFilter=CommandGroupFilter)
+    module('astrbot.core.star.star_handler', EventType=SimpleNamespace(AdapterMessageEvent='message'),
+           star_handlers_registry=SimpleNamespace(
+               handlers=command_handlers,
+               get_handlers_by_event_type=Mock(side_effect=lambda *a, **kw: command_handlers)))
     package = module('_review_plugin')
     package.__path__ = [str(Path(__file__).resolve().parents[1])]
     loaded = importlib.import_module('_review_plugin.main')
-    yield loaded
-    for name in list(sys.modules):
-        if name.startswith('_review_plugin.'):
-            monkeypatch.delitem(sys.modules, name, raising=False)
+    try:
+        yield loaded
+    finally:
+        for name in list(sys.modules):
+            if name.startswith('_review_plugin.'):
+                # importlib 加入的子模块直接移除，避免 monkeypatch.undo
+                # 又恢复旧模块，导致下一次 fixture 使用旧注册表/过滤器类型。
+                sys.modules.pop(name, None)
 
 
 def event(text='', group='100', admin=False, messages=None):
@@ -2371,13 +2394,72 @@ def test_onebot_waiting_commands_stop_silently_before_any_services(plugin_module
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize('text', ['/帮助', '/确认关联 AABBCCDDEEFF0011', '/解除官方关联',
-                                  '今天等车有点久', '/等车天气', '/帮助 等车 其他'])
-def test_onebot_queue_guard_leaves_other_commands_and_chat_untouched(plugin_module, text):
+@pytest.mark.parametrize('text', ['你好', '今天等车有点久', '解释一下 /点歌 的用法',
+                                  '点歌有什么功能', '1', 'https://example.com/帮助'])
+def test_onebot_command_guard_leaves_normal_chat_untouched(plugin_module, text):
     ev = event(text)
     ev.get_platform_name = lambda: 'aiocqhttp'
     assert not plugin_module.OfficialQueueFilter().filter(ev, {})
     ev.stop_event.assert_not_called()
+
+
+@pytest.mark.parametrize('text', ['/帮助', '/确认关联 AABBCCDDEEFF0011', '/解除官方关联',
+                                  '/等车天气', '/帮助 等车 其他', '/未安装指令 参数',
+                                  '/点歌 示例歌曲', '帮助', '查ID 云玩家'])
+def test_onebot_commands_only_disable_default_llm_and_keep_plugin_dispatch(plugin_module, tmp_path, text):
+    obj = plugin(plugin_module, tmp_path)
+    obj.db_ready = False
+    obj.config['official_queue_enabled'] = False
+    obj._get_waiting_queues = Mock(side_effect=AssertionError('not a queue command'))
+    ev = event(text)
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    handlers = [SimpleNamespace(handler_name='other', handler=AsyncMock())]
+    params = {'other': {'query': '示例歌曲'}}
+    ev.set_extra('activated_handlers', handlers)
+    ev.set_extra('handlers_parsed_params', params)
+    assert plugin_module.OfficialQueueFilter().filter(ev, {})
+    asyncio.run(obj.official_queue_cmd(ev))
+    ev.should_call_llm.assert_called_once_with(True)
+    ev.stop_event.assert_not_called()
+    ev.clear_result.assert_not_called()
+    ev.send.assert_not_awaited()
+    obj.db.get_group_ban.assert_not_awaited()
+    obj._get_waiting_queues.assert_not_called()
+    assert ev.get_extra('activated_handlers') is handlers
+    assert ev.get_extra('handlers_parsed_params') is params
+
+
+def test_onebot_guard_reads_original_plain_before_wake_prefix_stripping(plugin_module):
+    ev = event('未安装指令 参数', messages=[plugin_module.At(qq='10002'),
+                                             plugin_module.Plain(text='/未安装指令 参数')])
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    assert plugin_module.OfficialQueueFilter().filter(ev, {})
+    assert ev.get_message_str() == '未安装指令 参数'
+    assert ev.get_messages()[1].text == '/未安装指令 参数'
+
+
+def test_onebot_guard_discovers_disabled_plugin_commands_aliases_and_live_reload(plugin_module):
+    registry = sys.modules['astrbot.core.star.star_handler'].star_handlers_registry
+    cls = sys.modules['astrbot.core.star.filter.command'].CommandFilter
+    command_filter = cls('点歌', ['选歌'])
+    command_filter.filter = Mock(side_effect=AssertionError('must not execute other filters'))
+    metadata = SimpleNamespace(event_filters=[command_filter], enabled=False)
+    registry.handlers.append(metadata)
+    ev = event('选歌 示例歌曲')
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    assert plugin_module.OfficialQueueFilter().filter(ev, {})
+    registry.get_handlers_by_event_type.assert_called_with('message', only_activated=False)
+    command_filter.filter.assert_not_called()
+    registry.handlers.remove(metadata)
+    assert not plugin_module.OfficialQueueFilter().filter(ev, {})
+
+
+@pytest.mark.parametrize('group,platform', [('', 'aiocqhttp'), ('100', 'webchat'), ('100', 'telegram')])
+def test_command_guard_does_not_expand_to_private_chat_or_other_platforms(plugin_module, group, platform):
+    ev = event('/未安装指令', group=group)
+    ev.get_platform_name = lambda: platform
+    assert not plugin_module.OfficialQueueFilter().filter(ev, {})
+    ev.should_call_llm.assert_not_called()
 
 
 @pytest.mark.parametrize('topic', ['友谊等车', '等车'])

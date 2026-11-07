@@ -32,6 +32,7 @@ from . import chart, help_guide, lineup, stats
 from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
 from .official_queue import group_nickname as queue_group_nickname
 from .command_args import parse_command_args, parse_managed_ids, single_name
+from .command_guard import is_command_message
 from .request_review import ReviewInbox, invite_card_payload, parse_decision, request_payload
 from .lineup import _int_to_cn, format_duel_results, format_raid_results
 from .battle_report_parser import (
@@ -87,6 +88,19 @@ def _review_scope(event) -> tuple[str, str] | None:
     return platform_id, self_id
 
 
+def _registered_command_names():
+    # 读取全部已注册指令，包括当前连接未启用的插件；不调用 filter()，
+    # 避免参数校验、权限检查或 parsed_params 污染。重载后即时反映新名单。
+    from astrbot.core.star.filter.command import CommandFilter
+    from astrbot.core.star.filter.command_group import CommandGroupFilter
+    from astrbot.core.star.star_handler import EventType, star_handlers_registry
+    for handler in star_handlers_registry.get_handlers_by_event_type(
+            EventType.AdapterMessageEvent, only_activated=False):
+        for handler_filter in handler.event_filters:
+            if isinstance(handler_filter, (CommandFilter, CommandGroupFilter)):
+                yield from handler_filter.get_complete_command_names()
+
+
 class OfficialQueueFilter(CustomFilter):
     def filter(self, event, cfg) -> bool:
         name = getattr(event, "get_platform_name", None)
@@ -94,9 +108,14 @@ class OfficialQueueFilter(CustomFilter):
             return False
         platform = name()
         # 官方平台统一在此分流：本插件只开放等车，不拦其他插件。
-        # OneBot 仅拦截等车指令，原战报与聊天流程继续使用。
-        return platform in QUEUE_PLATFORMS or bool(
-            platform == 'aiocqhttp' and parse_queue_command(event.get_message_str() or ''))
+        # OneBot 等车指令静默；其他群命令仅禁止默认 LLM，不终止插件分发。
+        if platform in QUEUE_PLATFORMS:
+            return True
+        if platform != 'aiocqhttp':
+            return False
+        if parse_queue_command(event.get_message_str() or ''):
+            return True
+        return bool(event.get_group_id() and is_command_message(event, Plain, _registered_command_names))
 
 
 class RequestReviewFilter(CustomFilter):
@@ -197,7 +216,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.5")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.26.6")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -363,8 +382,12 @@ class BattleReportPlugin(Star):
 
     @filter.custom_filter(OfficialQueueFilter, priority=10000)
     async def official_queue_cmd(self, event: AstrMessageEvent):
-        """等车、加入、离开、发车和新增队列；仅 QQ 官方群聊。"""
+        """官方等车，以及 QQ 两种接入的命令与默认对话分流。"""
         command = parse_queue_command(event.get_message_str() or '')
+        if event.get_platform_name() == 'aiocqhttp' and command is None:
+            # True 表示禁止默认 LLM；保留本机已启用的插件和主动模型请求。
+            event.should_call_llm(True)
+            return
         if event.get_platform_name() in QUEUE_PLATFORMS and command is None:
             # AstrBot 的 call_llm 标志表示“禁止默认 LLM”，True 才禁用。
             event.should_call_llm(True)
