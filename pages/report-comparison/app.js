@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
 let jobId = '', category = 'matched', offset = 0, timer, sequence = 0, dbReady = false, running = false;
 let lastResult;
-let view = 'comparison', libraryOffset = 0, libraryData, librarySequence = 0;
+let view = 'local', libraryOffset = 0, libraryData, librarySequence = 0;
 const selection = new Map();
 let dispatchId = '', dispatchTimer, dispatchSequence = 0, dispatchRunning = false;
 const dispatchLabels={prepared:'待确认',running:'发送中',completed:'全部发送成功',partial:'部分未完成',interrupted:'已中断'};
@@ -12,6 +12,40 @@ const rowNotes = {matched:'规范内容相同',missing_in_db:'本地未匹配',o
   out_of_range:'正文日期不在所选月份',other_team:'正文战队与搜索队名不符'};
 const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '';
 const node = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = String(text); if (cls) e.className = cls; return e; };
+function legacyCopy(text) {
+  const active = document.activeElement, selection = window.getSelection();
+  const ranges = selection ? Array.from({length:selection.rangeCount},(_,i)=>selection.getRangeAt(i).cloneRange()) : [];
+  const buffer = node('textarea'); buffer.value = text; buffer.readOnly = true; buffer.tabIndex = -1;
+  buffer.className = 'copy-buffer'; buffer.setAttribute('aria-hidden','true');
+  // A modal dialog traps focus; put the copy field inside the current top layer.
+  (document.querySelector('dialog[open]') || document.body).append(buffer);
+  try {
+    buffer.focus({preventScroll:true}); buffer.select(); buffer.setSelectionRange(0,text.length);
+    return typeof document.execCommand === 'function' && document.execCommand('copy');
+  } catch { return false; }
+  finally {
+    buffer.remove();
+    if(active instanceof HTMLElement && active.isConnected)active.focus({preventScroll:true});
+    if(selection){selection.removeAllRanges();for(const range of ranges)selection.addRange(range);}
+  }
+}
+function copyButton(text) {
+  const button = node('button','复制全文','secondary copy-report'); button.type='button';
+  button.addEventListener('click',async()=>{
+    try {
+      // Keep the synchronous path in the original user click, including HTTP/sandbox.
+      if(!legacyCopy(text)) {
+        if(!navigator.clipboard?.writeText)throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(text);
+      }
+      button.textContent='已复制'; button.setAttribute('aria-label','已复制战报全文');
+    } catch {
+      button.textContent='复制失败'; button.setAttribute('aria-label','复制战报全文失败');
+      notice('浏览器阻止了复制，请允许剪贴板访问后重试。');
+    }
+  });
+  return button;
+}
 function notice(text = '') { $('notice').textContent = text; $('notice').hidden = !text; }
 function setRunning(value) { running = value; $('start').disabled = !dbReady || (value && view === 'comparison'); $('cancel').hidden = !value; $('history').disabled = value; }
 function monthDates() {
@@ -84,7 +118,11 @@ function drawRows(data) {
     tr.append(identity);
     for (const side of ['site','local']) {
       const td = node('td');
-      if (row[side].length) td.append(...row[side].map(r => selectLabel({...r,source:side === 'site' ? 'cloud' : 'local',home_team:side === 'site' ? '' : data.job.query.team})));
+      if (row[side].length) td.append(...row[side].map(r => {
+        const block = node('article',null,'inline-report'), top = node('div',null,'report-meta');
+        top.append(selectLabel({...r,source:side === 'site' ? 'cloud' : 'local',home_team:side === 'site' ? '' : data.job.query.team}),copyButton(r.body));
+        block.append(top,node('pre',r.body)); return block;
+      }));
       else td.append(node('span','—','id-list'));
       if (row[side].length) td.append(node('small', [...new Set(row[side].map(r => r.winner).filter(Boolean))].join(' / ') || '暂无胜方'));
       tr.append(td);
@@ -155,8 +193,7 @@ function detail(row) {
     target.replaceChildren(...row[side].map(r => {
       const block = node('article',null,'report-block'), top = node('div',null,'report-meta');
       top.append(node('strong',`#${r.id} · 胜方 ${r.winner || '未知'}`));
-      const copy = node('button','复制原文','secondary');
-      copy.addEventListener('click', async () => {try {await navigator.clipboard.writeText(r.body); copy.textContent = '已复制';} catch {copy.textContent = '请选择原文复制';}});
+      const copy = copyButton(r.body);
       top.append(copy); block.append(top);
       if (r.publish_date || r.publisher) block.append(node('p', `${r.publish_date ? `发布于 ${r.publish_date} · ` : ''}${r.publisher || ''}`, 'hint'));
       if (r.errors?.length || r.warnings?.length) block.append(node('p',[...(r.errors || []),...(r.warnings || [])].join('；'),'hint warnings'));
@@ -169,19 +206,6 @@ function detail(row) {
 $('close-detail').addEventListener('click', () => $('detail').close());
 $('detail').addEventListener('click', e => {if (e.target === $('detail')) {const r = $('detail').getBoundingClientRect(); if(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) $('detail').close();}});
 window.addEventListener('pagehide', () => { clearTimeout(timer); clearTimeout(dispatchTimer); });
-if (!bridge) {
-  notice('请从 AstrBot 后台的插件详情页打开“战报核对”。'); $('run-message').textContent = '未连接 AstrBot 后台';
-} else {
-  try {
-    await bridge.ready();
-    const data = await options(true);
-    $('run-message').textContent = dbReady ? '选择范围，开始一次核对。' : '插件数据库尚未连接。';
-    const active = data.history.find(j => ['pending','running'].includes(j.status));
-    if (active) {jobId = active.id; setRunning(true); await refresh();}
-    else if (data.history.length) {jobId = data.history[0].id; await refresh();}
-  } catch(e) {notice(e.message); $('run-message').textContent = '无法读取后台状态';}
-}
-
 // 查询页与跨页选择篮：发送内容始终由后台重新读取，前端只提交来源和编号。
 function selectKey(record) { return `${record.source}:${record.id}`; }
 function selectionChanged() {
@@ -221,9 +245,9 @@ function activateView(next) {
   $('start').textContent=view==='comparison'?'开始核对 ↗':'刷新列表'; setRunning(running);
   $('local-kind-label').hidden=view!=='local'; $('fetch-cloud').hidden=view!=='cloud';
   $('library-title').textContent=view==='local'?'本地战报':'云端战报';
-  $('library-author-heading').textContent=view==='local'?'上传人 / 上传时间':'发布人 / 最近抓取';
   $('library-description').textContent=view==='local'?'按本地比赛编号显示，不依赖是否抓取过网站。':'完整拉取后按云端ID保存一份；再次拉取刷新原记录。';
   if (view!=='comparison' && dbReady && $('team').value && $('month').value) loadLibrary();
+  else if (view==='comparison' && jobId && !lastResult) refresh();
 }
 document.querySelectorAll('#view-tabs button').forEach(b=>b.addEventListener('click',()=>activateView(b.dataset.view)));
 function storedTime(value) { return value ? new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(Number(value)*1000)) : '未记录'; }
@@ -240,13 +264,17 @@ async function loadLibrary() {
     libraryData=data;
     $('library-scope').textContent=`${data.query.team} · ${data.query.start} 至 ${data.query.end} · 共 ${data.total} 份`;
     $('library-records').replaceChildren(...data.records.map(r=>{
-      const tr=node('tr'), select=node('td');select.append(selectLabel(r,false));tr.append(select);
-      const identity=node('td');identity.append(node('strong',`#${r.id} · ${r.team_a || '待解析'} VS ${r.team_b || '待解析'}`));tr.append(identity);
-      const kind=node('td',r.kind==='raid'?'踢馆':r.kind==='friendly'?'友谊':'待解析');
-      if (r.source==='local') kind.append(node('small',r.export_sent?'已标记发送':'未标记发送')); else kind.append(node('small','云端归档'));tr.append(kind);
-      const date=node('td',r.match_time || '日期未知');if(r.publish_date)date.append(node('small',`发布 ${r.publish_date}`));tr.append(date);
-      const who=node('td',r.publisher || '未记录');who.append(node('small',storedTime(r.uploaded_at)));tr.append(who);
-      const action=node('td'), button=node('button','查看原文','secondary');button.addEventListener('click',()=>detail({site:r.source==='cloud'?[r]:[],local:r.source==='local'?[r]:[],note:r.source==='cloud'?'云端独立归档记录。':'本地上传战报。'}));action.append(button);tr.append(action);return tr;
+      const card=node('article',null,'library-report'), top=node('div',null,'report-meta');
+      const identity=node('div',null,'report-identity');identity.append(selectLabel(r),node('strong',`${r.team_a || '待解析'} VS ${r.team_b || '待解析'}`));
+      top.append(identity,copyButton(r.body));
+      const kind=r.kind==='raid'?'踢馆':r.kind==='friendly'?'友谊':'待解析';
+      const status=r.source==='local'?(r.export_sent?'已标记发送':'未标记发送'):'云端归档';
+      const meta=node('div',null,'report-info');
+      meta.append(node('span',`${kind} · ${status}`),node('span',`比赛 ${r.match_time || '日期未知'}`),
+        node('span',`${r.source==='local'?'上传':'发布'}人 ${r.publisher || '未记录'}`),
+        node('span',`${r.source==='local'?'上传':'最近抓取'} ${storedTime(r.uploaded_at)}`));
+      if(r.publish_date)meta.append(node('span',`发布 ${r.publish_date}`));
+      card.append(top,meta,node('pre',r.body));return card;
     }));
     $('library-empty').hidden=data.records.length>0;$('library-empty').querySelector('h3').textContent='暂无记录';$('library-empty').querySelector('p').textContent='当前战队和月份没有符合条件的战报。'; $('library-pagination').hidden=!data.total;
     $('library-page-label').textContent=`第 ${libraryOffset+1}–${Math.min(libraryOffset+data.limit,data.total)} 项，共 ${data.total} 项`;
@@ -332,3 +360,17 @@ async function confirmDispatch(retry=false){
 }
 $('dispatch-confirm').addEventListener('click',()=>confirmDispatch());$('dispatch-retry').addEventListener('click',()=>confirmDispatch(true));
 $('dispatch-stop').addEventListener('click',async()=>{try{renderDispatch(await bridge.apiPost(`comparison/dispatch/${dispatchId}/cancel`,{}));clearTimeout(dispatchTimer);}catch(e){dispatchNotice(e.message);}});
+
+if (!bridge) {
+  notice('请从 AstrBot 后台的插件详情页打开“战报核对”。'); $('run-message').textContent = '未连接 AstrBot 后台';
+} else {
+  try {
+    await bridge.ready();
+    const data = await options(true);
+    $('run-message').textContent = dbReady ? '选择范围，开始一次核对。' : '插件数据库尚未连接。';
+    const active = data.history.find(j => ['pending','running'].includes(j.status));
+    if (active) {jobId = active.id; setRunning(true); await refresh();}
+    else if (data.history.length) jobId = data.history[0].id;
+    activateView('local');
+  } catch(e) {notice(e.message); $('run-message').textContent = '无法读取后台状态';}
+}

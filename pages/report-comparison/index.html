@@ -7,24 +7,24 @@
 <body>
 <main>
   <header><div><p class="eyebrow">BATTLE REPORT / RECONCILIATION</p><h1>战报核对<span class="source">rep.ygobbs2.com</span></h1><p class="subtitle">把网站记录与战队战报放在一起，逐项核对差异。</p></div><span class="readonly">● 本地战报只读</span></header>
-  <nav id="view-tabs" class="view-tabs" aria-label="战报页面"><button type="button" class="active" data-view="comparison" aria-pressed="true">战报核对</button><button type="button" data-view="local" aria-pressed="false">本地战报</button><button type="button" data-view="cloud" aria-pressed="false">云端战报</button></nav>
+  <nav id="view-tabs" class="view-tabs" aria-label="战报页面"><button type="button" class="active" data-view="local" aria-pressed="true">本地战报</button><button type="button" data-view="comparison" aria-pressed="false">战报核对</button><button type="button" data-view="cloud" aria-pressed="false">云端战报</button></nav>
   <section class="query-card" aria-labelledby="query-title">
-    <div class="section-heading"><h2 id="query-title">选择核对范围</h2><p id="query-description">默认查询上个月的友谊战报</p></div>
+    <div class="section-heading"><h2 id="query-title">筛选本地上传战报</h2><p id="query-description">包含本地上传的友谊和踢馆记录</p></div>
     <form id="query-form">
       <div class="form-grid"><label>本地战队<input id="team" list="teams" maxlength="64" placeholder="选择或输入战队" required><datalist id="teams"></datalist></label>
       <label>比赛月份<input id="month" type="month" required></label>
-      <label>网站战队名<input id="site-team" maxlength="64" placeholder="默认与本地战队相同"></label></div>
-      <details class="advanced"><summary>网站查询地址与发布时间范围</summary>
-        <label class="url-label">粘贴战报站查询地址<div class="url-row"><input id="source-url" type="url" placeholder="https://rep.ygobbs2.com/?c=search…"><button id="apply-url" type="button" class="secondary">读取地址</button></div></label>
-        <div class="date-grid"><label>发布开始日期<input id="publish-start" type="date"></label><label>发布结束日期<input id="publish-end" type="date"></label></div>
+      <label hidden>网站战队名<input disabled id="site-team" maxlength="64" placeholder="默认与本地战队相同"></label></div>
+      <details class="advanced" hidden><summary>网站查询地址与发布时间范围</summary>
+        <label class="url-label">粘贴战报站查询地址<div class="url-row"><input id="source-url" type="url" disabled placeholder="https://rep.ygobbs2.com/?c=search…"><button id="apply-url" type="button" class="secondary">读取地址</button></div></label>
+        <div class="date-grid"><label>发布开始日期<input id="publish-start" type="date" disabled></label><label>发布结束日期<input id="publish-end" type="date" disabled></label></div>
         <p class="hint">网站按发布时间搜索，本地按比赛日期取数。可扩大发布范围，检查晚发布的战报。</p>
       </details>
-      <div class="form-footer"><span id="query-hint" class="hint">完整拉取后保存云端副本，本地战报不变。</span><button type="submit" id="start" disabled>开始核对 <span aria-hidden="true">↗</span></button></div>
+      <div class="form-footer"><span id="query-hint" class="hint">跨页保留勾选，可批量私聊发送到QQ。</span><button type="submit" id="start" disabled>刷新列表</button></div>
     </form>
   </section>
   <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
   <aside class="selection-bar"><span id="selection-count">已选 0 份战报</span><div><button id="clear-selection" type="button" class="secondary" disabled>清空选择</button><button id="dispatch-history-open" type="button" class="secondary">发送记录</button><button id="send-qq" type="button" disabled>发送到 QQ</button></div></aside>
-  <div id="comparison-view">
+  <div id="comparison-view" hidden>
   <section class="runbar"><div><span id="run-status" class="status-pill">准备就绪</span><span id="run-message">连接 AstrBot 后台中…</span></div><div class="run-actions"><select id="history" aria-label="历史核对结果"><option value="">最近的核对</option></select><button id="cancel" class="secondary" hidden>取消</button><button id="download" class="secondary" disabled>导出 JSON</button></div></section>
   <progress id="progress" max="100" value="0" hidden aria-label="网站抓取进度"></progress>
   <section class="metrics" aria-label="核对统计"><article><span>网站记录</span><strong id="site-total">—</strong><small>按发布时间抓取</small></article><article><span>本地友谊战报</span><strong id="db-total">—</strong><small>按比赛日期查询</small></article><article class="matched"><span>内容匹配</span><strong id="matched">—</strong><small>相同内容组</small></article><article class="review"><span>核对提示</span><strong id="review-total">—</strong><small>提示项可能互相关联</small></article></section>
@@ -36,7 +36,7 @@
     <div id="pagination" class="pagination" hidden><span id="page-label"></span><div><button id="prev" class="secondary">上一页</button><button id="next" class="secondary">下一页</button></div></div>
   </section>
   </div>
-  <section id="library-view" class="results" hidden><div class="section-heading"><h2 id="library-title">本地战报</h2><span id="library-scope" class="hint"></span></div><div class="library-tools"><label id="local-kind-label">战报类型 <select id="local-kind"><option value="all">全部</option><option value="friendly">友谊</option><option value="raid">踢馆</option></select></label><span id="library-description" class="hint"></span><button id="fetch-cloud" class="secondary" type="button" hidden>拉取并核对</button></div><div class="table-wrap"><table class="library-table"><thead><tr><th><input id="library-select-all" type="checkbox" aria-label="勾选当前页全部战报"></th><th>编号 / 对阵</th><th>类型 / 状态</th><th>比赛日期</th><th id="library-author-heading">上传信息</th><th>操作</th></tr></thead><tbody id="library-records"></tbody></table></div><div id="library-empty" class="empty"><h3>暂无记录</h3><p>选择战队与月份后刷新列表。</p></div><div id="library-pagination" class="pagination" hidden><span id="library-page-label"></span><div><button id="library-prev" class="secondary" type="button">上一页</button><button id="library-next" class="secondary" type="button">下一页</button></div></div></section>
+  <section id="library-view" class="results"><div class="section-heading"><h2 id="library-title">本地战报</h2><span id="library-scope" class="hint"></span></div><div class="library-tools"><label id="local-kind-label">战报类型 <select id="local-kind"><option value="all">全部</option><option value="friendly">友谊</option><option value="raid">踢馆</option></select></label><span id="library-description" class="hint"></span><button id="fetch-cloud" class="secondary" type="button" hidden>拉取并核对</button></div><label class="select-page"><input id="library-select-all" type="checkbox"> 勾选当前页全部战报</label><div id="library-records" class="library-records"></div><div id="library-empty" class="empty"><h3>暂无记录</h3><p>选择战队与月份后刷新列表。</p></div><div id="library-pagination" class="pagination" hidden><span id="library-page-label"></span><div><button id="library-prev" class="secondary" type="button">上一页</button><button id="library-next" class="secondary" type="button">下一页</button></div></div></section>
   <footer class="footnote">网站未检出不代表战报虚假。同日、同队、同地点也可能有多场比赛，请结合原文核对。</footer>
 </main>
 <dialog id="detail"><div class="dialog-top"><div><p class="eyebrow">REPORT DETAIL</p><h2>战报原文对照</h2></div><button id="close-detail" class="secondary" aria-label="关闭原文对照">关闭 ×</button></div><p id="detail-note" class="hint"></p><div class="compare-columns"><section><h3>网站记录</h3><div id="site-detail"></div></section><section><h3>本地记录</h3><div id="local-detail"></div></section></div></dialog>

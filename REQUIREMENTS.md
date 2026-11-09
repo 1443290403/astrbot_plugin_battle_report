@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.29.1`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.29.2`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -431,7 +431,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **云端归档与批量 QQ 发送（v1.29.0，覆盖上述 v1.28 仅 SELECT 范围）：** 全部分页校验通过后，事务 UPSERT 独立 `cloud_battle_reports`（schema v21）。正整数网站 ID 主键，原文/解析快照/日期/来源/首次及最近抓取时间持久化，同 ID 更新不重复插入；整批失败回滚，不发布残缺差异，不改 matches/duels/统计/指纹。归档不随最近20次任务淘汰，网站未再检出的旧记录不自动删除。旧 JSON 历史未归档的云端记录须重新拉取。
 
-WebUI 三 Tab：核对、本地上传、云端归档。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
+WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）、云端归档（第三位）。本地/云端列表以全文卡片呈现，核对两侧也直接显示完整正文，仍保留单独原文对照弹窗。列表与弹窗共用复制函数，复制原始body，不拼入页面元信息、不压缩空白、不解析HTML；优先在点击回调同步创建只读textarea并execCommand(copy)，放入当前打开dialog或body以兼容焦点限制和opaque sandbox/HTTP。清理临时字段、恢复焦点及选择；失败后尝试Clipboard API，全部失败显示明确失败，不能显示假成功。复制不修改iframe权限、后台数据或原文。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
 
 每收件人/分包保存回执，只有 message_id 确认才标记成功；网络/超时/缺回执为 unknown，不自动重试。手动重试仅 failed/cancelled，跳过成功和 unknown；重启/卸载不自动重放，进行中标记未知、尚未发送标记中断。每次请求25秒，整批15分钟，预览30分钟有效、重试24小时内。最近20批快照原子存 data_dir/report_dispatches（活动批保留），按后台用户名隔离历史和操作；关闭先停发送和核对任务、再关DB，失败仍移除本实例路由。发送回执独立于 matches.export_sent，不自动改变人工外发标记。
 
@@ -831,7 +831,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，发送尝试前存档、失败和超时不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
-| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地全部/友谊/踢馆独立分页、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
+| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1037,7 +1037,7 @@ year = now.year - 1 if month > now.month else now.year
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
-| **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 原文文本渲染、浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
+| **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 默认本地Tab、全文列表/复制、opaque sandbox中实际粘贴核验/焦点恢复/失败反馈及手机布局，浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
 | **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
@@ -1468,7 +1468,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.2")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1497,3 +1497,6 @@ v1.29.0 验证：1321 项默认回归通过、5 项跳过；隔离 MySQL 8.4 的
 
 
 v1.29.1 验证：**1325 项测试通过，5 项跳过**；新增4项自定义唤醒回归，并使用真实 AstrBot v4.27.3／当前参考源码的唤醒阶段验证48种组合（中文/数字、带/不带斜杠、无前缀/其他前缀/斜杠前缀、平台允许/屏蔽）。另通过184项既有平台隔离检查。未登录真实QQ，不涉及数据库迁移。
+
+
+v1.29.2 验证：1325 项默认回归通过、5 项跳过。使用真实 v4.27.3 bridge/Web SDK 与样本数据库、模拟 OneBot 的 Chromium 验证，iframe 使用 AstrBot 的 allow-scripts/allow-forms/allow-downloads sandbox（无 allow-same-origin）：默认本地Tab、三Tab顺序、列表全文、真实剪贴板复制后粘贴逐字比对（本地/云端/弹窗、ID内空格和双空格）、Clipboard API备选及失败反馈、临时字段清理、跨页选择/发送预览/模拟回执、文本安全、390px/深色、匿名拒绝和下载通过。未改SQL或连接生产DB/QQ。

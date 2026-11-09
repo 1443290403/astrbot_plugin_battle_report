@@ -268,3 +268,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 - RoundCommandFilter 通过即由框架自定义唤醒，AstrBot 只保证 is_wake，不保证 is_at_or_wake_command。round_cmd 不得再拿 @/前缀专用标志阻止已匹配指令，也不强制改写该标志。平台前置过滤、群/DB/历史检查和原配对/输出流程保留。
 - 入口回归必须覆盖中文/数字、斜杠/裸命令、is_at_or_wake_command=False。真实框架验证应从 WakingCheckStage 进入，不预设该标志为True，避免此前只直调handler漏掉边界。
+
+
+## v1.29.2 WebUI 全文与复制
+
+- 默认/首位本地战报，核对第二、云端第三，初始化不自动切到历史核对。列表直接呈现body全文，纯textContent/pre-wrap，不截断、压空白或执行HTML。
+- copyButton共用于列表/弹窗；同步用户点击的textarea+execCommand兼容opaque iframe及HTTP，当前dialog内放临时字段以免焦点被困；移除字段、恢复焦点/选择，备选Clipboard API。只有成功才回执已复制，全失败明确反馈；不能放宽iframe权限。
+- 浏览器验证必须使用真实sandbox属性，复制后真实粘贴逐字比对，而非只断言按钮文案；另覆盖备选API/拒绝、临时字段清理、手机布局与原跨页发送行为。数据库schema21和QQ指令不变。
