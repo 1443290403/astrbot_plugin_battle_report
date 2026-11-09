@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.29.0
+最新版本：v1.29.1
 
-- 文件：astrbot_plugin_battle_report-1.29.0.zip
-- 源码提交：d848b0b0bde507df8b166493d2307b30f29875b4
+- 文件：astrbot_plugin_battle_report-1.29.1.zip
+- 源码提交：0e2077b17d9554c07b9a7ff4b692e6a5c06ea337
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：31619812954629c79f13add21751bc62679c5851733470717084463c11bbeb28
+- SHA256：4ad413d353a9208c69e377d9a98d6ceb562ee5b8c2721e50df9377a5b7e37cc6
 
 旧版本安装包保留，按文件名选择。
 
@@ -153,3 +153,7 @@ v1.29.0：后台“战报核对”新增本地上传/云端归档Tab，跨页勾
 - [v1.29.0 战报核对与批量发送使用说明](REPORT_COMPARISON_GUIDE-1.29.0.md)
 - [v1.29.0 友谊等车使用说明](OFFICIAL_QUEUE_GUIDE-1.29.0.md)
 - [v1.29.0 平台指令配置指南](PLATFORM_COMMAND_GUIDE-1.29.0.md)
+
+## 第N轮无回复修复
+
+v1.29.1：修复动态轮次已由CustomFilter唤醒，但处理器误查is_at_or_wake_command而静默退出的问题。支持中文/数字、斜杠/裸命令，平台指令权限和群/DB/历史检查保留；配对规则、双空格输出及schema21不变。1325项默认测试通过、5项跳过；真实AstrBot v4.27.3/当前参考源码的48项唤醒组合和184项既有平台隔离检查通过，未连接生产QQ或数据库。更新并重载插件后可使用/第二轮。
