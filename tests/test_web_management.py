@@ -22,7 +22,7 @@ def prepare(site):
 def test_management_is_core_admin_only_even_for_same_team_and_invalid_payload(site,method,suffix):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             assert (await client.request(method,BASE+suffix,json={} if method=='POST' else None)).status_code==401
             token=await team_login(site,client)
             response=await client.request(method,TEAM+suffix,headers={'Authorization':'Bearer '+token},params={'team':'a队'},json={'role':'master','qq':'20000001'} if method=='POST' else None)
@@ -36,7 +36,7 @@ def test_management_is_core_admin_only_even_for_same_team_and_invalid_payload(si
 def test_core_management_reads_writes_and_automatic_password_accounts(site):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             for suffix in ['teams','members','players']:
                 result=await client.get(BASE+suffix,headers=MASTER,params=dict(team='a队',keyword='示例 ID',offset=30,limit=30))
                 assert result.status_code==200 and result.json()['total']==1
@@ -75,7 +75,7 @@ def test_core_management_reads_writes_and_automatic_password_accounts(site):
 def test_invalid_management_payloads_never_write(site,suffix,payload):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             assert (await client.post(BASE+suffix,headers=MASTER,json=payload)).status_code==400
             for name in ['set_team_admins','save_webui_member','set_webui_player_owner']:getattr(site.db,name).assert_not_awaited()
         await site.close()
@@ -86,7 +86,7 @@ def test_invalid_management_payloads_never_write(site,suffix,payload):
 def test_invalid_management_query_rejected_before_sql(site,params):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             assert (await client.get(BASE+'teams',headers=MASTER,params=params)).status_code==400
             site.db.get_webui_teams.assert_not_awaited()
         await site.close()
@@ -96,7 +96,7 @@ def test_invalid_management_query_rejected_before_sql(site,params):
 def test_stale_edit_is_reported_and_account_store_failure_keeps_grant_success(site):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             site.db.save_webui_member.side_effect=ValueError('队员资料已变化，请刷新后重试。')
             result=await client.post(BASE+'members',headers=MASTER,json=dict(action='create',team='a队',name='云玩家',qq=''))
             assert result.status_code==400 and '已变化' in result.text
@@ -111,7 +111,7 @@ def test_stale_edit_is_reported_and_account_store_failure_keeps_grant_success(si
 def test_admin_picker_reads_current_team_members_and_admin_snapshot_without_writing(site):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             response=await client.get(BASE+'members',headers=MASTER,params=dict(team='a队',keyword='云 玩家',offset=20,limit=20,include_admins='1'))
             assert response.status_code==200
             data=response.json()
@@ -129,7 +129,7 @@ def test_admin_picker_reads_current_team_members_and_admin_snapshot_without_writ
 def test_admin_picker_rejects_team_session_and_bad_include_flag_before_roster_reads(site):
     prepare(site)
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             response=await client.get(BASE+'members',headers=MASTER,params=dict(team='a队',include_admins='yes'))
             assert response.status_code==400
             token=await team_login(site,client)

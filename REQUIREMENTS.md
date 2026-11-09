@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.32.1`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.33.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -519,7 +519,7 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 
 v1.31.1：设置管理员成功后同步密码账号；DB就绪后用`get_team_admin_qqs`只读去重名单补齐，私聊取码也可重试同步。QQ默认账号，名称冲突用qq_前缀与后缀；同QQ跨队、重复授权、重启均保留已有账号、密码及启停状态。文件失败不撤销已提交管理员授权，回执明确部分成功，QQ登录码独立可用。原后台仅可同步／查看初始密码／重置／启停，禁止手工创建与删除；私聊仅向已证明的原OneBot QQ提供自身账号及初始密码，群回执不含口令。
 
-密码账号文件 `web_accounts.json` 版本1，可选initial_key及initial_password兼容旧账号。安装密钥32随机字节，HMAC-SHA256以账号UUID及固定域区分派生独立初始密码；密钥与哈希同属0600敏感文件，未改初始密码可恢复，不得称全部凭据不可逆。缺失／损坏密钥且有初始账号时拒绝载入，改密／重置清初始标记，公开列表仅含标记、无口令／密钥。后台显式查看及私聊可取默认密码，关闭弹窗／切换身份清除已展示秘密，拒绝关闭后的迟到响应。PBKDF2-SHA256 600000轮／独立随机盐／0600原子写；同名大小写不敏感、QQ唯一，不存明文。密码重置／修改／停用／删除以revision撤销旧密码会话，不撤销QQ取码身份。QQ授权删除后两方式的后续请求都拒绝，观察到全部授权撤销的会话作废；恢复授权需重新登录。登录码5分钟、30秒换码间隔／新码废旧／限用一次；会话8小时，服务器只存哈希，不落盘，退出／重载失效。限流和线程池限制在插件会话，不改核心中间件／配置／LLM。HTTP沿用后台协议，HTTPS及转发HTTPS的Cookie Secure，HttpOnly／SameSite Strict／path=/battle-report；令牌只在页面内存，不入storage／URL。身份过期／切换清空旧正文和选择，generation拒绝旧异步响应，不自动重放POST。
+密码账号文件 `web_accounts.json` 版本1，可选initial_key及initial_password兼容旧账号。安装密钥32随机字节，HMAC-SHA256以账号UUID及固定域区分派生独立初始密码；密钥与哈希同属0600敏感文件，未改初始密码可恢复，不得称全部凭据不可逆。缺失／损坏密钥且有初始账号时拒绝载入，改密／重置清初始标记，公开列表仅含标记、无口令／密钥。后台显式查看及私聊可取默认密码，关闭弹窗／切换身份清除已展示秘密，拒绝关闭后的迟到响应。PBKDF2-SHA256 600000轮／独立随机盐／0600原子写；同名大小写不敏感、QQ唯一，不存明文。密码重置／修改／停用／删除以revision撤销旧密码会话，不撤销QQ取码身份。QQ授权删除后两方式的后续请求都拒绝，观察到全部授权撤销的会话作废；恢复授权需重新登录。登录码5分钟、30秒换码间隔／新码废旧／限用一次；v1.33起会话固定7天，服务器只存令牌摘要并在0600文件原子持久化，退出撤销，重载保留未过期会话。限流和线程池限制在插件会话，不改核心中间件／配置／LLM。v1.33起公网登录与敏感密码操作要求HTTPS，仅本机／SSH回环HTTP例外；HTTPS及可信代理转发HTTPS的Cookie Secure，HttpOnly／SameSite Strict／path=/battle-report；令牌只在页面内存，不入storage／URL。身份过期／切换清空旧正文和选择，generation拒绝旧异步响应，不自动重放POST。
 
 所有本地／云端COUNT分页前的原SQL战队范围保持；战队会话额外校验home_team和site_team均授权。云端按服务端team_a/team_b/winner_site/loser_site/query_team归属，按ID选取再校验，不能信客户端scope或body。核对历史按授权战队过滤，get/cancel/download都重新检查，后台抓取归档／读取本地时再核验；战队创建者每QQ保留20次，原后台核对保留原共享20次。QQ目录仅自己授权战队；自定义QQ仍可转发本队原文。发送owner为team-qq:QQ，两登录方式共享；plan.team_qq、cloud access_teams只能由服务端生成，预览／详情／确认／重试按当前权限检查，逐分包重新核验，撤销／DB异常停止未发部分，unknown仍不重试。发送历史每创建者保留20批。ContextVar按请求及异步任务隔离身份，密码账号管理只允许原后台；不会给战队会话开放模型／配置等核心接口。
 
@@ -855,8 +855,9 @@ year = now.year - 1 if month > now.month else now.year
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 | **F-47** | 自动独立战报管理入口 | standalone_web / scripts/export_report_webui.py / webui_standalone | 现有后台端口自动挂载/battle-report/，冷启／热安装／停用清理；原账号及2FA、401不重放；可选静态导出／Nginx | M-09、F-44、F-45、F-46 | 不新增端口／配置／账号；只公开6个静态资源 |
+| **F-50** | 一周会话与HTTPS访问 | WebAccounts / StandaloneFrontend / setup_report_https | 战队7天摘要会话跨重启恢复／持久撤销、管理员原Cookie及登录类型恢复、公网TLS保护、仅IP证书／代理配置生成 | M-10、F-47、F-48 | 原子JSON会话摘要；可选主机证书与Nginx配置，无schema变更 |
 | **F-49** | WebUI队伍／队员管理 | WebManagement / ComparisonWebUI / get_webui_teams / get_webui_members / get_webui_players | 仅核心后台身份，战队／管理员及群概览、管理员成员候选／可移除标签／单QQ手动兜底、角色资料／QQ与已有参赛ID绑定管理、搜索分页及并发修改检查 | M-02、M-03、M-10、F-48 | 复用team_admins/users/player_ids及原身份锁；无schema迁移 |
-| **F-48** | 战队管理员密码／QQ登录码 | WebAccounts / StandaloneFrontend / ComparisonWebUI / report_web_login | 管理员授权自动建号／旧名单补齐、本人私聊获取独立初始密码及一次性码、当前QQ授权战队全服务端检查、私有会话不兼容核心JWT、撤权及发送分包复核 | M-01、M-02、M-09、M-10、F-47 | web_accounts.json 凭据哈希及初始密钥；码／会话仅内存；原team_admins只读，无schema迁移 |
+| **F-48** | 战队管理员密码／QQ登录码 | WebAccounts / StandaloneFrontend / ComparisonWebUI / report_web_login | 管理员授权自动建号／旧名单补齐、本人私聊获取独立初始密码及一次性码、当前QQ授权战队全服务端检查、私有会话不兼容核心JWT、撤权及发送分包复核 | M-01、M-02、M-09、M-10、F-47 | web_accounts.json 凭据哈希／初始密钥及7天会话摘要；码仅内存；原team_admins只读，无schema迁移 |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1062,7 +1063,7 @@ year = now.year - 1 if month > now.month else now.year
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
 | **改网页队伍／队员管理** | ① require_master先于参数与DB、两种战队会话／匿名拒绝 ② 角色／ID本队范围与原身份锁、冲突／旧值核验／原子回滚、QQ变更撤销角色官方关联 ③ 名单自动建号与部分成功 ④ 管理Tab显隐、分页搜索／空状态／移动端／切身份清数据、Pages与独立入口 ⑤ 隔离MySQL、API与实际SDK浏览器、README／指南 | 不将前端hidden当授权，不新增跨队认领或改历史战报；不自动建造参赛ID |
-| **改战队网页登录** | ① 授权后自动建号／启动补齐／幂等不重置、初始密码恢复密钥及私聊提供／改密失效、加盐密码文件0600／原子落盘回滚、独立高熵会话与一次性码、限流／过期／注销／重启／并发改密／卸载 ② OneBot私聊QQ证明与platform_policy/schema选项标签／帮助 ③ 当前team_admins授权、本地home_team／云端服务端归属、核对查询及历史／取消／下载、管理员目录、服务端重读／批次身份／每包复核 ④ ContextVar身份、核心JWT与战队会话隔离、账号管理仅原后台 ⑤ 三登录方式／Cookie／失效清数据／异步旧响应丢弃／不重放、实际SDK浏览器和隔离MySQL、文档 | 不信客户端角色／QQ／正文／scope，不将队名筛选当授权，不把密码账号停用当QQ授权撤销，不记录口令或原始码／会话 |
+| **改战队网页登录** | ① 授权后自动建号／启动补齐／幂等不重置、初始密码恢复密钥及私聊提供／改密失效、加盐密码文件0600／原子落盘回滚、7天会话摘要及原子注销／改密撤销与重启恢复、独立高熵会话与一次性码、限流／过期／注销／重启／并发改密／卸载 ② OneBot私聊QQ证明与platform_policy/schema选项标签／帮助 ③ 当前team_admins授权、本地home_team／云端服务端归属、核对查询及历史／取消／下载、管理员目录、服务端重读／批次身份／每包复核 ④ ContextVar身份、核心JWT与战队会话隔离、账号管理仅原后台 ⑤ 公网TLS两端拒绝／IP证书及代理导出、三登录方式／Cookie／失效清数据／异步旧响应丢弃／不重放、实际SDK浏览器和隔离MySQL、文档 | 不信客户端角色／QQ／正文／scope，不将队名筛选当授权，不把密码账号停用当QQ授权撤销，不记录口令或原始码／会话 |
 | **改独立WebUI入口** | ① 自动挂载的冷启动／热安装／重载／卸载与兼容回退、静态白名单、SPA前路由顺序、原Pages保留 ② 同源固定插件API、AstrBot原账号及可选2FA、401不重放POST、退出清UI ③ 内存JWT/可选HttpOnly Cookie、内置沿用后台协议／导出站公开HTTP拒绝 ④ Nginx登录/退出/插件前缀白名单、SSH与HTTPS两模板 ⑤ 导出防覆盖/目录权限、真实Nginx浏览器验证、README/部署指南 | 不关闭插件鉴权、不导出凭据、不把筛选当战队授权、不自开插件服务端口 |
 | **改WebUI筛选/布局** | ① 本地/云端COUNT与分页ID前的筛选SQL、未知胜负口径 ② 核对任一侧命中保留整组、过滤后分页、统计/下载完整范围 ③ API参数校验与前端复位/作用域/异步序号 ④ 搜索/战报等宽、外置轨道、同排等高及固定滚动条槽位 ⑤ 实际MySQL和浏览器长短卡片/空数据/筛选计数/跳页/复制/发送回归 | 不只筛当前页，不把未知算负场，不把云端网站胜方替换为插件重算；控件不得再次占内容列，不动统计/提交指纹/人工发送标记 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
@@ -1503,7 +1504,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.32.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.33.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1586,3 +1587,17 @@ v1.32.1 管理员选择：复用master-only GET management/members，include_adm
 
 
 v1.32.1 验证：1416项默认回归通过、11项跳过。真实AstrBot v4.27.3 SDK／鉴权下，独立入口与原Pages浏览器验证默认成员候选、可移除标签、未绑定QQ禁选、候选分页／搜索保留选择、单QQ手动兜底／批量字符拒绝、QQ去重、显式保存、切队清选择、关闭后迟到搜索隔离及身份清理。原数据库SQL／schema21不变，沿用既有22条核心插件路由。
+
+
+v1.33.0 会话与传输口径覆盖此前8小时／会话仅内存／内置公网HTTP例外：SESSION_TTL=604800，自首次登录固定7天，QQ码本身5分钟不变。web_accounts.json v1增加可选sessions，key只存令牌SHA256，值仅QQ／account_id／revision／expires，最多2000条、文件2MiB／0600／原子写，兼容旧文件；格式损坏拒绝加载，过期／超出一周／账号停用或版本不符不恢复。创建会话落盘失败不签发，退出落盘失败回滚并明确失败；改密／停用／删除的凭据与会话删除同一次保存，失败一起回滚。close仅清内存不删除持久记录，未用QQ码与限流窗口仍不恢复；authenticate每次重查当前战队名单，观察到撤销则删会话并保存，异步查名单后再核验账号版本与会话，不能在并发撤销后返回有效身份。
+
+管理员沿用AstrBot现有认证／JWT／2FA／Secure HttpOnly Cookie（当前默认7天），不自发核心JWT、不保存核心JWT或原密码。前端用非认证Cookie记录最近成功的master/password/code，有偏好时只恢复该身份，防止旧team Cookie遮盖master或team失效后自动回落到旧master；修改此Cookie不提供权限，所有数据请求仍原服务端校验。密码和令牌不写localStorage/sessionStorage/URL，401仍不自动重放POST。
+
+公网独立入口前端禁用HTTP登录，服务端auth和team API在读凭据前拒绝非TLS，后端经本机／内网可信代理的X-Forwarded-Proto=https可识别，不信公网peer伪造头。仅client与URL主机同时回环时放行HTTP供本机／SSH隧道；SSH外网段由部署者隧道加密。核心插件API options返回secure_passwords，原Pages隐藏不安全链路的密码账号入口，account_update查看初始密码／重置等在解析payload前拒绝非TLS。原AstrBot自己的登录API／原Pages桥接及中间件不改，核心后台整体HTTPS仍由部署配置保证。
+
+scripts/setup_report_https.py仅生成可选IPv4私有CA／含IP SAN服务器证书及Nginx配置，默认独立8443，不修改系统或启动服务／开放端口。OpenSSL标准TLS1.2/1.3，CA私钥与服务器私钥0600，公网仅精确提供ca.crt和原认证／战报前缀。新／空目录且插件目录外，参数校验防配置注入，不覆盖已有密钥；CA指纹须通过可信服务器终端核对后在客户端导入信任，不建议忽略证书警告。可信公共证书可替换生成证书；只用IP不等于只能私有CA。数据库及平台QQ／LLM口径不变。
+
+新增测试映射：test_web_accounts覆盖一周边界／跨重启／仅存摘要／注销与改密停用撤权持久撤销／存储失败回滚／坏会话文件／异步撤销；test_team_webui覆盖一周Secure Cookie、重建认证服务、明文HTTP与伪造代理头拒绝、HTTPS代理／回环及核心密码接口拦截；test_report_https_setup验证真实OpenSSL CA链／IP匹配及错误IP拒绝、权限、目录防覆盖与参数拒绝。
+
+
+v1.33.0 验证：1439项默认回归通过、11项跳过。真实OpenSSL生成IP证书并校验CA链／IP匹配和错误IP拒绝；真实Nginx HTTPS配合CA验证客户端，覆盖不受信CA拒绝、私钥／其他核心API拒绝、原AstrBot Cookie助手的Secure／HttpOnly／7天期限及浏览器重开恢复、战队认证服务重建后恢复与7天过期、过期不回落到残留管理员身份。实际SDK独立入口及原Pages继续验证权限、密码管理、复制／下载／模拟QQ发送；公网HTTP连隐藏表单触发也不发密码请求。本机／SSH回环保留，源SQL及schema21不变；未部署用户服务器或发送真实QQ消息。

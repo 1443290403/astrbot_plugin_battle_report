@@ -1,6 +1,6 @@
 # 独立战报管理入口
 
-适用版本：v1.32.1，AstrBot >= 4.27.3。默认复用现有后台服务，无需配置 Nginx。
+适用版本：v1.33.0，AstrBot >= 4.27.3。默认复用现有后台服务；公网密码登录需HTTPS，已有HTTPS后台无需另配代理。
 
 独立页面包含本地战报、战报核对、云端归档及 QQ 发送，不加载 AstrBot 后台导航。登录页支持**战队管理员账号密码**、**QQ一次性登录码**，以及原 AstrBot 管理员账号。两种战队登录方式的设置和授权见 [TEAM_WEB_LOGIN_GUIDE.md](TEAM_WEB_LOGIN_GUIDE.md)；原后台登录仍支持两步验证。
 
@@ -11,12 +11,12 @@
 安装／更新并启用插件后，在**原 AstrBot 后台地址后添加 `/battle-report/`**，例如：
 
 ```text
-http://服务器IP:6185/battle-report/
+https://服务器IP:8443/battle-report/
 ```
 
-如果后台使用 HTTPS 域名或其他端口，保持原地址和协议，仅追加路径即可。选择自己的登录方式即可。这里没有新端口，不需要修改 Docker 映射、手动导出或配置 Nginx；页面会随插件更新，AstrBot 重启后自动恢复。停用／卸载时移除本实例路由。原后台 API 仍使用 AstrBot 鉴权；新增战报专用会话仅可访问战报范围接口。登录／会话校验在插件内完成，其他公开资源仅为登录页及静态文件。
+已有HTTPS后台时保持原地址与端口，仅追加路径即可。公网HTTP不再提交登录信息；只有IP时见 [IP加密访问指南](IP_HTTPS_GUIDE.md)。选择自己的登录方式即可。这里没有新端口，不需要修改 Docker 映射、手动导出或配置 Nginx；页面会随插件更新，AstrBot 重启后自动恢复。停用／卸载时移除本实例路由。原后台 API 仍使用 AstrBot 鉴权；新增战报专用会话仅可访问战报范围接口。登录／会话校验在插件内完成，其他公开资源仅为登录页及静态文件。
 
-内置入口沿用现有后台的 HTTP／HTTPS，连接加密方式也相同。若更换域名或希望使用 HTTPS，可按下面的可选方式配置。你的原后台若不能从外部访问，需先解决该地址本身的网络访问；插件不会自动修改防火墙或 Docker。
+内置与手动导出入口均不提交公网HTTP登录信息。已有HTTPS后台沿用原地址；仅HTTP／IP时，按IP加密访问指南配置证书与代理。本机或SSH回环可使用localhost HTTP。若更换域名，可按下面的可选方式配置。你的原后台若不能从外部访问，需先解决该地址本身的网络访问；插件不会自动修改防火墙或 Docker。
 
 日志出现“独立战报入口已自动注册”表示挂载成功。若框架接口不兼容，日志会提示，原后台 Pages 页面仍可用。
 
@@ -26,15 +26,15 @@ http://服务器IP:6185/battle-report/
 
 ### 1. 导出独立页面
 
-先将插件更新至 v1.32.1。以下命令在服务器终端执行，容器名沿用 `astrbot`；若实际名称不同，请替换。
+先将插件更新至 v1.33.0。以下命令在服务器终端执行，容器名沿用 `astrbot`；若实际名称不同，请替换。
 
 ```bash
-docker exec astrbot python3 /AstrBot/data/plugins/astrbot_plugin_battle_report/scripts/export_report_webui.py --output /tmp/battle-report-web-1.32.1
-mkdir -p /opt/battle-report-web-1.32.1
-docker cp astrbot:/tmp/battle-report-web-1.32.1/. /opt/battle-report-web-1.32.1/
+docker exec astrbot python3 /AstrBot/data/plugins/astrbot_plugin_battle_report/scripts/export_report_webui.py --output /tmp/battle-report-web-1.33.0
+mkdir -p /opt/battle-report-web-1.33.0
+docker cp astrbot:/tmp/battle-report-web-1.33.0/. /opt/battle-report-web-1.33.0/
 ```
 
-导出脚本只复制静态页面，不复制数据库配置、后端代码或凭据；拒绝覆盖非空输出目录。重复执行时可换一个新的临时输出路径。也可将发布包 `battle-report-web-1.32.1.zip` 解压到 `/opt/battle-report-web-1.32.1/`，该目录下应直接存在 `index.html`、`app.js`、`standalone.js` 等文件。
+导出脚本只复制静态页面，不复制数据库配置、后端代码或凭据；拒绝覆盖非空输出目录。重复执行时可换一个新的临时输出路径。也可将发布包 `battle-report-web-1.33.0.zip` 解压到 `/opt/battle-report-web-1.33.0/`，该目录下应直接存在 `index.html`、`app.js`、`standalone.js` 等文件。
 
 下面两种入口选一种即可。模板默认 AstrBot 在宿主机 `127.0.0.1:6185` 可访问；若改过后台端口，需修改模板中的五个 `proxy_pass`。独立静态站的页面文件和代理必须在**同一地址**，不能把静态页单独放到另一域名后直接跨域调用接口。
 
@@ -83,7 +83,7 @@ nano /etc/nginx/conf.d/battle-report.conf
 | 两处 `server_name reports.example.com` | 你的战报域名 |
 | `ssl_certificate` | 该域名证书的实际完整链文件路径 |
 | `ssl_certificate_key` | 该域名私钥文件路径 |
-| `root` | 导出的静态页面目录，默认 `/opt/battle-report-web-1.32.1` |
+| `root` | 导出的静态页面目录，默认 `/opt/battle-report-web-1.33.0` |
 | 五处 `proxy_pass` | 实际 AstrBot 后台地址，默认 `http://127.0.0.1:6185` |
 
 保存后执行 `nginx -t`，通过后执行 `systemctl reload nginx`。浏览器直接访问 `https://你的战报域名`，使用原 AstrBot 账号登录。防火墙／安全组需允许网站的 80、443 端口。模板将 HTTP 跳转到 HTTPS，手动导出的独立静态站不允许公网 HTTP 登录。
@@ -91,7 +91,7 @@ nano /etc/nginx/conf.d/battle-report.conf
 ## 3. 登录、退出与更新
 
 - 首次使用先在 AstrBot 原后台完成初始化、改密或账号安全升级，再登录独立页。登录错误、两步验证仍由 AstrBot 判断，独立页不绕过这些检查。
-- 后台JWT或战队令牌仅存在当前页面内存中，不写入 localStorage、sessionStorage 或 URL。若登录服务提供有效 HttpOnly Cookie，刷新页面可复用；否则刷新后重新登录。
+- 后台JWT或战队令牌仅存在当前页面内存中，不写入 localStorage、sessionStorage 或 URL。通过HTTPS使用有效HttpOnly Cookie，刷新／浏览器重开可恢复；战队会话固定7天并保存摘要，插件／AstrBot重启也可恢复。AstrBot管理员沿用原后台Cookie和JWT有效期，通常7天。非认证Cookie仅记录最近成功的登录方式，恢复失败不自动改用其他账号。
 - 登录过期时重新登录，再手动重试刚才的操作。页面不会自动重放提交、核对或发送请求，避免重复操作。退出会调用对应登录服务的退出接口并清空页面；下次需显式登录。
 - 默认内置入口随插件自动更新，无需导出。手动静态站更新时，重新导出对应版本到新目录，修改 Nginx 的 `root`，检查后重载即可。原 AstrBot 后台 Pages 入口继续使用官方 bridge，不受此导出影响。
 - Nginx 只转发原后台登录／退出、本插件核对 API 以及战报登录／专用API，其他 `/api/` 请求返回 404。插件 API 仍要求 AstrBot 认证；此配置没有开放匿名数据接口。
@@ -100,11 +100,11 @@ nano /etc/nginx/conf.d/battle-report.conf
 
 | 现象 | 检查 |
 |---|---|
-| 默认入口 404 | 是否为 v1.32.1 及以上且已启用；地址末尾为 `/battle-report/`；查看注册日志，重启或重新启用插件 |
+| 默认入口 404 | 是否为 v1.33.0 及以上且已启用；地址末尾为 `/battle-report/`；查看注册日志，重启或重新启用插件 |
 | 手动静态站 404 | `root` 下是否直接有 `index.html`；域名／端口是否匹配这个 server 块 |
 | 登录或查询 502 | 宿主机能否连接 `127.0.0.1:6185`，AstrBot 是否启动；如换端口需同步五处代理 |
 | 提示接口没有有效 JSON | 原登录／插件API及 `/battle-report/auth/`、`/battle-report/api/comparison/` 是否按当前模板代理到 AstrBot |
-| 提示必须 HTTPS | 使用有效 HTTPS 域名，或从自己电脑通过 SSH 转发访问 `127.0.0.1`；手动导出的静态站禁用公网 HTTP 登录，内置入口沿用现有后台协议 |
+| 提示必须 HTTPS | 已有HTTPS后台直接使用；只有IP时按IP加密访问指南配置证书／代理并在设备导入信任，或使用SSH回环。内置与静态入口均不提交公网HTTP登录信息 |
 | 登录成功但数据库未连接 | 检查原插件数据库状态；独立页面不另外配置 MySQL |
 | QQ 发送连接为空 | 检查 AstrBot 中 OneBot／SnowLuma 连接；QQ 官方 OpenID 不能作为私人 QQ 发送目标 |
 

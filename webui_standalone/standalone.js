@@ -5,8 +5,10 @@
   let token='',authenticated=false,sessionMode='master',everLoggedIn=false,readyResolve,authEpoch=0;
   const ready=new Promise(resolve=>{readyResolve=resolve;});
   const loopback=['localhost','127.0.0.1','[::1]'].includes(location.hostname);
-  const builtin=document.querySelector('meta[name="battle-report-entry"]')?.content==='builtin';
-  const secure=builtin || location.protocol==='https:' || loopback;
+  const secure=location.protocol==='https:' || loopback;
+  const preferenceName='battle_report_login_mode';
+  const preferredMode=document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith(preferenceName+'='))?.split('=')[1] || '';
+  function rememberMode(mode){document.cookie=`${preferenceName}=${mode}; Max-Age=604800; Path=/; SameSite=Strict${location.protocol==='https:'?'; Secure':''}`;}
   const dialog=document.createElement('dialog');
   dialog.id='standalone-login';dialog.setAttribute('aria-labelledby','standalone-login-title');
   dialog.innerHTML='<form id="standalone-login-form"><p class="eyebrow">BATTLE REPORT</p><h2 id="standalone-login-title">登录战报管理</h2><label>登录方式<select id="standalone-login-mode"><option value="master">AstrBot 管理员</option><option value="password">战队管理员账号密码</option><option value="code">QQ 登录码</option></select></label><p id="standalone-login-hint" class="hint"></p><label id="standalone-username-label">用户名<input id="standalone-username" autocomplete="username" maxlength="200" required></label><label id="standalone-password-label">密码<input id="standalone-password" type="password" autocomplete="current-password" required></label><label id="standalone-totp-label">动态验证码或恢复码<input id="standalone-code" autocomplete="one-time-code" placeholder="未启用两步验证时留空"></label><label id="standalone-login-code-label" hidden>一次性登录码<input id="standalone-login-code" autocomplete="one-time-code" maxlength="1024"></label><p id="standalone-login-error" class="notice" role="alert" hidden></p><button id="standalone-login-submit" type="submit">登录</button></form>';
@@ -26,6 +28,7 @@
     $('standalone-login-code').required=mode==='code';
     $('standalone-login-hint').textContent=mode==='master'?'使用现有 AstrBot 后台管理员账号。':mode==='password'?'账号默认是管理员QQ号，私聊机器人发送 /战报登录 获取初始密码。':'先私聊 SnowLuma／OneBot 机器人发送 /战报登录，再粘贴5分钟内有效的一次性登录码。';
   }
+  if(['master','password','code'].includes(preferredMode))$('standalone-login-mode').value=preferredMode;
   $('standalone-login-mode').addEventListener('change',loginFields);loginFields();
   function showLogin(message=''){
     $('standalone-login-error').textContent=message;$('standalone-login-error').hidden=!message;
@@ -82,6 +85,8 @@
   function loggedIn(actor={role:'master'}){
     authEpoch++;
     authenticated=true;
+    const mode=actor.role==='team'?(actor.password_login?'password':'code'):'master';
+    $('standalone-login-mode').value=mode;loginFields();rememberMode(mode);
     for(const id of ['standalone-password','standalone-code','standalone-login-code'])$(id).value='';
     $('standalone-logout').hidden=false;$('standalone-password-open').hidden=!actor.password_login;
     $('standalone-session-label').textContent=actor.role==='team'?`${actor.username} · ${actor.teams.join('、')}`:'AstrBot 管理员';
@@ -116,7 +121,7 @@
   $('standalone-password-open').addEventListener('click',()=>{passwordDialog.showModal();});
   $('standalone-password-close').addEventListener('click',()=>passwordDialog.close());
   $('standalone-password-form').addEventListener('submit',async event=>{
-    event.preventDefault();const button=event.submitter;button.disabled=true;
+    event.preventDefault();if(!secure)return;const button=event.submitter;button.disabled=true;
     try{
       const response=await fetchResponse(TEAM+'auth/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:$('standalone-old-password').value,new_password:$('standalone-new-password').value})});
       if(response.status===401){passwordDialog.close();expire();throw new Error('登录已失效，请重新登录。');}
@@ -129,13 +134,20 @@
   passwordDialog.addEventListener('close',()=>{$('standalone-old-password').value='';$('standalone-new-password').value='';});
   const dark=window.matchMedia('(prefers-color-scheme: dark)');
   const theme=()=>document.documentElement.setAttribute('data-theme',dark.matches?'dark':'light');theme();dark.addEventListener('change',theme);
-  if(!secure){showLogin('请使用 HTTPS，或通过 SSH 转发后访问 localhost。');for(const input of $('standalone-login-form').elements)input.disabled=true;return;}
+  if(!secure){showLogin('请通过 HTTPS 打开本页，或通过 SSH 转发后访问 localhost。登录信息不会通过普通 HTTP 发送。');for(const input of $('standalone-login-form').elements)input.disabled=true;return;}
   (async()=>{
     if(new URLSearchParams(location.search).has('login')){showLogin();return;}
-    try{
+    const restoreTeam=async()=>{
       const actor=await readEnvelope(await fetchResponse(TEAM+'auth/session'));
-      sessionMode='team';await verifySession();loggedIn(actor);return;
-    }catch{sessionMode='master';token='';}
-    try{await verifySession();loggedIn();}catch{showLogin();}
+      sessionMode='team';await verifySession();loggedIn(actor);
+    };
+    const restoreMaster=async()=>{sessionMode='master';token='';await verifySession();loggedIn();};
+    if(['master','password','code'].includes(preferredMode)){
+      try{await (preferredMode==='master'?restoreMaster():restoreTeam());}
+      catch{sessionMode=preferredMode==='master'?'master':'team';token='';showLogin('登录已失效，请重新登录。');}
+      return;
+    }
+    try{await restoreTeam();return;}catch{sessionMode='master';token='';}
+    try{await restoreMaster();}catch{showLogin();}
   })();
 })();

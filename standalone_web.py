@@ -6,6 +6,7 @@ AstrBot. The dashboard compatibility adapter is checked before installing routes
 from pathlib import Path
 import json
 import re
+import ipaddress
 
 try:
     from .scripts.export_report_webui import build_assets
@@ -50,6 +51,23 @@ class StandaloneFrontend:
         return request.cookies.get(COOKIE,'')
 
     @staticmethod
+    def encrypted(request):
+        if request.url.scheme=='https':return True
+        try:peer=ipaddress.ip_address(request.client.host)
+        except (ValueError,AttributeError):return False
+        # HTTPS terminates at the local reverse proxy; do not trust public peers' headers.
+        forwarded=request.headers.get('x-forwarded-proto','').split(',')[0].strip().lower()
+        return forwarded=='https' and (peer.is_loopback or peer.is_private)
+
+    @classmethod
+    def require_secure(cls, request):
+        if cls.encrypted(request):return
+        try:
+            local=ipaddress.ip_address(request.client.host).is_loopback and request.url.hostname in ('localhost','127.0.0.1','::1')
+        except (ValueError,AttributeError):local=False
+        if not local:raise WebAuthError('请通过HTTPS访问战报页面，避免明文传输登录信息。',403)
+
+    @staticmethod
     async def payload(request,limit=8192):
         body=bytearray()
         async for chunk in request.stream():
@@ -64,6 +82,7 @@ class StandaloneFrontend:
     async def auth_endpoint(self, request):
         from starlette.responses import JSONResponse
         try:
+            self.require_secure(request)
             auth=self.auth()
             action=request.path_params['action']
             expected='GET' if action=='session' else 'POST'
@@ -87,9 +106,8 @@ class StandaloneFrontend:
             else:token=await auth.change_password(token,payload.get('old_password'),payload.get('new_password'))
             actor=await auth.authenticate(token)
             response=JSONResponse(dict(status='ok',data=dict(token=token,actor=actor)),headers=HEADERS)
-            encrypted=(request.url.scheme=='https' or request.headers.get('x-forwarded-proto','').split(',')[0].strip().lower()=='https')
             response.set_cookie(COOKIE,token,max_age=SESSION_TTL,path=PREFIX,
-                                secure=encrypted,httponly=True,samesite='strict')
+                                secure=self.encrypted(request),httponly=True,samesite='strict')
             return response
         except WebAuthError as exc:
             return JSONResponse(dict(status='error',message=str(exc)),status_code=exc.status,headers=HEADERS)
@@ -100,6 +118,7 @@ class StandaloneFrontend:
     async def team_api(self, request):
         from starlette.responses import JSONResponse
         try:
+            self.require_secure(request)
             actor=await self.auth().authenticate(self.token(request))
             endpoint=request.path_params['endpoint']
             method='GET' if request.method=='HEAD' else request.method

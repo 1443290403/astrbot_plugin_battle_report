@@ -355,3 +355,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 设置管理员默认从本队角色挑选并以QQ去重的可移除标签保存；无QQ角色禁选，无对应角色时手动添加单QQ，不写角色归属。保留未关联角色的既有管理员。
 - GET management/members可include_admins=1返回本队管理员快照，仍先require_master，既有响应默认不变。使用原列表POST／expected比较／自动建号，不新增路由或SQL。
 - 候选搜索分页不清选择，切战队清旧草稿，首次快照成功才允许保存。关闭／切身份清标签和候选，拒绝旧序号／旧target／已关闭弹窗的响应；Enter在搜索／单QQ字段不误提交授权。
+
+
+## v1.33.0 一周会话与HTTPS
+
+- 覆盖旧8小时／内存会话与内置HTTP例外。战队会话固定7天，摘要、QQ、账号版本、截止写入0600原子账号文件v1可选sessions；不保存原始令牌／明文密码。close不擦磁盘会话，码仍仅内存。登录／退出／改密撤销落盘失败不可伪成功；更新账号与会话删除同一次保存。撤权每次重查，异步后再次检查并发停用，恢复不放宽战队范围。
+- 管理员只复用原AstrBot JWT／Secure Cookie／2FA，通常7天，不发核心JWT。非认证Cookie记录最近成功登录类型，恢复失败不自动切换其他身份；不存密码或令牌到浏览器storage或URL，不重放401后的POST。
+- 公网独立页需HTTPS；auth／team API及密码查看重置在后端也检查。仅可信本机／内网代理可用XFP，回环HTTP仅本机／SSH。原核心认证／中间件不改。IP证书脚本只生成配置和受限私钥，需用户部署Nginx并在设备信任CA；无自动端口或系统更改，不以base64／哈希冒充传输加密。

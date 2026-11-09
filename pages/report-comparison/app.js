@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
 let jobId = '', category = 'matched', offset = 0, timer, sequence = 0, dbReady = false, running = false;
 let lastResult, comparisonLoading = false;
-let pageRole='',managementSequence=0,managementEpoch=0,managementOffset=0,managementTotal=0;
+let pageRole='',credentialTransport=false,managementSequence=0,managementEpoch=0,managementOffset=0,managementTotal=0;
 let adminTarget=null,memberTarget=null,playerTarget=null,playerOffset=0,playerSequence=0,confirmPlayer=null;
 const adminSelected=new Map();
 let adminMemberSequence=0,adminMemberOffset=0,adminMemberTotal=0,adminMemberTimer,adminExpectedKnown=false,adminTeam='',adminReady=false,adminSaving=false;
@@ -77,7 +77,8 @@ async function options(initial = false) {
   const data = await bridge.apiGet('comparison/options');
   dbReady = data.ready;
   pageRole=data.role;
-  $('accounts-open').hidden=pageRole!=='master';
+  credentialTransport=data.secure_passwords===true;
+  $('accounts-open').hidden=pageRole!=='master' || !credentialTransport;
   document.querySelectorAll('[data-master-only]').forEach(el=>{el.hidden=pageRole!=='master';});
   if(initial)$('management-teams').replaceChildren(...data.teams.map(t=>{const e=node('option');e.value=t;return e;}));
   if (initial) {
@@ -483,6 +484,7 @@ async function loadAccounts(){
     for(const [action,label] of [...(account.initial_password?[['initial','查看初始密码']]:[]),['reset','重置密码'],[account.enabled?'disable':'enable',account.enabled?'停用密码':'启用密码']]){
       const button=node('button',label,'secondary');button.type='button';
       button.addEventListener('click',async()=>{
+        if(!credentialTransport){accountsNotice('请通过HTTPS查看或修改账号密码。');return;}
         if(action==='reset'){resetAccountId=account.id;$('account-reset-title').textContent=`重置 ${account.username} 的密码`;$('account-reset').hidden=false;$('account-reset-password').focus();return;}
         button.disabled=true;accountsNotice();const generation=accountsGeneration;
         try{
@@ -503,6 +505,7 @@ async function loadAccounts(){
   }));
 }
 $('accounts-open').addEventListener('click',async()=>{
+  if(!credentialTransport){notice('请通过HTTPS查看或修改账号密码。');return;}
   $('accounts-dialog').showModal();accountsNotice();
   try{await loadAccounts();}catch(error){accountsNotice(error.message);}
 });
@@ -519,7 +522,7 @@ $('accounts-sync').addEventListener('click',async()=>{
   catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
 });
 $('account-reset').addEventListener('submit',async event=>{
-  event.preventDefault();const button=event.submitter;button.disabled=true;accountsNotice();
+  event.preventDefault();if(!credentialTransport){accountsNotice('请通过HTTPS查看或修改账号密码。');return;}const button=event.submitter;button.disabled=true;accountsNotice();
   try{await bridge.apiPost(`comparison/accounts/${resetAccountId}`,{action:'reset',password:$('account-reset-password').value});$('account-reset-password').value='';$('account-reset').hidden=true;clearAccountSecrets();await loadAccounts();accountsNotice('密码已重置，原密码会话已失效。');}
   catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
 });
@@ -748,6 +751,7 @@ function clearManagement(){
 }
 
 function clearSession(){
+  credentialTransport=false;
   clearManagement();
   clearTimeout(timer);clearTimeout(dispatchTimer);sequence++;librarySequence++;dispatchSequence++;
   jobId='';lastResult=undefined;libraryData=undefined;libraryOffset=0;offset=0;dispatchId='';

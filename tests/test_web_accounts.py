@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 import pytest
-from web_accounts import WebAccounts,WebAuthError,password_matches
+from web_accounts import WebAccounts,WebAuthError,password_matches,SESSION_TTL
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def test_account_validation_rate_limit_and_expiry(auth):
         with pytest.raises(WebAuthError):await service.create('nomember','InitialPass8','20000003')
         teams.return_value=['a队']
         token=await service.login('valid','InitialPass8','ok')
-        clock[0]+=8*3600
+        clock[0]+=SESSION_TTL
         with pytest.raises(WebAuthError):await service.authenticate(token)
         for _ in range(20):
             with pytest.raises(WebAuthError):await service.login_code('invalid','spam')
@@ -228,3 +228,95 @@ def test_auto_initial_key_must_be_present_and_valid(auth):
     with pytest.raises(ValueError):WebAccounts(service.path,teams)
     data['initial_key']='invalid';service.path.write_text(json.dumps(data))
     with pytest.raises(ValueError):WebAccounts(service.path,teams)
+
+
+def test_week_sessions_survive_restart_without_persisting_tokens_or_unused_codes(auth):
+    service,clock,teams=auth
+    async def run():
+        assert SESSION_TTL==7*24*3600
+        await service.create('week_user','InitialPass8','20000001')
+        password=await service.login('week_user','InitialPass8','one')
+        used=await service.issue_code('20000001');code=await service.login_code(used,'two')
+        clock[0]+=31;unused=await service.issue_code('20000001')
+        raw=service.path.read_text()
+        assert all(secret not in raw for secret in [password,code,used,unused,'InitialPass8'])
+        assert len(json.loads(raw)['sessions'])==2 and service.path.stat().st_mode & 0o777==0o600
+        service.close()
+        restored=WebAccounts(service.path,teams,clock=lambda:clock[0])
+        for token in [password,code]:assert (await restored.authenticate(token))['qq']=='20000001'
+        with pytest.raises(WebAuthError):await restored.login_code(unused,'three')
+        clock[0]=1000+8*3600+1
+        assert (await restored.authenticate(password))['password_login']
+        clock[0]=1000+SESSION_TTL-1
+        assert await restored.authenticate(code)
+        clock[0]+=1
+        for token in [password,code]:
+            with pytest.raises(WebAuthError):await restored.authenticate(token)
+    asyncio.run(run())
+
+
+def test_logout_reset_disable_and_observed_revocation_remain_revoked_after_restart(auth):
+    service,clock,teams=auth
+    def restored():return WebAccounts(service.path,teams,clock=lambda:clock[0])
+    async def run():
+        account=await service.create('week_user','InitialPass8','20000001')
+        first=await service.login('week_user','InitialPass8','one')
+        service.logout(first)
+        with pytest.raises(WebAuthError):await restored().authenticate(first)
+        password=await service.login('week_user','InitialPass8','two')
+        qq=await service.login_code(await service.issue_code('20000001'),'three')
+        await service.update(account['id'],dict(action='reset',password='ChangedPass9'))
+        with pytest.raises(WebAuthError):await restored().authenticate(password)
+        assert (await restored().authenticate(qq))['password_login'] is False
+        password=await service.login('week_user','ChangedPass9','four')
+        await service.update(account['id'],dict(action='disable'))
+        with pytest.raises(WebAuthError):await restored().authenticate(password)
+        teams.return_value=[]
+        with pytest.raises(WebAuthError):await service.authenticate(qq)
+        teams.return_value=['a队']
+        with pytest.raises(WebAuthError):await restored().authenticate(qq)
+    asyncio.run(run())
+
+
+def test_session_store_failure_does_not_issue_unstored_token_or_fake_logout(auth,monkeypatch):
+    service,clock,teams=auth
+    async def run():
+        await service.create('week_user','InitialPass8','20000001')
+        token=await service.login('week_user','InitialPass8','one')
+        before=service.path.read_bytes();sessions=service.sessions.copy()
+        def fail():raise OSError('disk full')
+        monkeypatch.setattr(service,'save',fail)
+        with pytest.raises(OSError):await service.login('week_user','InitialPass8','two')
+        assert service.sessions==sessions and service.path.read_bytes()==before
+        with pytest.raises(OSError):service.logout(token)
+        assert service.sessions==sessions and (await service.authenticate(token))['qq']=='20000001'
+        assert await WebAccounts(service.path,teams,clock=lambda:clock[0]).authenticate(token)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('session',[
+    dict(qq='bad',account_id=None,revision=None,expires=1001),
+    dict(qq='20000001',account_id=None,revision='bad',expires=1001),
+    dict(qq='20000001',account_id=True,revision=None,expires=1001),
+    dict(qq='20000001',account_id=None,revision=None,expires=True),
+    dict(qq='20000001',account_id=None,revision=None,expires=float('nan')),
+])
+def test_corrupt_persisted_session_fails_closed(auth,session):
+    service,clock,teams=auth
+    service.save()
+    data=json.loads(service.path.read_text());data['sessions']={'0'*64:session};service.path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):WebAccounts(service.path,teams,clock=lambda:clock[0])
+
+
+def test_password_revoked_during_role_lookup_cannot_finish_authentication(auth):
+    service,_,_=auth
+    async def run():
+        account=await service.create('week_user','InitialPass8','20000001')
+        token=await service.login('week_user','InitialPass8','one')
+        entered,release=asyncio.Event(),asyncio.Event()
+        async def wait_for_teams(qq):entered.set();await release.wait();return ['a队']
+        service.allowed_teams=wait_for_teams
+        request=asyncio.create_task(service.authenticate(token));await entered.wait()
+        await service.update(account['id'],dict(action='disable'));release.set()
+        with pytest.raises(WebAuthError):await request
+    asyncio.run(run())

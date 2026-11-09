@@ -6,6 +6,7 @@ import copy
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,7 +18,7 @@ from uuid import uuid4
 QQ = re.compile(r'[1-9][0-9]{0,19}')
 USERNAME = re.compile(r'[A-Za-z0-9_.-]{3,32}')
 ITERATIONS = 600_000
-SESSION_TTL = 8 * 3600
+SESSION_TTL = 7 * 24 * 3600
 CODE_TTL = 300
 CODE_COOLDOWN = 30
 
@@ -91,16 +92,33 @@ class WebAccounts:
                     raise ValueError('网页账号存档格式错误')
                 names.add(a['username'].lower());qqs.add(a['qq'])
             self.accounts = data['accounts']
+            sessions=data.get('sessions',{})
+            if not isinstance(sessions,dict) or len(sessions)>2000:raise ValueError('网页会话存档格式错误')
+            now=self.clock()
+            for key,session in sessions.items():
+                if (not re.fullmatch(r'[0-9a-f]{64}',key) or not isinstance(session,dict)
+                        or not isinstance(session.get('qq'),str) or not QQ.fullmatch(session['qq'])
+                        or type(session.get('expires')) not in (int,float) or not math.isfinite(session['expires'])
+                        or (session.get('account_id') is None and session.get('revision') is not None)
+                        or (session.get('account_id') is not None and
+                            (not isinstance(session['account_id'],str) or not re.fullmatch(r'[0-9a-f]{32}',session['account_id'])
+                             or not isinstance(session.get('revision'),str) or not re.fullmatch(r'[0-9a-f]{32}',session['revision'])))):
+                    raise ValueError('网页会话存档格式错误')
+                account=self.accounts.get(session.get('account_id'))
+                if session['expires']<=now or session['expires']>now+SESSION_TTL:continue
+                if session.get('account_id') and (not account or not account['enabled'] or account['qq']!=session['qq'] or account['revision']!=session['revision']):continue
+                self.sessions[key]={k:session.get(k) for k in ('qq','account_id','revision','expires')}
 
     def require_open(self):
         if self.closed:raise WebAuthError('插件正在停止，请稍后重新登录。',503)
 
     def save(self):
+        self.require_open()
         self.path.parent.mkdir(parents=True,exist_ok=True)
         fd,name = tempfile.mkstemp(prefix='.web-accounts-',dir=self.path.parent)
         try:
             with os.fdopen(fd,'w',encoding='utf-8') as stream:
-                json.dump(dict(version=1,initial_key=self.initial_key,accounts=self.accounts),stream,ensure_ascii=False,allow_nan=False)
+                json.dump(dict(version=1,initial_key=self.initial_key,accounts=self.accounts,sessions=self.sessions),stream,ensure_ascii=False,allow_nan=False)
                 stream.flush();os.fsync(stream.fileno())
             os.chmod(name,0o600)
             os.replace(name,self.path)
@@ -207,6 +225,7 @@ class WebAccounts:
             if revision is not None and self.accounts[aid]['revision']!=revision:
                 raise WebAuthError('账号状态已变化，请重新登录。',401)
             before=copy.deepcopy(self.accounts)
+            before_sessions=self.sessions.copy()
             if action=='delete':self.accounts.pop(aid)
             else:
                 account=self.accounts[aid]
@@ -215,10 +234,10 @@ class WebAccounts:
                     account['hash']=hashed
                     account['initial_password']=False
                 else:account['enabled']=action=='enable'
+            self.sessions=OrderedDict((k,s) for k,s in self.sessions.items() if s.get('account_id')!=aid)
             try:self.save()
             except BaseException:
-                self.accounts=before;raise
-            self.sessions=OrderedDict((k,s) for k,s in self.sessions.items() if s.get('account_id')!=aid)
+                self.accounts=before;self.sessions=before_sessions;raise
 
     def prune(self):
         now=self.clock()
@@ -244,10 +263,14 @@ class WebAccounts:
     def new_session(self, qq, account=None):
         self.require_open()
         self.prune()
+        before=self.sessions.copy()
         token='brs_'+secrets.token_urlsafe(32)
         self.sessions[token_key(token)]=dict(qq=qq,account_id=account['id'] if account else None,
             revision=account['revision'] if account else None,expires=self.clock()+SESSION_TTL)
         if len(self.sessions)>2000:self.sessions.popitem(last=False)
+        try:self.save()
+        except BaseException:
+            self.sessions=before;raise
         return token
 
     async def login(self, username, password, client):
@@ -300,19 +323,30 @@ class WebAccounts:
         account=self.accounts.get(session['account_id']) if session['account_id'] else None
         if session['account_id'] and (not account or not account['enabled'] or account['revision']!=session['revision']):
             self.sessions.pop(key,None)
+            self.save()
             raise WebAuthError('登录已失效，请重新登录。',401)
         try:teams=await self.allowed_teams(session['qq'])
         except WebAuthError as exc:
             if exc.status==403:
                 self.sessions.pop(key,None)
+                self.save()
                 raise WebAuthError('登录已失效或管理员授权已撤销。',401) from exc
             raise
         self.require_open()
+        current=self.accounts.get(session['account_id']) if session['account_id'] else None
+        if self.sessions.get(key) is not session or (session['account_id'] and
+                (not current or not current['enabled'] or current['revision']!=session['revision'])):
+            raise WebAuthError('登录已失效，请重新登录。',401)
         return dict(qq=session['qq'],teams=teams,owner='team-qq:'+session['qq'],role='team',
                     username=account['username'] if account else session['qq'],password_login=bool(account))
 
     def logout(self, token):
-        if isinstance(token,str):self.sessions.pop(token_key(token),None)
+        self.require_open()
+        if isinstance(token,str) and token_key(token) in self.sessions:
+            before=self.sessions.copy();self.sessions.pop(token_key(token))
+            try:self.save()
+            except BaseException:
+                self.sessions=before;raise
 
     async def change_password(self, token, old_password, new_password):
         await self.authenticate(token)

@@ -105,7 +105,7 @@ async def team_login(site,client,qq='20000001'):
 
 def test_scoped_login_all_api_boundaries_and_account_management_are_server_enforced(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             master={'Authorization':'Bearer test-master'}
             response=await client.post('/api/plug/astrbot_plugin_battle_report/comparison/accounts',headers=master,
                 json=dict(action='sync'))
@@ -143,7 +143,7 @@ def test_scoped_login_all_api_boundaries_and_account_management_are_server_enfor
 
 def test_other_team_jobs_download_cancel_history_and_source_url_cannot_bypass_scope(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             token=await team_login(site,client);headers={'Authorization':'Bearer '+token};base='/battle-report/api/comparison/'
             for team in ['a队','c队']:
                 job=await site.ui.jobs.start(dict(team=team,month='2026-10'));await site.ui.jobs.task
@@ -165,7 +165,7 @@ def test_other_team_jobs_download_cancel_history_and_source_url_cannot_bypass_sc
 
 def test_dispatch_rejects_forged_references_and_revocation_stops_between_recipients(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             token=await team_login(site,client);headers={'Authorization':'Bearer '+token};base='/battle-report/api/comparison/'
             payload=dict(target_mode='custom',qq_ids='20000010,20000011',platform_id='onebot',self_id='10000001')
             for ref in [dict(source='local',id='2',home_team='c队'),dict(source='cloud',id='102')]:
@@ -194,7 +194,7 @@ def test_dispatch_rejects_forged_references_and_revocation_stops_between_recipie
 
 def test_credentials_do_not_cross_users_and_logout_replay_limits_are_enforced(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             code=await site.ui.auth.issue_code('20000001')
             response=await client.post('/battle-report/auth/code-login',json=dict(code=code))
             token=response.json()['data']['token']
@@ -211,7 +211,7 @@ def test_credentials_do_not_cross_users_and_logout_replay_limits_are_enforced(si
 
 def test_parallel_sessions_keep_distinct_team_context_and_do_not_change_master_scope(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             a=await team_login(site,client,'20000001');c=await team_login(site,client,'20000002')
             async def read(token,team):
                 response=await client.get('/battle-report/api/comparison/local-reports',headers={'Authorization':'Bearer '+token},params=dict(team=team,month='2026-10'))
@@ -226,7 +226,7 @@ def test_parallel_sessions_keep_distinct_team_context_and_do_not_change_master_s
 
 def test_https_reverse_proxy_session_cookie_remains_secure(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             code=await site.ui.auth.issue_code('20000001')
             response=await client.post('/battle-report/auth/code-login',headers={'X-Forwarded-Proto':'https'},json={'code':code})
             assert response.status_code==200
@@ -237,7 +237,7 @@ def test_https_reverse_proxy_session_cookie_remains_secure(site):
 
 def test_root_sync_preserves_credentials_and_initial_password_is_not_public(site):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
             root='/api/plug/astrbot_plugin_battle_report/comparison/accounts';master={'Authorization':'Bearer test-master'}
             response=await client.post(root,headers=master,json=dict(username='manual',qq='20000001',password='InitialPass8'))
             assert response.status_code==400
@@ -255,5 +255,67 @@ def test_root_sync_preserves_credentials_and_initial_password_is_not_public(site
             assert (await client.post(root+'/'+account['id'],headers=master,json=dict(action='initial'))).json()['password'] is None
             assert (await client.post(root+'/'+account['id'],headers=master,json=dict(action='delete'))).status_code==400
             assert await site.ui.auth.login('20000001','ChangedPass9','check')
+        await site.close()
+    asyncio.run(run())
+
+
+def test_public_plain_http_and_forged_proxy_header_never_reach_password_verification(site):
+    async def run():
+        login=site.ui.auth.login=AsyncMock()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app,client=('8.8.8.8',1234)),base_url='http://reports.test') as client:
+            for headers in [{},{'X-Forwarded-Proto':'https'}]:
+                response=await client.post('/battle-report/auth/login',headers=headers,json={'username':'admin','password':'never-send-over-http'})
+                assert response.status_code==403 and 'HTTPS' in response.text
+            assert (await client.get('/battle-report/api/comparison/options')).status_code==403
+            login.assert_not_awaited()
+        await site.close()
+    asyncio.run(run())
+
+
+def test_https_cookie_lasts_week_and_survives_auth_service_restart(site):
+    async def run():
+        from web_accounts import WebAccounts,SESSION_TTL
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://reports.test') as client:
+            await site.ui.auth.ensure_accounts(['20000001'])
+            initial=await site.ui.auth.credentials('20000001')
+            response=await client.post('/battle-report/auth/login',json=dict(username=initial['username'],password=initial['password']))
+            assert response.status_code==200
+            cookie=response.headers['set-cookie'].lower()
+            assert 'max-age=604800' in cookie and 'secure' in cookie and 'httponly' in cookie and 'samesite=strict' in cookie
+            old=site.ui.auth;old.close();site.ui.auth=WebAccounts(old.path,site.ui.admin_teams)
+            assert (await client.get('/battle-report/auth/session')).json()['data']['qq']=='20000001'
+            assert (await client.get('/battle-report/api/comparison/options')).status_code==200
+            assert (await client.post('/battle-report/auth/logout')).status_code==200
+            assert not site.ui.auth.sessions
+        await site.close()
+    asyncio.run(run())
+
+
+def test_trusted_https_proxy_and_localhost_tunnel_transport_are_supported(site):
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app,client=('172.17.0.1',1234)),base_url='http://reports.test') as client:
+            code=await site.ui.auth.issue_code('20000001')
+            response=await client.post('/battle-report/auth/code-login',headers={'X-Forwarded-Proto':'https'},json=dict(code=code))
+            assert response.status_code==200 and 'Secure' in response.headers['set-cookie']
+        site.ui.auth.code_issued_at.clear()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://127.0.0.1') as client:
+            response=await client.post('/battle-report/auth/code-login',json=dict(code=await site.ui.auth.issue_code('20000001')))
+            assert response.status_code==200
+            assert (await client.get('/battle-report/auth/session')).status_code==200
+        await site.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('action',['initial','reset'])
+def test_core_password_view_and_reset_are_blocked_over_public_http(site,action):
+    async def run():
+        site.ui.auth.update=AsyncMock();site.ui.auth.credentials=AsyncMock()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app,client=('8.8.8.8',1234)),base_url='http://reports.test') as client:
+            headers={'Authorization':'Bearer test-master'}
+            response=await client.get('/api/plug/astrbot_plugin_battle_report/comparison/options',headers=headers)
+            assert response.json()['secure_passwords'] is False
+            response=await client.post('/api/plug/astrbot_plugin_battle_report/comparison/accounts/'+'0'*32,headers=headers,json=dict(action=action,password='must-use-tls'))
+            assert response.status_code==403 and 'HTTPS' in response.text
+            site.ui.auth.update.assert_not_awaited();site.ui.auth.credentials.assert_not_awaited()
         await site.close()
     asyncio.run(run())

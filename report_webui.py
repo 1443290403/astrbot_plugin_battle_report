@@ -327,6 +327,17 @@ class ComparisonWebUI:
         if self.auth is None:raise ComparisonError('战队管理员登录暂不可用，请查看日志。')
         return self.auth
 
+    @staticmethod
+    def secure_passwords(request):
+        try:
+            try:from .standalone_web import StandaloneFrontend
+            except ImportError:from standalone_web import StandaloneFrontend
+            raw=getattr(request,'_request',None) or getattr(request,'raw',None)
+            if raw is None:return False
+            StandaloneFrontend.require_secure(raw)
+            return True
+        except WebAuthError:return False
+
     async def load_reports(self, query):
         if not self.plugin.db_ready or not self.plugin.db:
             raise ComparisonError('插件数据库尚未连接。')
@@ -481,7 +492,8 @@ class ComparisonWebUI:
                 if len(history)==20:break
             return dict(teams=teams, month=previous_month(), ready=ready,
                         source='https://rep.ygobbs2.com/', history=history,
-                        role='team' if self.team_actor.get() else 'master')
+                        role='team' if self.team_actor.get() else 'master',
+                        secure_passwords=self.secure_passwords(request))
         return await self.respond(handle)
 
     async def start(self):
@@ -644,6 +656,7 @@ class ComparisonWebUI:
     async def account_update(self,account_id):
         async def handle(request):
             self.require_master()
+            if not self.secure_passwords(request):raise WebAuthError('请通过HTTPS查看或修改账号密码。',403)
             payload=await request.json(default={})
             if not isinstance(payload,dict):raise ComparisonError('账号参数无效。')
             if payload.get('action')=='initial':
