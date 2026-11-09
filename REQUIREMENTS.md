@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.32.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.32.1`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -855,7 +855,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 | **F-47** | 自动独立战报管理入口 | standalone_web / scripts/export_report_webui.py / webui_standalone | 现有后台端口自动挂载/battle-report/，冷启／热安装／停用清理；原账号及2FA、401不重放；可选静态导出／Nginx | M-09、F-44、F-45、F-46 | 不新增端口／配置／账号；只公开6个静态资源 |
-| **F-49** | WebUI队伍／队员管理 | WebManagement / ComparisonWebUI / get_webui_teams / get_webui_members / get_webui_players | 仅核心后台身份，战队／管理员及群概览、角色资料／QQ与已有参赛ID绑定管理、搜索分页及并发修改检查 | M-02、M-03、M-10、F-48 | 复用team_admins/users/player_ids及原身份锁；无schema迁移 |
+| **F-49** | WebUI队伍／队员管理 | WebManagement / ComparisonWebUI / get_webui_teams / get_webui_members / get_webui_players | 仅核心后台身份，战队／管理员及群概览、管理员成员候选／可移除标签／单QQ手动兜底、角色资料／QQ与已有参赛ID绑定管理、搜索分页及并发修改检查 | M-02、M-03、M-10、F-48 | 复用team_admins/users/player_ids及原身份锁；无schema迁移 |
 | **F-48** | 战队管理员密码／QQ登录码 | WebAccounts / StandaloneFrontend / ComparisonWebUI / report_web_login | 管理员授权自动建号／旧名单补齐、本人私聊获取独立初始密码及一次性码、当前QQ授权战队全服务端检查、私有会话不兼容核心JWT、撤权及发送分包复核 | M-01、M-02、M-09、M-10、F-47 | web_accounts.json 凭据哈希及初始密钥；码／会话仅内存；原team_admins只读，无schema迁移 |
 
 **共同约束：**
@@ -1503,7 +1503,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.32.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.32.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1580,3 +1580,9 @@ v1.32.0 测试映射：test_web_management检查六条API匿名401／战队403�
 
 
 v1.32.0 验证：1414项默认回归通过、11项跳过；隔离MySQL8.4的80项检查通过。真实AstrBot v4.27.3 SDK／桥接及鉴权代码下，独立入口与原Pages验证管理Tab显隐、队伍分页搜索及多管理员、队员新增／改名／QQ编辑、保留空格的ID绑定／解绑／确认转绑、角色资料安全文本展示、手机390px和返回原战报；战队密码／QQ码及核心API边界回归保留。数据库验证本队范围、名单／资料／归属旧值检查、并发冲突和QQ变更关联的原子回滚；未发送真实QQ消息、未使用生产数据库。
+
+
+v1.32.1 管理员选择：复用master-only GET management/members，include_admins=1时额外读取当前本队管理员QQ快照，未传参数保持原响应，非法标记拒绝；不新增路由或SQL方法。编辑已知名单沿用打开时expected，未预载战队首次成功获取快照后初始化既有标签。默认成员模式、20条分页／搜索、无QQ禁选、QQ去重、单个手动兜底且不写角色，保存才提交列表。切换战队同步清空标签／草稿并禁用保存直至加载成功；搜索不清选择，隐藏手动模式不携带未添加QQ。弹窗关闭／切身份清除QQ标签和候选，序号＋目标对象＋open／role拒绝旧响应，原名单比较及自动建号不变。test_web_management覆盖候选快照／旧响应兼容／参数与越权；实际SDK浏览器覆盖标签／移除／重复／无QQ／手动无匹配／候选分页／切战队／关闭后的迟到搜索。
+
+
+v1.32.1 验证：1416项默认回归通过、11项跳过。真实AstrBot v4.27.3 SDK／鉴权下，独立入口与原Pages浏览器验证默认成员候选、可移除标签、未绑定QQ禁选、候选分页／搜索保留选择、单QQ手动兜底／批量字符拒绝、QQ去重、显式保存、切队清选择、关闭后迟到搜索隔离及身份清理。原数据库SQL／schema21不变，沿用既有22条核心插件路由。

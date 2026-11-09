@@ -106,3 +106,36 @@ def test_stale_edit_is_reported_and_account_store_failure_keeps_grant_success(si
             site.db.set_team_admins.assert_awaited_once()
         await site.close()
     asyncio.run(run())
+
+
+def test_admin_picker_reads_current_team_members_and_admin_snapshot_without_writing(site):
+    prepare(site)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+            response=await client.get(BASE+'members',headers=MASTER,params=dict(team='a队',keyword='云 玩家',offset=20,limit=20,include_admins='1'))
+            assert response.status_code==200
+            data=response.json()
+            assert data['admins']==['20000001','20000002'] and data['records'][0]['name']=='云 玩家'
+            site.db.get_team_admins.assert_awaited_once_with('A队')
+            site.db.get_webui_members.assert_awaited_once_with('A队','云 玩家',20,20)
+            site.db.set_team_admins.assert_not_awaited()
+            site.db.save_webui_member.assert_not_awaited()
+            response=await client.get(BASE+'members',headers=MASTER,params=dict(team='a队'))
+            assert response.status_code==200 and 'admins' not in response.json()
+        await site.close()
+    asyncio.run(run())
+
+
+def test_admin_picker_rejects_team_session_and_bad_include_flag_before_roster_reads(site):
+    prepare(site)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+            response=await client.get(BASE+'members',headers=MASTER,params=dict(team='a队',include_admins='yes'))
+            assert response.status_code==400
+            token=await team_login(site,client)
+            response=await client.get(TEAM+'members',headers={'Authorization':'Bearer '+token},params=dict(team='a队',include_admins='1'))
+            assert response.status_code==403
+            site.db.get_team_admins.assert_not_awaited()
+            site.db.get_webui_members.assert_not_awaited()
+        await site.close()
+    asyncio.run(run())

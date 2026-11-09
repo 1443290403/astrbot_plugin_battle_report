@@ -4,6 +4,8 @@ let jobId = '', category = 'matched', offset = 0, timer, sequence = 0, dbReady =
 let lastResult, comparisonLoading = false;
 let pageRole='',managementSequence=0,managementEpoch=0,managementOffset=0,managementTotal=0;
 let adminTarget=null,memberTarget=null,playerTarget=null,playerOffset=0,playerSequence=0,confirmPlayer=null;
+const adminSelected=new Map();
+let adminMemberSequence=0,adminMemberOffset=0,adminMemberTotal=0,adminMemberTimer,adminExpectedKnown=false,adminTeam='',adminReady=false,adminSaving=false;
 let view = 'local', libraryOffset = 0, libraryData, librarySequence = 0;
 const selection = new Map();
 let dispatchId = '', dispatchTimer, dispatchSequence = 0, dispatchRunning = false;
@@ -565,17 +567,116 @@ $('management-prev').addEventListener('click',()=>{if(managementOffset){manageme
 $('management-next').addEventListener('click',()=>{if(managementOffset+30<managementTotal){managementOffset+=30;loadManagement();}});
 $('management-add').addEventListener('click',()=>{if(pageRole!=='master')return;if(view==='teams')openAdmin();else if($('management-team').value.trim())openMember({team:$('management-team').value.trim()});else managementNotice('请先选择战队喵。');});
 document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>$(button.dataset.close).close()));
+function setAdminPickerMode(mode){
+  if(mode!=='manual')$('management-admin-manual-qq').value='';
+  document.querySelectorAll('[data-admin-mode]').forEach(button=>{const active=button.dataset.adminMode===mode;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));});
+  $('management-admin-member-picker').hidden=mode!=='members';$('management-admin-manual-picker').hidden=mode!=='manual';
+}
+function adminPickerControls(){
+  $('management-admin-save').disabled=!adminReady || adminSaving;
+  $('management-admin-manual-add').disabled=!adminReady || adminSaving;
+  $('management-admin-manual-qq').disabled=!adminReady || adminSaving;
+}
+function renderAdminSelection(){
+  $('management-admin-selected-count').textContent=`${adminSelected.size} 人`;
+  $('management-admin-selected-empty').hidden=adminSelected.size>0;
+  $('management-admin-selected').replaceChildren(...Array.from(adminSelected,([qq,name])=>{
+    const chip=node('span',null,'admin-chip');chip.setAttribute('role','listitem');chip.append(node('span',name?`${name} · ${qq}`:qq));
+    const remove=managementButton('×',()=>{adminSelected.delete(qq);renderAdminSelection();renderAdminCandidates();});remove.setAttribute('aria-label',`移除管理员 ${name || qq}`);chip.append(remove);return chip;
+  }));
+}
+function addSelectedAdmin(qq,name=''){
+  if(!adminReady || adminSaving)return false;
+  if(!adminSelected.has(qq) && adminSelected.size>=100){managementNotice('管理员最多添加100人喵。','management-admin-notice');return false;}
+  adminSelected.set(qq,name || adminSelected.get(qq) || '');managementNotice('','management-admin-notice');renderAdminSelection();renderAdminCandidates();return true;
+}
+function addManualAdmin(){
+  const input=$('management-admin-manual-qq'),qq=input.value.trim();
+  if(!/^[1-9][0-9]{0,19}$/.test(qq)){managementNotice('请填写一个有效QQ号喵。','management-admin-notice');input.focus();return false;}
+  if(!addSelectedAdmin(qq))return false;input.value='';return true;
+}
+let adminMemberRows=[];
+function renderAdminCandidates(){
+  $('management-admin-candidates').replaceChildren(...adminMemberRows.map(member=>{
+    const row=node('article',null,'admin-candidate'),identity=node('div');identity.append(node('strong',member.name),node('span',member.qq_id?`QQ：${member.qq_id}`:'未绑定QQ','hint'));
+    const valid=/^[1-9][0-9]{0,19}$/.test(member.qq_id || ''),selected=adminSelected.has(member.qq_id);
+    const add=managementButton(selected?'已添加':valid?'添加':'未绑定QQ',()=>addSelectedAdmin(member.qq_id,member.name));add.disabled=!valid || selected || adminSaving;
+    row.append(identity,add);return row;
+  }));
+  if(!adminMemberRows.length && adminReady){
+    const empty=node('div',null,'admin-candidate-empty');empty.append(node('p','未找到对应成员喵。','hint'));
+    empty.append(managementButton('手动添加QQ',()=>{setAdminPickerMode('manual');$('management-admin-manual-qq').focus();}));$('management-admin-candidates').append(empty);
+  }
+}
+function resetAdminPickerTeam(){
+  const team=$('management-admin-team').value.trim().toUpperCase();
+  if(team!==adminTeam){
+    adminTeam=team;adminTarget={team,admins:[]};adminExpectedKnown=false;adminReady=false;adminMemberOffset=0;adminMemberTotal=0;adminMemberRows=[];adminSelected.clear();
+    $('management-admin-search').value='';$('management-admin-manual-qq').value='';renderAdminSelection();$('management-admin-candidates').replaceChildren();$('management-admin-candidate-page').textContent='';
+    $('management-admin-candidate-prev').disabled=true;$('management-admin-candidate-next').disabled=true;adminPickerControls();
+  }
+  return team;
+}
+async function loadAdminMembers(){
+  clearTimeout(adminMemberTimer);
+  if(pageRole!=='master' || !$('management-admin-dialog').open || adminSaving)return;
+  const team=resetAdminPickerTeam(),version=++adminMemberSequence,target=adminTarget;
+  if(!team){$('management-admin-candidate-status').textContent='请先选择战队喵。';return;}
+  $('management-admin-candidate-status').textContent='正在加载战队成员…';$('management-admin-candidates').inert=true;
+  $('management-admin-candidate-prev').disabled=true;$('management-admin-candidate-next').disabled=true;
+  try{
+    const data=await bridge.apiGet('comparison/management/members',{team,keyword:$('management-admin-search').value.trim(),offset:adminMemberOffset,limit:20,include_admins:'1'});
+    if(version!==adminMemberSequence || target!==adminTarget || !$('management-admin-dialog').open || pageRole!=='master')return;
+    if(!adminExpectedKnown){adminTarget.admins=[...data.admins];adminSelected.clear();for(const qq of data.admins)adminSelected.set(qq,'');adminExpectedKnown=true;}
+    adminReady=true;adminMemberRows=data.records;adminMemberTotal=data.total;
+    for(const member of data.records)if(member.qq_id && adminSelected.has(member.qq_id))adminSelected.set(member.qq_id,member.name);
+    renderAdminSelection();renderAdminCandidates();adminPickerControls();
+    $('management-admin-candidate-status').textContent=`共 ${data.total} 名角色，点击“添加”加入管理员名单。`;
+    $('management-admin-candidate-page').textContent=`第 ${Math.floor(adminMemberOffset/20)+1} / ${Math.max(1,Math.ceil(data.total/20))} 页`;
+    $('management-admin-candidate-prev').disabled=!adminMemberOffset;$('management-admin-candidate-next').disabled=adminMemberOffset+20>=data.total;
+  }catch(error){if(version===adminMemberSequence && target===adminTarget){adminMemberRows=[];$('management-admin-candidates').replaceChildren();$('management-admin-candidate-status').textContent=error.message;managementNotice(error.message,'management-admin-notice');}}
+  finally{if(version===adminMemberSequence && target===adminTarget)$('management-admin-candidates').inert=false;}
+}
+function scheduleAdminMembers(teamChanged=false){
+  if(adminSaving)return;
+  clearTimeout(adminMemberTimer);adminMemberSequence++;adminMemberOffset=0;
+  if(teamChanged)resetAdminPickerTeam();
+  $('management-admin-candidates').inert=true;$('management-admin-candidate-prev').disabled=true;$('management-admin-candidate-next').disabled=true;
+  adminMemberTimer=setTimeout(loadAdminMembers,250);
+}
+function clearAdminPicker(){
+  clearTimeout(adminMemberTimer);adminMemberSequence++;adminSelected.clear();adminMemberRows=[];adminTarget=null;adminExpectedKnown=false;adminTeam='';adminReady=false;adminSaving=false;adminMemberOffset=0;adminMemberTotal=0;
+  $('management-admin-form').inert=false;$('management-admin-candidates').inert=false;
+  for(const id of ['management-admin-team','management-admin-search','management-admin-manual-qq'])$(id).value='';
+  $('management-admin-candidates').replaceChildren();$('management-admin-candidate-status').textContent='';$('management-admin-candidate-page').textContent='';
+  renderAdminSelection();adminPickerControls();setAdminPickerMode('members');managementNotice('','management-admin-notice');
+}
 function openAdmin(row){
   if(pageRole!=='master')return;
-  adminTarget=row || {admins:[]};$('management-admin-team').value=row?.team || '';$('management-admin-team').readOnly=!!row;
-  $('management-admin-qqs').value=adminTarget.admins.join('\n');managementNotice('','management-admin-notice');$('management-admin-dialog').showModal();
+  clearAdminPicker();adminTeam=(row?.team || '').toUpperCase();adminTarget={team:adminTeam,admins:[...(row?.admins || [])]};adminExpectedKnown=!!row;
+  $('management-admin-team').value=row?.team || '';$('management-admin-team').readOnly=!!row;
+  for(const qq of adminTarget.admins)adminSelected.set(qq,'');renderAdminSelection();$('management-admin-dialog').showModal();loadAdminMembers();
 }
+document.querySelectorAll('[data-admin-mode]').forEach(button=>button.addEventListener('click',()=>setAdminPickerMode(button.dataset.adminMode)));
+$('management-admin-team').addEventListener('input',()=>scheduleAdminMembers(true));
+$('management-admin-team').addEventListener('change',()=>loadAdminMembers());
+$('management-admin-team').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();loadAdminMembers();}});
+$('management-admin-search').addEventListener('input',()=>scheduleAdminMembers());
+$('management-admin-search-button').addEventListener('click',()=>{adminMemberOffset=0;loadAdminMembers();});
+$('management-admin-search').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();adminMemberOffset=0;loadAdminMembers();}});
+$('management-admin-manual-add').addEventListener('click',addManualAdmin);
+$('management-admin-manual-qq').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addManualAdmin();}});
+$('management-admin-candidate-prev').addEventListener('click',()=>{if(adminMemberOffset){adminMemberOffset-=20;loadAdminMembers();}});
+$('management-admin-candidate-next').addEventListener('click',()=>{if(adminMemberOffset+20<adminMemberTotal){adminMemberOffset+=20;loadAdminMembers();}});
+$('management-admin-dialog').addEventListener('close',()=>{if(!$('management-admin-dialog').open)clearAdminPicker();});
 $('management-admin-form').addEventListener('submit',async event=>{
-  event.preventDefault();if(pageRole!=='master' || !adminTarget)return;
-  const epoch=managementEpoch,button=event.submitter;button.disabled=true;managementNotice('','management-admin-notice');
-  const payload={team:$('management-admin-team').value.trim(),qqs:$('management-admin-qqs').value.split(/[\s,，、;；]+/u).filter(Boolean),expected:adminTarget.admins};
-  try{const data=await bridge.apiPost('comparison/management/teams',payload);if(epoch!==managementEpoch)return;$('management-admin-dialog').close();await loadManagement();managementNotice(data.message);}
-  catch(error){if(epoch===managementEpoch)managementNotice(error.message,'management-admin-notice');}finally{button.disabled=false;}
+  event.preventDefault();if(pageRole!=='master' || !adminTarget || !adminReady || adminSaving)return;
+  if($('management-admin-manual-qq').value.trim() && !addManualAdmin())return;
+  const epoch=managementEpoch,target=adminTarget;adminSaving=true;$('management-admin-form').inert=true;adminPickerControls();managementNotice('','management-admin-notice');
+  const payload={team:adminTeam,qqs:Array.from(adminSelected.keys()),expected:[...target.admins]};
+  try{const data=await bridge.apiPost('comparison/management/teams',payload);if(epoch!==managementEpoch || target!==adminTarget)return;$('management-admin-dialog').close();await loadManagement();managementNotice(data.message);}
+  catch(error){if(epoch===managementEpoch && target===adminTarget)managementNotice(error.message,'management-admin-notice');}
+  finally{if(target===adminTarget){adminSaving=false;$('management-admin-form').inert=false;adminPickerControls();}}
 });
 function openMember(row){
   if(pageRole!=='master')return;
@@ -635,11 +736,12 @@ $('management-confirm-yes').addEventListener('click',async()=>{const pending=con
 $('management-confirm-dialog').addEventListener('close',()=>{confirmPlayer=null;});
 $('management-player-dialog').addEventListener('close',()=>{playerSequence++;playerTarget=null;$('management-player-records').replaceChildren();$('management-player-owned').textContent='';});
 function clearManagement(){
+  clearAdminPicker();
   managementEpoch++;managementSequence++;playerSequence++;pageRole='';managementOffset=0;managementTotal=0;adminTarget=null;memberTarget=null;playerTarget=null;confirmPlayer=null;
   document.querySelectorAll('[data-master-only]').forEach(el=>{el.hidden=true;});
   for(const id of ['management-admin-dialog','management-member-dialog','management-player-dialog','management-confirm-dialog'])if($(id).open)$(id).close();
   for(const id of ['management-records','management-player-records','management-teams'])$(id).replaceChildren();
-  for(const id of ['management-team','management-keyword','management-admin-team','management-admin-qqs','management-member-name','management-member-qq','management-player-keyword'])$(id).value='';
+  for(const id of ['management-team','management-keyword','management-admin-team','management-admin-search','management-admin-manual-qq','management-member-name','management-member-qq','management-player-keyword'])$(id).value='';
   for(const id of ['management-count','management-page-label','management-member-team','management-player-title','management-player-owned','management-player-page-label','management-confirm-text'])$(id).textContent='';
   $('management-view').hidden=true;
   for(const id of ['management-notice','management-admin-notice','management-member-notice','management-player-notice'])managementNotice('',id);

@@ -77,7 +77,11 @@ class WebManagement:
     async def members(self, request):
         db=self.db();keyword,offset,limit=self.page(request)
         team=text(request.query.get('team'),'战队名').upper()
-        return dict(await db.get_webui_members(team,keyword,offset,limit),offset=offset,limit=limit)
+        include=request.query.get('include_admins','0')
+        if include not in ('0','1'):raise ComparisonError('管理员候选参数无效。')
+        result=dict(await db.get_webui_members(team,keyword,offset,limit),offset=offset,limit=limit)
+        if include=='1':result['admins']=await db.get_team_admins(team)
+        return result
 
     async def member_save(self, request):
         db=self.db();data=await self.payload(request)

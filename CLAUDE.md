@@ -348,3 +348,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 战队／角色／ID查询分页前限定范围，成员编号JSON字符串。管理员expected旧名单、角色expected原名QQ、ID expected_owner在_identity_cursor同事务内核验，避免覆盖原QQ命令或网页并发修改。
 - 角色QQ变更原子删除该角色官方映射／待确认请求，失败回滚；不改变战队管理员表。ID只可绑定本队已有记录及本队角色，网页转绑需确认，不造新ID／删除角色／改历史对局。
 - 前端两Tab默认hidden且只认master，管理时隐藏原战报布局，切身份清表单／名单／弹窗及旧异步响应。README／REQUIREMENTS及网页登录指南同步。
+
+
+## v1.32.1 管理员成员标签
+
+- 设置管理员默认从本队角色挑选并以QQ去重的可移除标签保存；无QQ角色禁选，无对应角色时手动添加单QQ，不写角色归属。保留未关联角色的既有管理员。
+- GET management/members可include_admins=1返回本队管理员快照，仍先require_master，既有响应默认不变。使用原列表POST／expected比较／自动建号，不新增路由或SQL。
+- 候选搜索分页不清选择，切战队清旧草稿，首次快照成功才允许保存。关闭／切身份清标签和候选，拒绝旧序号／旧target／已关闭弹窗的响应；Enter在搜索／单QQ字段不误提交授权。
