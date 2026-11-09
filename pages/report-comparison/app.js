@@ -315,8 +315,14 @@ function storedTime(value) { return value ? new Intl.DateTimeFormat('zh-CN',{tim
 async function loadLibrary() {
   if (view==='comparison') return;
   const selectedView=view, version=++librarySequence;
-  $('start').disabled=true; notice();libraryData=null;$('library-records').replaceChildren();$('library-pagination').hidden=true; syncSidePaging();
-  $('library-empty').hidden=false;$('library-empty').querySelector('h3').textContent='正在读取战报';$('library-empty').querySelector('p').textContent='';
+  $('start').disabled=true; notice();libraryData=null;
+  // Keep the previous cards until the new page arrives; clearing them here collapses
+  // the document and makes both scrollY and the sticky right rail jump during I/O.
+  $('library-records').inert=true;$('library-records').setAttribute('aria-busy','true');
+  $('library-view').setAttribute('aria-busy','true');
+  $('library-prev').disabled=true;$('library-next').disabled=true;syncSidePaging();
+  $('library-empty').hidden=$('library-records').children.length>0;
+  $('library-empty').querySelector('h3').textContent='正在读取战报';$('library-empty').querySelector('p').textContent='';
   try {
     const data=await bridge.apiGet(`comparison/${view==='local'?'local-reports':'cloud-reports'}`,{
       team:$('team').value.trim(),site_team:view==='cloud'?$('site-team').value.trim():'',month:$('month').value,
@@ -341,7 +347,18 @@ async function loadLibrary() {
     $('library-page-label').textContent=`第 ${libraryOffset+1}–${Math.min(libraryOffset+data.limit,data.total)} 项，共 ${data.total} 项`;
     $('library-prev').disabled=!libraryOffset; $('library-next').disabled=libraryOffset+data.limit>=data.total;
     selectionChanged();
-  } catch(e) {if(version===librarySequence){notice(e.message);$('library-empty').querySelector('h3').textContent='未能读取战报';$('library-empty').querySelector('p').textContent='请检查范围或连接后重新刷新。';}} finally {if(version===librarySequence){setRunning(running);syncSidePaging();}}
+  } catch(e) {
+    if(version===librarySequence){
+      notice(e.message);$('library-records').replaceChildren();$('library-pagination').hidden=true;
+      $('library-empty').hidden=false;$('library-empty').querySelector('h3').textContent='未能读取战报';
+      $('library-empty').querySelector('p').textContent='请检查范围或连接后重新刷新。';
+    }
+  } finally {
+    if(version===librarySequence){
+      $('library-records').inert=false;$('library-records').setAttribute('aria-busy','false');
+      $('library-view').setAttribute('aria-busy','false');setRunning(running);syncSidePaging();
+    }
+  }
 }
 $('report-outcome').addEventListener('change',()=>{
   offset=0;libraryOffset=0;

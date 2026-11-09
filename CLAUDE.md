@@ -303,3 +303,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - WebUI全部/胜场/负场先筛选再COUNT/分页。本地以home_team/已存winner且确实参赛为准，云端以site_team及网站winner_site/loser_site为准；未知不算负场。可选outcome默认all，数据库schema21不变。
 - 核对GET只过滤已完成结果，任一侧符合保留整组，完整分类统计/JSON不变，切换筛选重置页码并保留选择篮。新增site.loser用于网站筛选，旧历史可按已解析双方兜底。
 - 验证MySQL的总数/页码/类型组合，浏览器等宽/长短同排等高/空数据几何/各Tab筛选与不重抓，以及复制和发送链路。
+
+
+## v1.29.7 切换数据时的垂直稳定
+
+- 本地/云端加载前不可先清空旧卡片，否则文档高度塌缩导致scrollY和sticky轨道跳动。保留旧节点至成功响应原子替换，旧节点inert/aria-busy且翻页禁用；最新sequence负责解除，失败清旧节点并明确错误。
+- 短列表/空结果保留视口最小高度，让sticky有足够停靠空间；右轨道固定页码/箭头两列，页码隐藏也不移动箭头。不保留永久旧长页高度，也不强行scrollIntoView或回写全页scrollY。
+- 测试需阻塞API，在请求过程中而非只看请求后测量rows/scrollY/轨道矩形；另测短页、单条、空数据和既有复制/发送。独立外部入口尚未实现，不能在文档中把反向代理示意说成可直接公开现有HTML。
