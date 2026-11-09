@@ -2,6 +2,8 @@ const $ = id => document.getElementById(id);
 const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
 let jobId = '', category = 'matched', offset = 0, timer, sequence = 0, dbReady = false, running = false;
 let lastResult, comparisonLoading = false;
+let pageRole='',managementSequence=0,managementEpoch=0,managementOffset=0,managementTotal=0;
+let adminTarget=null,memberTarget=null,playerTarget=null,playerOffset=0,playerSequence=0,confirmPlayer=null;
 let view = 'local', libraryOffset = 0, libraryData, librarySequence = 0;
 const selection = new Map();
 let dispatchId = '', dispatchTimer, dispatchSequence = 0, dispatchRunning = false;
@@ -72,7 +74,10 @@ $('apply-url').addEventListener('click', () => { try { readUrl(); } catch(e) { n
 async function options(initial = false) {
   const data = await bridge.apiGet('comparison/options');
   dbReady = data.ready;
-  $('accounts-open').hidden=data.role==='team';
+  pageRole=data.role;
+  $('accounts-open').hidden=pageRole!=='master';
+  document.querySelectorAll('[data-master-only]').forEach(el=>{el.hidden=pageRole!=='master';});
+  if(initial)$('management-teams').replaceChildren(...data.teams.map(t=>{const e=node('option');e.value=t;return e;}));
   if (initial) {
     $('month').value = data.month; monthDates();
     $('teams').replaceChildren(...data.teams.map(t => {const e = node('option'); e.value = t; return e;}));
@@ -190,6 +195,7 @@ function syncPageNumbers(state) {
   }
 }
 function syncSidePaging() {
+  if(['teams','members'].includes(view)){$('side-prev').disabled=true;$('side-next').disabled=true;$('page-numbers').hidden=true;return;}
   const state=pagingState(), {comparison,ready}=state, prefix = comparison ? '' : 'library-';
   for (const direction of ['prev','next']) {
     const button = $(`side-${direction}`);
@@ -295,7 +301,26 @@ $('select-site-page').addEventListener('click',()=>selectComparisonPage('cloud')
 $('select-local-page').addEventListener('click',()=>selectComparisonPage('local'));
 $('clear-selection').addEventListener('click',()=>{selection.clear();selectionChanged();});
 function activateView(next) {
-  view=next; libraryOffset=0; librarySequence++;
+  const management=['teams','members'].includes(next);
+  if(management && pageRole!=='master')return;
+  view=next;managementSequence++;managementOffset=0;
+  $('management-view').hidden=!management;
+  document.querySelector('.query-card').hidden=management;
+  document.querySelector('.selection-bar').hidden=management;
+  document.querySelector('.report-layout').hidden=management;
+  document.querySelector('.footnote').hidden=management;
+  if(management){
+    document.querySelectorAll('#view-tabs button').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',String(b.dataset.view===view));});
+    librarySequence++;$('management-keyword').value='';
+    $('management-title').textContent=view==='teams'?'队伍管理':'队员管理';
+    $('management-description').textContent=view==='teams'?'查看战队资料与绑定群，设置多名管理员。':'按战队管理角色、QQ号及已有参赛ID。';
+    $('management-team-label').hidden=view!=='members';
+    $('management-keyword').placeholder=view==='teams'?'搜索战队名':'搜索角色、QQ或参赛ID';
+    $('management-add').textContent=view==='teams'?'设置管理员':'新增队员';
+    if(view==='members' && !$('management-team').value)$('management-team').value=$('team').value;
+    loadManagement();syncSidePaging();return;
+  }
+ libraryOffset=0; librarySequence++;
   document.querySelectorAll('#view-tabs button').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',String(b.dataset.view===view));});
   $('comparison-view').hidden=view!=='comparison'; $('library-view').hidden=view==='comparison';
   document.querySelector('.advanced').hidden=view!=='comparison'; $('site-team').parentElement.hidden=view==='local';
@@ -314,7 +339,7 @@ function activateView(next) {
 document.querySelectorAll('#view-tabs button').forEach(b=>b.addEventListener('click',()=>activateView(b.dataset.view)));
 function storedTime(value) { return value ? new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(Number(value)*1000)) : '未记录'; }
 async function loadLibrary() {
-  if (view==='comparison') return;
+  if (!['local','cloud'].includes(view)) return;
   const selectedView=view, version=++librarySequence;
   $('start').disabled=true; notice();libraryData=null;
   // Keep the previous cards until the new page arrives; clearing them here collapses
@@ -480,7 +505,7 @@ $('accounts-open').addEventListener('click',async()=>{
   try{await loadAccounts();}catch(error){accountsNotice(error.message);}
 });
 function clearAccountSecrets(){
-  accountsGeneration++;
+  accountsGeneration++;$('account-reset-title').textContent='';
   $('account-initial').replaceChildren();$('account-initial').hidden=true;
   $('account-reset-password').value='';$('account-reset').hidden=true;resetAccountId='';
 }
@@ -496,7 +521,132 @@ $('account-reset').addEventListener('submit',async event=>{
   try{await bridge.apiPost(`comparison/accounts/${resetAccountId}`,{action:'reset',password:$('account-reset-password').value});$('account-reset-password').value='';$('account-reset').hidden=true;clearAccountSecrets();await loadAccounts();accountsNotice('密码已重置，原密码会话已失效。');}
   catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
 });
+function managementNotice(text='',id='management-notice'){$(id).textContent=text;$(id).hidden=!text;}
+function managementButton(label,handler){const button=node('button',label,'secondary');button.type='button';button.addEventListener('click',handler);return button;}
+async function loadManagement(){
+  if(pageRole!=='master' || !['teams','members'].includes(view))return;
+  const version=++managementSequence,selected=view;
+  $('management-refresh').disabled=true;$('management-add').disabled=!dbReady;
+  $('management-prev').disabled=true;$('management-next').disabled=true;managementNotice();
+  const team=$('management-team').value.trim();
+  if(view==='members' && !team){$('management-records').replaceChildren();$('management-count').textContent='';$('management-pagination').hidden=true;managementNotice('请先选择战队喵。');$('management-refresh').disabled=false;return;}
+  $('management-records').inert=true;$('management-records').setAttribute('aria-busy','true');
+  try{
+    const data=await bridge.apiGet(`comparison/management/${view}`,{team,keyword:$('management-keyword').value.trim(),offset:managementOffset,limit:30});
+    if(version!==managementSequence || view!==selected || pageRole!=='master')return;
+    managementTotal=data.total;
+    $('management-count').textContent=`共 ${data.total} ${view==='teams'?'支战队':'名队员'}`;
+    $('management-records').replaceChildren(...data.records.map(row=>{
+      const card=node('article',null,'management-card'),body=node('div',null,'management-identity'),actions=node('div',null,'management-actions');
+      if(view==='teams'){
+        body.append(node('h3',row.team),node('p',`管理员：${row.admins.join('、') || '未设置'}`),node('p',`${row.member_count} 名角色 · ${row.player_count} 个参赛ID`,'hint'));
+        const groups=node('div',null,'management-tags');
+        for(const group of row.groups)groups.append(node('span',`${group.group_id} · ${group.chat_type || '未设用途'}${group.banned?' · 已禁用':''}`,'management-tag'));
+        if(!row.groups.length)groups.append(node('span','暂无绑定群','hint'));body.append(groups);
+        actions.append(managementButton('设置管理员',()=>openAdmin(row)),managementButton('管理队员',()=>{$('management-team').value=row.team;activateView('members');}));
+        if(!Array.from($('management-teams').options).some(o=>o.value===row.team)){const option=node('option');option.value=row.team;$('management-teams').append(option);}
+      }else{
+        body.append(node('h3',row.name),node('p',`QQ：${row.qq_id || '未绑定'}`,'hint'));
+        const ids=node('div',null,'management-tags');for(const player of row.players)ids.append(node('span',player,'management-tag'));
+        if(!row.players.length)ids.append(node('span','暂无参赛ID','hint'));body.append(ids);
+        actions.append(managementButton('编辑队员',()=>openMember({...row,team})),managementButton('管理ID',()=>openPlayers({...row,team})));
+      }
+      card.append(body,actions);return card;
+    }));
+    $('management-empty').hidden=data.records.length>0;
+    $('management-pagination').hidden=!data.total;
+    $('management-page-label').textContent=`第 ${Math.floor(managementOffset/30)+1} / ${Math.max(1,Math.ceil(data.total/30))} 页`;
+    $('management-prev').disabled=!managementOffset;$('management-next').disabled=managementOffset+30>=data.total;
+  }catch(error){if(version===managementSequence){$('management-records').replaceChildren();$('management-count').textContent='';$('management-empty').hidden=true;$('management-pagination').hidden=true;managementNotice(error.message);}}
+  finally{if(version===managementSequence){$('management-records').inert=false;$('management-records').setAttribute('aria-busy','false');$('management-refresh').disabled=false;}}
+}
+$('management-search').addEventListener('submit',event=>{event.preventDefault();managementOffset=0;loadManagement();});
+$('management-prev').addEventListener('click',()=>{if(managementOffset){managementOffset-=30;loadManagement();}});
+$('management-next').addEventListener('click',()=>{if(managementOffset+30<managementTotal){managementOffset+=30;loadManagement();}});
+$('management-add').addEventListener('click',()=>{if(pageRole!=='master')return;if(view==='teams')openAdmin();else if($('management-team').value.trim())openMember({team:$('management-team').value.trim()});else managementNotice('请先选择战队喵。');});
+document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>$(button.dataset.close).close()));
+function openAdmin(row){
+  if(pageRole!=='master')return;
+  adminTarget=row || {admins:[]};$('management-admin-team').value=row?.team || '';$('management-admin-team').readOnly=!!row;
+  $('management-admin-qqs').value=adminTarget.admins.join('\n');managementNotice('','management-admin-notice');$('management-admin-dialog').showModal();
+}
+$('management-admin-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(pageRole!=='master' || !adminTarget)return;
+  const epoch=managementEpoch,button=event.submitter;button.disabled=true;managementNotice('','management-admin-notice');
+  const payload={team:$('management-admin-team').value.trim(),qqs:$('management-admin-qqs').value.split(/[\s,，、;；]+/u).filter(Boolean),expected:adminTarget.admins};
+  try{const data=await bridge.apiPost('comparison/management/teams',payload);if(epoch!==managementEpoch)return;$('management-admin-dialog').close();await loadManagement();managementNotice(data.message);}
+  catch(error){if(epoch===managementEpoch)managementNotice(error.message,'management-admin-notice');}finally{button.disabled=false;}
+});
+function openMember(row){
+  if(pageRole!=='master')return;
+  memberTarget=row;$('management-member-title').textContent=row.id?'编辑队员':'新增队员';$('management-member-team').textContent=`战队：${row.team}`;
+  $('management-member-name').value=row.name || '';$('management-member-qq').value=row.qq_id || '';$('management-member-qq-hint').hidden=!row.id;
+  managementNotice('','management-member-notice');$('management-member-dialog').showModal();
+}
+$('management-member-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(pageRole!=='master' || !memberTarget)return;
+  const epoch=managementEpoch,target=memberTarget,button=event.submitter;button.disabled=true;managementNotice('','management-member-notice');
+  const payload={team:target.team,action:target.id?'edit':'create',id:target.id,name:$('management-member-name').value.trim(),qq:$('management-member-qq').value.trim(),expected:{name:target.name,qq_id:target.qq_id || ''}};
+  try{await bridge.apiPost('comparison/management/members',payload);if(epoch!==managementEpoch)return;$('management-member-dialog').close();await loadManagement();managementNotice('队员资料已保存喵。');}
+  catch(error){if(epoch===managementEpoch)managementNotice(error.message,'management-member-notice');}finally{button.disabled=false;}
+});
+function openPlayers(row){
+  if(pageRole!=='master')return;playerTarget={...row,players:[...row.players]};playerOffset=0;
+  $('management-player-title').textContent=`${row.name} · 管理参赛ID`;$('management-player-keyword').value='';$('management-player-unbound').checked=false;
+  $('management-player-owned').textContent=`已绑定：${row.players.join('、') || '暂无'}`;
+  managementNotice('','management-player-notice');$('management-player-dialog').showModal();loadManagementPlayers();
+}
+async function loadManagementPlayers(){
+  if(!playerTarget || pageRole!=='master' || !$('management-player-dialog').open)return;
+  const version=++playerSequence,target=playerTarget;managementNotice('','management-player-notice');
+  $('management-player-prev').disabled=true;$('management-player-next').disabled=true;$('management-player-records').inert=true;
+  try{
+    const data=await bridge.apiGet('comparison/management/players',{team:target.team,keyword:$('management-player-keyword').value.trim(),unbound:$('management-player-unbound').checked?'1':'0',offset:playerOffset,limit:30});
+    if(version!==playerSequence || target!==playerTarget || !$('management-player-dialog').open)return;
+    $('management-player-records').replaceChildren(...data.records.map(row=>{
+      const card=node('article',null,'management-card'),body=node('div',null,'management-identity');
+      body.append(node('strong',row.player_name),node('p',row.user_id?`归属：${row.user_name || row.user_id}${row.qq_id?' · '+row.qq_id:''}`:'未绑定','hint'));
+      const mine=row.user_id===target.id,button=managementButton(mine?'解绑':row.user_id?'转绑':'绑定',()=>{
+        if(!mine && row.user_id){confirmPlayer={row,target,version:managementEpoch};$('management-confirm-text').textContent=`将「${row.player_name}」从「${row.user_name || row.user_id}」转绑给「${target.name}」？`;$('management-confirm-dialog').showModal();}
+        else changePlayer(row,target,button);
+      });card.append(body,button);return card;
+    }));
+    if(!data.records.length)$('management-player-records').append(node('p','未找到参赛ID喵。','hint'));
+    $('management-player-page-label').textContent=`共 ${data.total} 个 · 第 ${Math.floor(playerOffset/30)+1} / ${Math.max(1,Math.ceil(data.total/30))} 页`;
+    $('management-player-prev').disabled=!playerOffset;$('management-player-next').disabled=playerOffset+30>=data.total;
+  }catch(error){if(version===playerSequence){$('management-player-records').replaceChildren();managementNotice(error.message,'management-player-notice');}}
+  finally{if(version===playerSequence)$('management-player-records').inert=false;}
+}
+async function changePlayer(row,target,button){
+  if(pageRole!=='master' || playerTarget!==target)return;
+  const epoch=managementEpoch;button.disabled=true;const mine=row.user_id===target.id;
+  try{
+    await bridge.apiPost('comparison/management/players',{team:target.team,player:row.player_name,action:mine?'unbind':'bind',id:target.id,expected_owner:row.user_id});
+    if(epoch!==managementEpoch || playerTarget!==target)return;
+    if(mine)target.players=target.players.filter(p=>p!==row.player_name);else if(!target.players.includes(row.player_name))target.players.push(row.player_name);
+    $('management-player-owned').textContent=`已绑定：${target.players.join('、') || '暂无'}`;
+    await loadManagementPlayers();await loadManagement();
+  }catch(error){if(epoch===managementEpoch)managementNotice(error.message,'management-player-notice');}finally{button.disabled=false;}
+}
+$('management-player-search').addEventListener('submit',event=>{event.preventDefault();playerOffset=0;loadManagementPlayers();});
+$('management-player-prev').addEventListener('click',()=>{if(playerOffset){playerOffset-=30;loadManagementPlayers();}});
+$('management-player-next').addEventListener('click',()=>{playerOffset+=30;loadManagementPlayers();});
+$('management-confirm-yes').addEventListener('click',async()=>{const pending=confirmPlayer;if(!pending || pending.version!==managementEpoch)return;$('management-confirm-dialog').close();await changePlayer(pending.row,pending.target,$('management-confirm-yes'));});
+$('management-confirm-dialog').addEventListener('close',()=>{confirmPlayer=null;});
+$('management-player-dialog').addEventListener('close',()=>{playerSequence++;playerTarget=null;$('management-player-records').replaceChildren();$('management-player-owned').textContent='';});
+function clearManagement(){
+  managementEpoch++;managementSequence++;playerSequence++;pageRole='';managementOffset=0;managementTotal=0;adminTarget=null;memberTarget=null;playerTarget=null;confirmPlayer=null;
+  document.querySelectorAll('[data-master-only]').forEach(el=>{el.hidden=true;});
+  for(const id of ['management-admin-dialog','management-member-dialog','management-player-dialog','management-confirm-dialog'])if($(id).open)$(id).close();
+  for(const id of ['management-records','management-player-records','management-teams'])$(id).replaceChildren();
+  for(const id of ['management-team','management-keyword','management-admin-team','management-admin-qqs','management-member-name','management-member-qq','management-player-keyword'])$(id).value='';
+  for(const id of ['management-count','management-page-label','management-member-team','management-player-title','management-player-owned','management-player-page-label','management-confirm-text'])$(id).textContent='';
+  $('management-view').hidden=true;
+  for(const id of ['management-notice','management-admin-notice','management-member-notice','management-player-notice'])managementNotice('',id);
+}
+
 function clearSession(){
+  clearManagement();
   clearTimeout(timer);clearTimeout(dispatchTimer);sequence++;librarySequence++;dispatchSequence++;
   jobId='';lastResult=undefined;libraryData=undefined;libraryOffset=0;offset=0;dispatchId='';
   running=false;comparisonLoading=false;dispatchRunning=false;dbReady=false;selection.clear();

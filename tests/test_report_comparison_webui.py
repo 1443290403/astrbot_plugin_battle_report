@@ -214,10 +214,10 @@ def test_webui_register_and_reload_cleanup_do_not_remove_new_instance(tmp_path):
         routes.append((route,handler,methods,desc))
     plugin=SimpleNamespace(data_dir=tmp_path,context=SimpleNamespace(register_web_api=register,registered_web_apis=routes))
     first=ComparisonWebUI(plugin,logging.getLogger('test'));first.register()
-    assert len(routes) == 16
+    assert len(routes) == 22
     second=ComparisonWebUI(plugin,logging.getLogger('test'));second.register()
     asyncio.run(first.close())
-    assert len(routes) == 16 and all(r[1].__self__ is second for r in routes)
+    assert len(routes) == 22 and all(r[1].__self__ is second for r in routes)
     asyncio.run(second.close()); assert not routes
 
 

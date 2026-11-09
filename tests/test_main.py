@@ -3095,7 +3095,7 @@ def test_comparison_page_registers_on_constructor_and_stops_before_database(plug
     monkeypatch.setattr(plugin_module,'StarTools',SimpleNamespace(get_data_dir=lambda:tmp_path))
     context=SimpleNamespace(register_web_api=lambda *entry:routes.append(entry),registered_web_apis=routes)
     obj=plugin_module.BattleReportPlugin(context,{})
-    assert obj._comparison_webui is not None and len(routes)==16
+    assert obj._comparison_webui is not None and len(routes)==22
     assert all(r[0].startswith('/astrbot_plugin_battle_report/comparison/') for r in routes)
     assert obj.db is None and not obj.db_ready
     obj.db=SimpleNamespace(close=AsyncMock())

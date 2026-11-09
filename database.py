@@ -710,9 +710,13 @@ class Database:
 
     # ---------- 群主体绑定 ----------
 
-    async def set_team_admins(self, home_team: str, qq_ids: list[str]) -> None:
+    async def set_team_admins(self, home_team: str, qq_ids: list[str], *, expected: list[str] | None = None) -> None:
         """覆盖本队管理员名单；使用同队身份锁保证并发设置的一致性。"""
         async with self._identity_cursor(home_team) as cur:
+            if expected is not None:
+                await cur.execute('SELECT qq_id FROM team_admins WHERE home_team=%s ORDER BY qq_id', (home_team,))
+                if sorted(row['qq_id'] for row in await cur.fetchall()) != sorted(set(expected)):
+                    raise ValueError('管理员名单已变化，请刷新后重试。')
             await cur.execute("DELETE FROM team_admins WHERE home_team = %s", (home_team,))
             for qq in dict.fromkeys(qq_ids):
                 await cur.execute(
@@ -838,6 +842,95 @@ class Database:
         return rows
 
     # ---------- 用户与参赛ID ----------
+
+    async def get_webui_teams(self, keyword: str, offset: int, limit: int) -> dict:
+        source = """(SELECT home_team AS team FROM group_home UNION SELECT home_team FROM users
+                     UNION SELECT home_team FROM player_ids UNION SELECT home_team FROM team_admins
+                     UNION SELECT home_team FROM matches UNION SELECT team_a FROM matches
+                     UNION SELECT team_b FROM matches) t WHERE t.team<>'' AND LOCATE(%s,t.team)>0"""
+        total = (await self._query('SELECT COUNT(*) AS n FROM '+source, (keyword,)))[0]['n']
+        rows = await self._query('SELECT t.team FROM '+source+' ORDER BY t.team LIMIT %s OFFSET %s',
+                                 (keyword,limit,offset))
+        if not rows:return dict(total=total,records=[])
+        names=[r['team'] for r in rows];slots=','.join(['%s']*len(names))
+        admins=await self._query(f'SELECT home_team,qq_id FROM team_admins WHERE home_team IN ({slots}) ORDER BY qq_id',tuple(names))
+        groups=await self._query(f"""SELECT g.home_team,g.group_id,COALESCE(b.banned,0) AS banned,c.chat_type
+            FROM group_home g LEFT JOIN group_ban b ON b.group_id=g.group_id
+            LEFT JOIN group_chat_type c ON c.group_id=g.group_id
+            WHERE g.home_team IN ({slots}) ORDER BY g.group_id""",tuple(names))
+        members=await self._query(f'SELECT home_team,COUNT(*) AS n FROM users WHERE home_team IN ({slots}) GROUP BY home_team',tuple(names))
+        players=await self._query(f'SELECT home_team,COUNT(*) AS n FROM player_ids WHERE home_team IN ({slots}) GROUP BY home_team',tuple(names))
+        def same(a,b):return a.casefold()==b.casefold()
+        for row in rows:
+            team=row['team']
+            row['admins']=[a['qq_id'] for a in admins if same(a['home_team'],team)]
+            row['groups']=[dict(group_id=g['group_id'],banned=bool(g['banned']),chat_type=g['chat_type']) for g in groups if same(g['home_team'],team)]
+            row['member_count']=sum(r['n'] for r in members if same(r['home_team'],team))
+            row['player_count']=sum(r['n'] for r in players if same(r['home_team'],team))
+        return dict(total=total,records=rows)
+
+    async def get_webui_members(self, home_team: str, keyword: str, offset: int, limit: int) -> dict:
+        where="""u.home_team=%s AND (LOCATE(%s,u.name)>0 OR LOCATE(%s,u.qq_id)>0 OR EXISTS
+            (SELECT 1 FROM player_ids p WHERE p.home_team=u.home_team AND p.user_id=u.id AND LOCATE(%s,p.player_name)>0))"""
+        params=(home_team,keyword,keyword,keyword)
+        total=(await self._query('SELECT COUNT(*) AS n FROM users u WHERE '+where,params))[0]['n']
+        rows=await self._query("SELECT u.id,u.name,COALESCE(u.qq_id,'') AS qq_id,u.created_at FROM users u WHERE "+where+
+                              ' ORDER BY u.id LIMIT %s OFFSET %s',(*params,limit,offset))
+        if rows:
+            slots=','.join(['%s']*len(rows))
+            players=await self._query(f'SELECT user_id,player_name FROM player_ids WHERE home_team=%s AND user_id IN ({slots}) ORDER BY id',
+                                     (home_team,*(r['id'] for r in rows)))
+            for row in rows:
+                row['players']=[p['player_name'] for p in players if p['user_id']==row['id']]
+                row['id']=str(row['id'])
+        return dict(total=total,records=rows)
+
+    async def get_webui_players(self, home_team: str, keyword: str, offset: int, limit: int, *, unbound: bool = False) -> dict:
+        source="""FROM player_ids p LEFT JOIN users u ON u.id=p.user_id AND u.home_team=p.home_team
+            WHERE p.home_team=%s AND (LOCATE(%s,p.player_name)>0 OR LOCATE(%s,u.name)>0 OR LOCATE(%s,u.qq_id)>0)"""
+        if unbound:source+=' AND p.user_id IS NULL'
+        params=(home_team,keyword,keyword,keyword)
+        total=(await self._query('SELECT COUNT(*) AS n '+source,params))[0]['n']
+        rows=await self._query('SELECT p.player_name,p.user_id,u.name AS user_name,u.qq_id '+source+
+                              ' ORDER BY p.id LIMIT %s OFFSET %s',(*params,limit,offset))
+        for row in rows:row['user_id']=str(row['user_id']) if row['user_id'] is not None else None
+        return dict(total=total,records=rows)
+
+    async def save_webui_member(self, home_team: str, name: str, qq_id: str, *, user_id: int | None = None, expected: dict | None = None) -> str:
+        """Explicit admin edit; ownership checks, official unlink and role update commit together."""
+        async with self._identity_cursor(home_team) as cur:
+            old=None
+            if user_id is not None:
+                await cur.execute("SELECT name,COALESCE(qq_id,'') AS qq_id FROM users WHERE home_team=%s AND id=%s FOR UPDATE",(home_team,user_id))
+                old=await cur.fetchone()
+                if old is None:raise ValueError('找不到该战队的队员。')
+                if dict(old)!=expected:raise ValueError('队员资料已变化，请刷新后重试。')
+            await cur.execute('SELECT id FROM users WHERE home_team=%s AND (name=%s OR (%s<>\'\' AND qq_id=%s)) AND id<>%s',
+                              (home_team,name,qq_id,qq_id,user_id or 0))
+            if await cur.fetchone():raise ValueError('该战队已有同名角色或该QQ已绑定其他角色。')
+            if user_id is None:
+                await cur.execute('INSERT INTO users (home_team,name,qq_id,created_at) VALUES (%s,%s,%s,%s)',
+                                  (home_team,name,qq_id,int(time.time())))
+                user_id=cur.lastrowid
+            else:
+                if old['qq_id']!=qq_id:
+                    await cur.execute('DELETE FROM official_link_requests WHERE user_id=%s',(user_id,))
+                    await cur.execute('DELETE FROM official_user_accounts WHERE user_id=%s',(user_id,))
+                await cur.execute('UPDATE users SET name=%s,qq_id=%s WHERE home_team=%s AND id=%s',
+                                  (name,qq_id,home_team,user_id))
+            return str(user_id)
+
+    async def set_webui_player_owner(self, home_team: str, player: str, user_id: int | None, *, expected_owner: int | None) -> None:
+        """Only existing IDs; compare the displayed owner before moving or unbinding."""
+        async with self._identity_cursor(home_team) as cur:
+            await cur.execute('SELECT id,user_id FROM player_ids WHERE home_team=%s AND player_name=%s FOR UPDATE',(home_team,player))
+            row=await cur.fetchone()
+            if row is None:raise ValueError('该战队没有这个参赛ID。')
+            if row['user_id']!=expected_owner:raise ValueError('参赛ID归属已变化，请刷新后重试。')
+            if user_id is not None:
+                await cur.execute('SELECT id FROM users WHERE home_team=%s AND id=%s',(home_team,user_id))
+                if not await cur.fetchone():raise ValueError('目标角色不属于该战队。')
+            await cur.execute('UPDATE player_ids SET user_id=%s WHERE home_team=%s AND id=%s',(user_id,home_team,row['id']))
 
     @asynccontextmanager
     async def _identity_cursor(self, home_team: str):

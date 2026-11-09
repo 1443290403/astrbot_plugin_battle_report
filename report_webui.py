@@ -251,6 +251,9 @@ class ComparisonWebUI:
             self.auth = WebAccounts(plugin.data_dir/'web_accounts.json',self.admin_teams)
         except Exception:
             self.log.exception('战队管理员登录初始化失败，原后台登录继续可用')
+        try:from .web_management import WebManagement
+        except ImportError:from web_management import WebManagement
+        self.management=WebManagement(self)
 
     @contextmanager
     def bind_team(self, actor):
@@ -421,11 +424,14 @@ class ComparisonWebUI:
                      ('dispatch/<batch_id>/send', self.dispatch_send, ['POST']),
                      ('dispatch/<batch_id>/cancel', self.dispatch_cancel, ['POST']),
                      ('accounts',self.accounts,['GET']),('accounts',self.account_sync,['POST']),
-                     ('accounts/<account_id>',self.account_update,['POST'])]
+                     ('accounts/<account_id>',self.account_update,['POST']),
+                     ('management/teams',self.management_teams,['GET']),('management/teams',self.management_team_save,['POST']),
+                     ('management/members',self.management_members,['GET']),('management/members',self.management_member_save,['POST']),
+                     ('management/players',self.management_players,['GET']),('management/players',self.management_player_save,['POST'])]
 
     def register(self):
         for suffix, handler, methods in self.endpoints():
-            self.plugin.context.register_web_api(f'/{PLUGIN_NAME}/comparison/{suffix}', handler, methods, '战报核对、归档与QQ发送')
+            self.plugin.context.register_web_api(f'/{PLUGIN_NAME}/comparison/{suffix}', handler, methods, '战报管理、核对与QQ发送')
 
     async def close(self):
         if self.auth:self.auth.close()
@@ -617,6 +623,13 @@ class ComparisonWebUI:
             self.require_master()
             return dict(accounts=self.require_auth().list_accounts())
         return await self.respond(handle)
+
+    async def management_teams(self):return await self.respond(self.management.teams)
+    async def management_team_save(self):return await self.respond(self.management.team_save)
+    async def management_members(self):return await self.respond(self.management.members)
+    async def management_member_save(self):return await self.respond(self.management.member_save)
+    async def management_players(self):return await self.respond(self.management.players)
+    async def management_player_save(self):return await self.respond(self.management.player_save)
 
     async def account_sync(self):
         async def handle(request):

@@ -126,3 +126,106 @@ def test_web_admin_team_lookup_is_qq_scoped_and_follows_revocation():
         assert await db.get_admin_teams('20000003')==[]
         assert await db.get_team_admin_qqs()==['20000001','20000002']
     run_db(check)
+
+
+def test_management_team_overview_includes_admin_and_role_only_teams_and_bound_groups():
+    async def check(db):
+        await db.set_team_admins('管理员队',['20000001','20000002'])
+        uid=await db.find_or_create_user('角色队','云玩家','20000001')
+        await db.bind_player_to_user('角色队','示例 ID',uid)
+        await db.set_group_home('12345678','角色队')
+        await db.set_group_chat_type('12345678','战报群')
+        await db.set_group_ban('12345678',True)
+        result=await db.get_webui_teams('',0,1)
+        assert result['total']==2 and len(result['records'])==1
+        admin=(await db.get_webui_teams('管理员',0,30))['records'][0]
+        assert admin['admins']==['20000001','20000002'] and admin['member_count']==0
+        role=(await db.get_webui_teams('角色',0,30))['records'][0]
+        assert role['member_count']==role['player_count']==1
+        assert role['groups']==[dict(group_id='12345678',banned=True,chat_type='战报群')]
+        assert (await db.get_webui_teams("' OR 1=1 --",0,30))['total']==0
+        assert (await db.get_webui_teams('%',0,30))['total']==0
+        await db.set_team_admins('管理员队',['20000003'],expected=['20000002','20000001'])
+        with pytest.raises(ValueError,match='已变化'):
+            await db.set_team_admins('管理员队',[],expected=['20000001'])
+        assert await db.get_team_admins('管理员队')==['20000003']
+    run_db(check)
+
+
+def test_management_member_and_id_search_is_team_scoped_paginated_and_preserves_spaces():
+    async def check(db):
+        first=await db.save_webui_member('a队','云 玩家','20000001')
+        second=await db.save_webui_member('a队','萌新','')
+        foreign=await db.save_webui_member('b队','云 玩家','20000001')
+        await db.bind_player_to_user('a队','示例  ID',int(first))
+        await db.bind_player_to_user('a队','另一 ID',int(second))
+        await db.bind_player_to_user('b队','示例  ID',int(foreign))
+        page=await db.get_webui_members('a队','',0,1)
+        assert page['total']==2 and page['records'][0]['id']==first
+        assert page['records'][0]['players']==['示例  ID']
+        assert (await db.get_webui_members('a队','',1,1))['records'][0]['id']==second
+        for keyword in ['云 玩家','20000001','示例  ID']:
+            result=await db.get_webui_members('a队',keyword,0,30)
+            assert result['total']==1 and result['records'][0]['id']==first
+        assert (await db.get_webui_members('a队',"' OR 1=1 --",0,30))['total']==0
+        ids=await db.get_webui_players('a队','',0,1)
+        assert ids['total']==2 and ids['records'][0]['user_id']==first
+        await db.unbind_player('a队','另一 ID')
+        unbound=await db.get_webui_players('a队','',0,30,unbound=True)
+        assert unbound['total']==1 and unbound['records'][0]['user_id'] is None
+        assert unbound['records'][0]['player_name']=='另一 ID'
+    run_db(check)
+
+
+def test_management_role_edit_rejects_conflicts_and_unlinks_official_identity_atomically():
+    async def check(db):
+        uid=int(await db.save_webui_member('a队','云玩家','20000001'))
+        await db.save_webui_member('a队','萌新','20000002')
+        await db.set_team_admins('a队',['20000001'])
+        request=await db.request_official_link('a队','test-app','test-open','云玩家')
+        assert await db.confirm_official_link(request['code'],'20000001')=='ok'
+        await db.request_official_link('a队','other-app','other-open','云玩家')
+        expected=dict(name='云玩家',qq_id='20000001')
+        for name,qq in [('萌新','20000001'),('云玩家','20000002')]:
+            with pytest.raises(ValueError):await db.save_webui_member('a队',name,qq,user_id=uid,expected=expected)
+        with pytest.raises(ValueError):await db.save_webui_member('b队','云玩家','',user_id=uid,expected=expected)
+        with pytest.raises(ValueError,match='已变化'):await db.save_webui_member('a队','改名','',user_id=uid,expected=dict(name='旧名称',qq_id='20000001'))
+        await db._execute("""CREATE TRIGGER reject_web_edit BEFORE UPDATE ON users FOR EACH ROW
+            BEGIN IF NEW.name='拒绝修改' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='management rollback'; END IF; END""")
+        with pytest.raises(Exception,match='management rollback'):
+            await db.save_webui_member('a队','拒绝修改','20000003',user_id=uid,expected=expected)
+        assert len(await db._query('SELECT * FROM official_user_accounts WHERE user_id=%s',(uid,)))==1
+        assert len(await db._query('SELECT * FROM official_link_requests WHERE user_id=%s',(uid,)))==1
+        assert (await db.get_user_by_id(uid))['qq_id']=='20000001'
+        await db.save_webui_member('a队','新 名字','20000001',user_id=uid,expected=expected)
+        assert len(await db._query('SELECT * FROM official_user_accounts WHERE user_id=%s',(uid,)))==1
+        await db.save_webui_member('a队','新 名字','20000003',user_id=uid,expected=dict(name='新 名字',qq_id='20000001'))
+        assert not await db._query('SELECT * FROM official_user_accounts WHERE user_id=%s',(uid,))
+        assert not await db._query('SELECT * FROM official_link_requests WHERE user_id=%s',(uid,))
+        assert await db.get_team_admins('a队')==['20000001']
+        assert not await db.get_admin_teams('20000003')
+    run_db(check)
+
+
+def test_management_id_transfer_requires_current_owner_and_same_team_and_never_invents_ids():
+    async def check(db):
+        first=int(await db.save_webui_member('a队','云玩家',''))
+        second=int(await db.save_webui_member('a队','萌新',''))
+        foreign=int(await db.save_webui_member('b队','云玩家',''))
+        await db.bind_player_to_user('a队','示例 ID',first)
+        with pytest.raises(ValueError,match='没有这个'):
+            await db.set_webui_player_owner('a队','不存在ID',second,expected_owner=None)
+        with pytest.raises(ValueError,match='不属于'):
+            await db.set_webui_player_owner('a队','示例 ID',foreign,expected_owner=first)
+        assert (await db.get_player_binding('a队','示例 ID'))['user_id']==first
+        await db.set_webui_player_owner('a队','示例 ID',second,expected_owner=first)
+        with pytest.raises(ValueError,match='已变化'):
+            await db.set_webui_player_owner('a队','示例 ID',None,expected_owner=first)
+        await db.set_webui_player_owner('a队','示例 ID',None,expected_owner=second)
+        results=await asyncio.gather(db.set_webui_player_owner('a队','示例 ID',first,expected_owner=None),
+                                    db.set_webui_player_owner('a队','示例 ID',second,expected_owner=None),return_exceptions=True)
+        assert sum(result is None for result in results)==1
+        assert sum(isinstance(result,ValueError) for result in results)==1
+        assert (await db._query('SELECT COUNT(*) AS n FROM player_ids'))[0]['n']==1
+        assert (await db._query('SELECT COUNT(*) AS n FROM matches'))[0]['n']==0
+    run_db(check)
