@@ -733,6 +733,10 @@ class Database:
         rows = await self._query('SELECT home_team FROM team_admins WHERE qq_id=%s ORDER BY home_team', (qq_id,))
         return [row['home_team'] for row in rows]
 
+    async def get_team_admin_qqs(self) -> list[str]:
+        rows = await self._query('SELECT DISTINCT qq_id FROM team_admins ORDER BY qq_id', ())
+        return [row['qq_id'] for row in rows]
+
     async def is_team_admin(self, home_team: str, qq_id: str) -> bool:
         return bool(await self._query(
             "SELECT 1 FROM team_admins WHERE home_team = %s AND qq_id = %s LIMIT 1", (home_team, qq_id)

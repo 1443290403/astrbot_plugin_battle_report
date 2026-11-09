@@ -3150,3 +3150,60 @@ def test_team_login_code_only_for_real_onebot_private_team_admin(plugin_module,t
     else:
         ev.send.assert_not_awaited();assert not auth.codes
         if group and platform=='aiocqhttp':assert '私聊' in result[0]
+
+
+@pytest.mark.parametrize('sync_fails',[False,True])
+def test_setting_admins_auto_provisions_after_grant_without_group_password(plugin_module,tmp_path,sync_fails):
+    obj=plugin(plugin_module,tmp_path);obj.config['super_admin']='10001'
+    granted=[]
+    async def grant(home,qqs):granted.extend(qqs)
+    async def sync(qqs):
+        assert granted==['12345','67890']
+        if sync_fails:raise OSError('disk full')
+    obj.db.set_team_admins=AsyncMock(side_effect=grant)
+    obj._comparison_webui=SimpleNamespace(sync_accounts=AsyncMock(side_effect=sync))
+    reply=asyncio.run(collect(obj.set_team_admins(event('/设置战队管理员 a队 12345,67890'))))[0]
+    assert '✅' in reply and '12345' in reply
+    obj._comparison_webui.sync_accounts.assert_awaited_once_with(['12345','67890'])
+    assert ('暂未同步' in reply) is sync_fails
+    if not sync_fails:assert '私聊 /战报登录' in reply
+    assert 'Br!' not in reply
+
+
+@pytest.mark.parametrize('sync_fails',[False,True])
+def test_initialize_backfills_admin_accounts_without_disabling_db_on_store_failure(plugin_module,tmp_path,monkeypatch,sync_fails):
+    obj=plugin(plugin_module,tmp_path)
+    db=SimpleNamespace(initialize=AsyncMock())
+    monkeypatch.setattr(plugin_module,'Database',lambda **kwargs:db)
+    obj._friendly_round_display=lambda:None
+    obj._get_waiting_queues=Mock(side_effect=RuntimeError('no queue needed in auth test'))
+    obj._comparison_webui=SimpleNamespace(sync_accounts=AsyncMock(side_effect=OSError('disk full') if sync_fails else None))
+    asyncio.run(obj.initialize())
+    assert obj.db_ready and obj.db is db
+    obj._comparison_webui.sync_accounts.assert_awaited_once_with()
+
+
+def test_private_login_returns_initial_account_and_keeps_code_when_store_fails(plugin_module,tmp_path):
+    obj=plugin(plugin_module,tmp_path)
+    from web_accounts import WebAccounts
+    auth=WebAccounts(tmp_path/'web_accounts.json',AsyncMock(return_value=['a队']))
+    obj._comparison_webui=SimpleNamespace(auth=auth)
+    async def run():
+        ev=event(group='');ev.get_platform_name=lambda:'aiocqhttp'
+        assert not await collect(obj.report_web_login(ev))
+        reply=ev.send.await_args.args[0]
+        creds=await auth.credentials('10001')
+        assert '登录账号：10001' in reply and creds['password'] in reply
+        assert 'brc_' in reply and '5分钟' in reply
+        code=re.search(r'brc_[A-Za-z0-9_-]+',reply).group()
+        assert await auth.login_code(code,'one')
+        account=auth.list_accounts()[0]
+        await auth.update(account['id'],dict(action='reset',password='ChangedPass9'))
+        auth.code_issued_at.clear()
+        await collect(obj.report_web_login(ev))
+        assert '密码已修改' in ev.send.await_args.args[0] and creds['password'] not in ev.send.await_args.args[0]
+        auth.code_issued_at.clear()
+        auth.ensure_accounts=AsyncMock(side_effect=OSError('disk full'))
+        await collect(obj.report_web_login(ev))
+        assert '暂未同步' in ev.send.await_args.args[0] and 'brc_' in ev.send.await_args.args[0]
+    asyncio.run(run())

@@ -148,7 +148,8 @@ def test_password_change_cannot_overwrite_a_concurrent_admin_reset(auth,monkeypa
     asyncio.run(run())
 
 
-def test_unload_prevents_inflight_password_work_from_writing_or_issuing_sessions(auth,monkeypatch):
+@pytest.mark.parametrize('automatic',[False,True])
+def test_unload_prevents_inflight_password_work_from_writing_or_issuing_sessions(auth,monkeypatch,automatic):
     service,_,_=auth
     async def run():
         import web_accounts,threading
@@ -158,7 +159,7 @@ def test_unload_prevents_inflight_password_work_from_writing_or_issuing_sessions
             entered.set();assert release.wait(5)
             return original(password)
         monkeypatch.setattr(web_accounts,'password_hash',blocked)
-        creation=asyncio.create_task(service.create('valid','InitialPass8','20000001'))
+        creation=asyncio.create_task(service.ensure_accounts(['20000001']) if automatic else service.create('valid','InitialPass8','20000001'))
         assert await asyncio.to_thread(entered.wait,5)
         service.close();release.set()
         with pytest.raises(WebAuthError) as error:await creation
@@ -166,3 +167,64 @@ def test_unload_prevents_inflight_password_work_from_writing_or_issuing_sessions
         assert not service.accounts and not service.path.exists() and not service.sessions
         with pytest.raises(WebAuthError):await service.issue_code('20000001')
     asyncio.run(run())
+
+
+def test_auto_provision_persists_distinct_initial_passwords_and_preserves_changes(auth):
+    service,_,teams=auth
+    async def run():
+        created=await service.ensure_accounts(['20000001','20000002','20000001'])
+        assert len(created)==2
+        first=await service.credentials('20000001');second=await service.credentials('20000002')
+        assert first['username']=='20000001' and first['password']!=second['password']
+        assert len(first['password'])>=20 and first['password'] not in service.path.read_text()
+        assert service.path.stat().st_mode & 0o777==0o600
+        assert 'password' not in created[0] and 'initial_key' not in repr(service.list_accounts())
+        restored=WebAccounts(service.path,teams)
+        assert await restored.credentials('20000001')==first
+        token=await service.login(first['username'],first['password'],'one')
+        await service.change_password(token,first['password'],'MyChangedPass9')
+        await service.update(created[1]['id'],dict(action='disable'))
+        before=service.path.read_bytes()
+        teams.return_value=['b队','c队']
+        assert await service.ensure_accounts(['20000001','20000002'])==[]
+        assert service.path.read_bytes()==before
+        assert (await service.credentials('20000001'))['password'] is None
+        assert (await service.credentials('20000002'))['enabled'] is False
+        assert await service.login('20000001','MyChangedPass9','two')
+        with pytest.raises(WebAuthError):await service.login('20000002',second['password'],'three')
+        teams.return_value=[]
+        with pytest.raises(WebAuthError):await service.credentials('20000001')
+        assert await service.ensure_accounts(['20000003'])==[]
+    asyncio.run(run())
+
+
+def test_auto_provision_legacy_accounts_collisions_and_atomic_failure(auth,monkeypatch):
+    service,_,teams=auth
+    async def run():
+        legacy=await service.create('20000002','LegacyPass8','20000001')
+        data=json.loads(service.path.read_text());data.pop('initial_key')
+        service.path.write_text(json.dumps(data))
+        restored=WebAccounts(service.path,teams)
+        assert await restored.login('20000002','LegacyPass8','legacy')
+        made=await restored.ensure_accounts(['20000001','20000002','7'])
+        assert {a['username'] for a in made}=={'qq_20000002','qq_7'}
+        assert restored.accounts[legacy['id']]['hash']==service.accounts[legacy['id']]['hash']
+        before=restored.path.read_bytes();accounts=restored.list_accounts()
+        def fail():raise OSError('disk full')
+        monkeypatch.setattr(restored,'save',fail)
+        with pytest.raises(OSError):await restored.ensure_accounts(['20000003','20000004'])
+        assert restored.path.read_bytes()==before and restored.list_accounts()==accounts
+        with pytest.raises(WebAuthError):await restored.ensure_accounts(['bad'])
+        restored.close()
+        with pytest.raises(WebAuthError):await restored.ensure_accounts(['20000005'])
+    asyncio.run(run())
+
+
+def test_auto_initial_key_must_be_present_and_valid(auth):
+    service,_,teams=auth
+    asyncio.run(service.ensure_accounts(['20000001']))
+    data=json.loads(service.path.read_text());data.pop('initial_key')
+    service.path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):WebAccounts(service.path,teams)
+    data['initial_key']='invalid';service.path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):WebAccounts(service.path,teams)

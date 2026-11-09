@@ -62,7 +62,7 @@ def site(tmp_path,monkeypatch):
     async def cloud_list(start,end,team,*args,**kwargs):
         rows=[r for r in clouds.values() if team.upper() in {r['team_a'].upper(),r['team_b'].upper()}]
         return dict(total=len(rows),records=copy.deepcopy(rows))
-    db=SimpleNamespace(get_admin_teams=AsyncMock(side_effect=lambda qq:list(roles.get(qq,[]))),get_all_teams=AsyncMock(return_value=['a队','c队']),
+    db=SimpleNamespace(get_team_admin_qqs=AsyncMock(side_effect=lambda:list(roles)),get_admin_teams=AsyncMock(side_effect=lambda qq:list(roles.get(qq,[]))),get_all_teams=AsyncMock(return_value=['a队','c队']),
         get_dispatch_admin_teams=AsyncMock(return_value=['a队','c队']),get_team_admins=AsyncMock(return_value=['20000001','20000002']),
         get_webui_local_reports=AsyncMock(side_effect=local_list),get_webui_local_reports_by_ids=AsyncMock(side_effect=local_ids),
         get_cloud_reports=AsyncMock(side_effect=cloud_list),get_cloud_reports_by_ids=AsyncMock(side_effect=lambda ids:[copy.deepcopy(r) for rid,r in clouds.items() if rid in ids]),
@@ -108,10 +108,13 @@ def test_scoped_login_all_api_boundaries_and_account_management_are_server_enfor
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
             master={'Authorization':'Bearer test-master'}
             response=await client.post('/api/plug/astrbot_plugin_battle_report/comparison/accounts',headers=master,
-                json=dict(username='team_a',password='InitialPass8',qq='20000001'))
+                json=dict(action='sync'))
             assert response.status_code==200,response.text
-            aid=response.json()['id']
-            response=await client.post('/battle-report/auth/login',json=dict(username='team_a',password='InitialPass8'))
+            assert response.json()['created']==3
+            aid=next(a['id'] for a in response.json()['accounts'] if a['qq']=='20000001')
+            initial=await client.post('/api/plug/astrbot_plugin_battle_report/comparison/accounts/'+aid,headers=master,json=dict(action='initial'))
+            assert initial.status_code==200
+            response=await client.post('/battle-report/auth/login',json=dict(username='20000001',password=initial.json()['password']))
             assert response.status_code==200
             token=response.json()['data']['token'];headers={'Authorization':'Bearer '+token}
             assert 'httponly' in response.headers['set-cookie'].lower() and 'path=/battle-report' in response.headers['set-cookie'].lower()
@@ -228,5 +231,29 @@ def test_https_reverse_proxy_session_cookie_remains_secure(site):
             response=await client.post('/battle-report/auth/code-login',headers={'X-Forwarded-Proto':'https'},json={'code':code})
             assert response.status_code==200
             assert 'secure' in response.headers['set-cookie'].lower()
+        await site.close()
+    asyncio.run(run())
+
+
+def test_root_sync_preserves_credentials_and_initial_password_is_not_public(site):
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='http://test') as client:
+            root='/api/plug/astrbot_plugin_battle_report/comparison/accounts';master={'Authorization':'Bearer test-master'}
+            response=await client.post(root,headers=master,json=dict(username='manual',qq='20000001',password='InitialPass8'))
+            assert response.status_code==400
+            response=await client.post(root,headers=master,json=dict(action='sync'))
+            account=next(a for a in response.json()['accounts'] if a['qq']=='20000001')
+            initial=await client.post(root+'/'+account['id'],headers=master,json=dict(action='initial'))
+            secret=initial.json()['password']
+            assert secret and secret not in (await client.get(root,headers=master)).text
+            token=await team_login(site,client)
+            for path in ['/battle-report/api/comparison/accounts/'+account['id'],root+'/'+account['id']]:
+                response=await client.post(path,headers={'Authorization':'Bearer '+token},json=dict(action='initial'))
+                assert response.status_code in (401,403) and secret not in response.text
+            assert (await client.post(root+'/'+account['id'],headers=master,json=dict(action='reset',password='ChangedPass9'))).status_code==200
+            assert (await client.post(root,headers=master,json=dict(action='sync'))).json()['created']==0
+            assert (await client.post(root+'/'+account['id'],headers=master,json=dict(action='initial'))).json()['password'] is None
+            assert (await client.post(root+'/'+account['id'],headers=master,json=dict(action='delete'))).status_code==400
+            assert await site.ui.auth.login('20000001','ChangedPass9','check')
         await site.close()
     asyncio.run(run())

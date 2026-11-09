@@ -29,7 +29,7 @@ function legacyCopy(text) {
     if(selection){selection.removeAllRanges();for(const range of ranges)selection.addRange(range);}
   }
 }
-function copyButton(text) {
+function copyButton(text, subject='战报全文') {
   const button = node('button','复制全文','secondary copy-report'); button.type='button';
   button.addEventListener('click',async()=>{
     try {
@@ -38,9 +38,9 @@ function copyButton(text) {
         if(!navigator.clipboard?.writeText)throw new Error('clipboard unavailable');
         await navigator.clipboard.writeText(text);
       }
-      button.textContent='已复制'; button.setAttribute('aria-label','已复制战报全文');
+      button.textContent='已复制'; button.setAttribute('aria-label','已复制'+subject);
     } catch {
-      button.textContent='复制失败'; button.setAttribute('aria-label','复制战报全文失败');
+      button.textContent='复制失败'; button.setAttribute('aria-label','复制'+subject+'失败');
       notice('浏览器阻止了复制，请允许剪贴板访问后重试。');
     }
   });
@@ -445,7 +445,7 @@ async function confirmDispatch(retry=false){
 $('dispatch-confirm').addEventListener('click',()=>confirmDispatch());$('dispatch-retry').addEventListener('click',()=>confirmDispatch(true));
 $('dispatch-stop').addEventListener('click',async()=>{try{renderDispatch(await bridge.apiPost(`comparison/dispatch/${dispatchId}/cancel`,{}));clearTimeout(dispatchTimer);}catch(e){dispatchNotice(e.message);}});
 
-let resetAccountId='';
+let resetAccountId='',accountsGeneration=0;
 function accountsNotice(text=''){$('accounts-notice').textContent=text;$('accounts-notice').hidden=!text;}
 async function loadAccounts(){
   const data=await bridge.apiGet('comparison/accounts');
@@ -453,13 +453,22 @@ async function loadAccounts(){
     const row=node('article',null,'account-row'),identity=node('div');
     identity.append(node('strong',account.username),node('span',`QQ ${account.qq} · ${account.enabled?'密码登录已启用':'密码登录已停用'}`,'hint'));
     const buttons=node('div',null,'account-actions');
-    for(const [action,label] of [['reset','重置密码'],[account.enabled?'disable':'enable',account.enabled?'停用密码':'启用密码'],['delete','删除']]){
+    for(const [action,label] of [...(account.initial_password?[['initial','查看初始密码']]:[]),['reset','重置密码'],[account.enabled?'disable':'enable',account.enabled?'停用密码':'启用密码']]){
       const button=node('button',label,'secondary');button.type='button';
       button.addEventListener('click',async()=>{
         if(action==='reset'){resetAccountId=account.id;$('account-reset-title').textContent=`重置 ${account.username} 的密码`;$('account-reset').hidden=false;$('account-reset-password').focus();return;}
-        if(action==='delete' && button.dataset.confirm!=='yes'){button.dataset.confirm='yes';button.textContent='确认删除';return;}
-        button.disabled=true;accountsNotice();
-        try{await bridge.apiPost(`comparison/accounts/${account.id}`,{action});await loadAccounts();}
+        button.disabled=true;accountsNotice();const generation=accountsGeneration;
+        try{
+          const result=await bridge.apiPost(`comparison/accounts/${account.id}`,{action});
+          if(action==='initial'){
+            if(generation!==accountsGeneration || !$('accounts-dialog').open)return;
+            const box=$('account-initial');box.replaceChildren(node('p',`账号：${result.username}`));box.hidden=false;
+            if(result.password){
+              box.append(node('p',`初始密码：${result.password}`));
+              const copy=copyButton(`账号：${result.username}\n初始密码：${result.password}`,'账号密码');copy.textContent='复制账号密码';box.append(copy);
+            }else box.append(node('p','密码已修改，初始密码不再可用。'));
+          }else{$('account-initial').replaceChildren();$('account-initial').hidden=true;await loadAccounts();}
+        }
         catch(error){accountsNotice(error.message);button.disabled=false;}
       });buttons.append(button);
     }
@@ -470,16 +479,21 @@ $('accounts-open').addEventListener('click',async()=>{
   $('accounts-dialog').showModal();accountsNotice();
   try{await loadAccounts();}catch(error){accountsNotice(error.message);}
 });
-$('accounts-close').addEventListener('click',()=>{$('accounts-dialog').close();$('account-password').value='';$('account-reset-password').value='';});
-$('accounts-dialog').addEventListener('close',()=>{$('account-password').value='';$('account-reset-password').value='';});
-$('account-create').addEventListener('submit',async event=>{
-  event.preventDefault();const button=event.submitter;button.disabled=true;accountsNotice();
-  try{await bridge.apiPost('comparison/accounts',{username:$('account-username').value.trim(),qq:$('account-qq').value.trim(),password:$('account-password').value});$('account-password').value='';await loadAccounts();accountsNotice('密码账号已创建。');}
+function clearAccountSecrets(){
+  accountsGeneration++;
+  $('account-initial').replaceChildren();$('account-initial').hidden=true;
+  $('account-reset-password').value='';$('account-reset').hidden=true;resetAccountId='';
+}
+$('accounts-close').addEventListener('click',()=>{$('accounts-dialog').close();clearAccountSecrets();});
+$('accounts-dialog').addEventListener('close',clearAccountSecrets);
+$('accounts-sync').addEventListener('click',async()=>{
+  const button=$('accounts-sync');button.disabled=true;accountsNotice();clearAccountSecrets();
+  try{const result=await bridge.apiPost('comparison/accounts',{action:'sync'});await loadAccounts();accountsNotice(`账号已同步，新增 ${result.created} 个；已有密码保持不变。`);}
   catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
 });
 $('account-reset').addEventListener('submit',async event=>{
   event.preventDefault();const button=event.submitter;button.disabled=true;accountsNotice();
-  try{await bridge.apiPost(`comparison/accounts/${resetAccountId}`,{action:'reset',password:$('account-reset-password').value});$('account-reset-password').value='';$('account-reset').hidden=true;accountsNotice('密码已重置，原密码会话已失效。');}
+  try{await bridge.apiPost(`comparison/accounts/${resetAccountId}`,{action:'reset',password:$('account-reset-password').value});$('account-reset-password').value='';$('account-reset').hidden=true;clearAccountSecrets();await loadAccounts();accountsNotice('密码已重置，原密码会话已失效。');}
   catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
 });
 function clearSession(){
@@ -488,7 +502,8 @@ function clearSession(){
   running=false;comparisonLoading=false;dispatchRunning=false;dbReady=false;selection.clear();
   for(const id of ['library-records','records','site-detail','local-detail','dispatch-preview','dispatch-results','accounts-list'])$(id).replaceChildren();
   for(const id of ['detail','dispatch-dialog','accounts-dialog'])if($(id).open)$(id).close();
-  for(const id of ['account-username','account-qq','account-password','account-reset-password','team','site-team'])$(id).value='';
+  clearAccountSecrets();
+  for(const id of ['team','site-team'])$(id).value='';
   $('accounts-open').hidden=true;$('download').disabled=true;selectionChanged();setRunning(false);syncSidePaging();
 }
 async function initializePage(){

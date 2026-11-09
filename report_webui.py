@@ -265,6 +265,11 @@ class ComparisonWebUI:
             raise WebAuthError('插件数据库尚未连接。',503)
         return await self.plugin.db.get_admin_teams(qq)
 
+    async def sync_accounts(self, qqs=None):
+        self.require_db()
+        if qqs is None:qqs=await self.plugin.db.get_team_admin_qqs()
+        return await self.require_auth().ensure_accounts(qqs)
+
     async def scope(self):
         actor=self.team_actor.get()
         if actor is None:return None
@@ -415,7 +420,7 @@ class ComparisonWebUI:
                      ('dispatch/prepare', self.dispatch_prepare, ['POST']), ('dispatch/<batch_id>', self.dispatch_get, ['GET']),
                      ('dispatch/<batch_id>/send', self.dispatch_send, ['POST']),
                      ('dispatch/<batch_id>/cancel', self.dispatch_cancel, ['POST']),
-                     ('accounts',self.accounts,['GET']),('accounts',self.account_create,['POST']),
+                     ('accounts',self.accounts,['GET']),('accounts',self.account_sync,['POST']),
                      ('accounts/<account_id>',self.account_update,['POST'])]
 
     def register(self):
@@ -613,12 +618,14 @@ class ComparisonWebUI:
             return dict(accounts=self.require_auth().list_accounts())
         return await self.respond(handle)
 
-    async def account_create(self):
+    async def account_sync(self):
         async def handle(request):
             self.require_master()
             payload=await request.json(default={})
-            if not isinstance(payload,dict):raise ComparisonError('账号参数无效。')
-            return await self.require_auth().create(payload.get('username'),payload.get('password'),payload.get('qq'))
+            if not isinstance(payload,dict) or payload!={'action':'sync'}:
+                raise ComparisonError('账号随战队管理员自动创建，请使用同步操作。')
+            created=await self.sync_accounts()
+            return dict(created=len(created),accounts=self.require_auth().list_accounts())
         return await self.respond(handle)
 
     async def account_update(self,account_id):
@@ -626,6 +633,13 @@ class ComparisonWebUI:
             self.require_master()
             payload=await request.json(default={})
             if not isinstance(payload,dict):raise ComparisonError('账号参数无效。')
+            if payload.get('action')=='initial':
+                auth=self.require_auth()
+                account=auth.accounts.get(account_id)
+                if account is None:raise ComparisonError('找不到该密码账号。')
+                return await auth.credentials(account['qq'])
+            if payload.get('action')=='delete':
+                raise ComparisonError('账号随管理员名单自动创建，请停用密码登录或撤销战队管理员授权。')
             await self.require_auth().update(account_id,payload)
             return dict(updated=True)
         return await self.respond(handle)

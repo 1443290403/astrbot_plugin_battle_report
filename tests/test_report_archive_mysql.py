@@ -116,6 +116,7 @@ def test_web_admin_team_lookup_is_qq_scoped_and_follows_revocation():
     async def check(db):
         await db.set_team_admins('a队',['20000001','20000003'])
         await db.set_team_admins('c队',['20000002','20000003'])
+        assert await db.get_team_admin_qqs()==['20000001','20000002','20000003']
         assert await db.get_admin_teams('20000001')==['a队']
         assert set(await db.get_admin_teams('20000003'))=={'a队','c队'}
         assert await db.get_admin_teams("20000001' OR 1=1 --")==[]
@@ -123,4 +124,5 @@ def test_web_admin_team_lookup_is_qq_scoped_and_follows_revocation():
         assert await db.get_admin_teams('20000003')==['c队']
         await db.set_team_admins('c队',['20000002'])
         assert await db.get_admin_teams('20000003')==[]
+        assert await db.get_team_admin_qqs()==['20000001','20000002']
     run_db(check)

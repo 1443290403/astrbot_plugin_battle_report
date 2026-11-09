@@ -245,7 +245,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.31.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.31.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -300,7 +300,7 @@ class BattleReportPlugin(Star):
         if getattr(event,'get_platform_name',lambda:'')()!='aiocqhttp':
             return
         if event.get_group_id():
-            yield event.plain_result('请私聊机器人使用 /战报登录 获取登录码喵。')
+            yield event.plain_result('请私聊机器人使用 /战报登录 获取账号和登录码喵。')
             return
         ui=getattr(self,'_comparison_webui',None)
         if ui is None or ui.auth is None:
@@ -308,7 +308,8 @@ class BattleReportPlugin(Star):
             return
         try:
             from .web_accounts import WebAuthError
-            code=await ui.auth.issue_code(str(event.get_sender_id()))
+            qq=str(event.get_sender_id())
+            code=await ui.auth.issue_code(qq)
         except WebAuthError as exc:
             message=str(exc)
             yield event.plain_result(message if '喵' in message else message.rstrip('。')+'喵。')
@@ -317,9 +318,23 @@ class BattleReportPlugin(Star):
             logger.exception('战报登录码生成失败')
             yield event.plain_result('登录码暂时无法生成，请稍后重试喵。')
             return
+        account_text=''
+        try:
+            await ui.auth.ensure_accounts([qq])
+            account=await ui.auth.credentials(qq)
+            account_text='\n登录账号：'+account['username']
+            if not account['enabled']:
+                account_text+='\n密码登录已停用，仍可使用QQ登录码喵。'
+            elif account['password']:
+                account_text+='\n初始密码：'+account['password']+'\n登录后可修改密码喵。'
+            else:
+                account_text+='\n密码已修改，请使用现有密码喵。'
+        except Exception:
+            logger.exception('战报密码账号同步失败，QQ登录码仍可使用')
+            account_text='\n密码账号暂未同步，可先使用QQ登录码喵。'
         event.stop_event()
         await event.send(event.plain_result('战报登录码：\n'+code+
-            '\n在网页选择“QQ登录码”登录，5分钟内有效、限用一次喵。'))
+            '\n在网页选择“QQ登录码”登录，5分钟内有效、限用一次喵。'+account_text))
 
     def _command_allowed(self, event, command):
         platform = getattr(event, 'get_platform_name', lambda: '')()
@@ -372,6 +387,11 @@ class BattleReportPlugin(Star):
         except Exception as e:
             logger.error(f"战报插件数据库连接失败: {e}")
             self.db_ready = False
+        if self.db_ready and getattr(self,'_comparison_webui',None):
+            try:
+                await self._comparison_webui.sync_accounts()
+            except Exception:
+                logger.exception('战队管理员账号自动同步失败，可私聊 /战报登录 重试')
         try:
             self._get_waiting_queues()
             self._waiting_task = asyncio.create_task(self._waiting_loop())
@@ -1135,7 +1155,16 @@ class BattleReportPlugin(Star):
             yield event.plain_result(f"❌ {e}")
             return
         await self.db.set_team_admins(home, qqs)
-        yield event.plain_result(f"✅ {home} 的战队管理员已设为 {'、'.join(dict.fromkeys(qqs))} 喵～")
+        message=f"✅ {home} 的战队管理员已设为 {'、'.join(dict.fromkeys(qqs))} 喵～"
+        try:
+            ui=getattr(self,'_comparison_webui',None)
+            if ui is None:raise RuntimeError('战报网页登录未初始化')
+            await ui.sync_accounts(qqs)
+            message+='\n网页账号已自动配置，管理员本人私聊 /战报登录 获取账号和初始密码喵。'
+        except Exception:
+            logger.exception('管理员授权已保存，网页账号自动配置失败')
+            message+='\n管理员授权已保存，网页账号暂未同步，请稍后重试喵。'
+        yield event.plain_result(message)
 
     @filter.command("移除战队管理员", alias={"/移除战队管理员"})
     async def remove_team_admin(self, event: AstrMessageEvent):

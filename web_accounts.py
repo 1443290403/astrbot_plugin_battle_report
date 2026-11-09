@@ -1,5 +1,6 @@
 """Team-only web credentials; never issue or accept AstrBot dashboard JWTs."""
 import asyncio
+import base64
 from collections import OrderedDict
 import copy
 import hashlib
@@ -13,7 +14,7 @@ import tempfile
 import time
 from uuid import uuid4
 
-QQ = re.compile(r'[1-9][0-9]{4,11}')
+QQ = re.compile(r'[1-9][0-9]{0,19}')
 USERNAME = re.compile(r'[A-Za-z0-9_.-]{3,32}')
 ITERATIONS = 600_000
 SESSION_TTL = 8 * 3600
@@ -58,6 +59,7 @@ class WebAccounts:
         self.clock = clock
         self.closed = False
         self.accounts = {}
+        self.initial_key = secrets.token_hex(32)
         self.sessions = OrderedDict()
         self.codes = {}
         self.code_issued_at = {}
@@ -72,12 +74,19 @@ class WebAccounts:
             data = json.loads(self.path.read_text('utf-8'))
             if not isinstance(data,dict) or type(data.get('version')) is not int or data['version']!=1 or not isinstance(data.get('accounts'),dict):
                 raise ValueError('网页账号存档格式错误')
+            key = data.get('initial_key')
+            if key is not None:
+                if not isinstance(key,str) or not re.fullmatch(r'[0-9a-f]{64}',key):
+                    raise ValueError('网页初始凭据密钥格式错误')
+                self.initial_key = key
             names,qqs = set(),set()
             for aid,a in data['accounts'].items():
                 if (not re.fullmatch(r'[0-9a-f]{32}',aid) or not isinstance(a,dict)
                         or a.get('id')!=aid or not USERNAME.fullmatch(str(a.get('username','')))
                         or not QQ.fullmatch(str(a.get('qq',''))) or type(a.get('enabled')) is not bool
                         or not valid_hash(a.get('hash')) or not re.fullmatch(r'[0-9a-f]{32}',str(a.get('revision','')))
+                        or type(a.get('initial_password',False)) is not bool
+                        or (a.get('initial_password') and key is None)
                         or a['username'].lower() in names or a['qq'] in qqs):
                     raise ValueError('网页账号存档格式错误')
                 names.add(a['username'].lower());qqs.add(a['qq'])
@@ -91,7 +100,7 @@ class WebAccounts:
         fd,name = tempfile.mkstemp(prefix='.web-accounts-',dir=self.path.parent)
         try:
             with os.fdopen(fd,'w',encoding='utf-8') as stream:
-                json.dump(dict(version=1,accounts=self.accounts),stream,ensure_ascii=False,allow_nan=False)
+                json.dump(dict(version=1,initial_key=self.initial_key,accounts=self.accounts),stream,ensure_ascii=False,allow_nan=False)
                 stream.flush();os.fsync(stream.fileno())
             os.chmod(name,0o600)
             os.replace(name,self.path)
@@ -100,11 +109,63 @@ class WebAccounts:
 
     @staticmethod
     def public_account(a):
-        return {k:a.get(k) for k in ('id','username','qq','enabled','created_at')}
+        return {**{k:a.get(k) for k in ('id','username','qq','enabled','created_at')},
+                'initial_password':bool(a.get('initial_password'))}
 
     def list_accounts(self):
         self.require_open()
         return [self.public_account(a) for a in sorted(self.accounts.values(),key=lambda a:a['username'].lower())]
+
+    def _initial_password(self, aid):
+        # The installation key is a secret: it recovers only unchanged initial passwords.
+        digest=hmac.new(bytes.fromhex(self.initial_key),('battle-report-initial:'+aid).encode(),hashlib.sha256).digest()
+        return 'Br!'+base64.urlsafe_b64encode(digest[:18]).decode()
+
+    async def ensure_accounts(self, qqs):
+        """Provision missing administrators atomically, preserving all existing credentials."""
+        self.require_open()
+        qqs=list(dict.fromkeys(str(qq).strip() for qq in qqs))
+        if any(not QQ.fullmatch(qq) for qq in qqs):raise WebAuthError('管理员QQ号无效。')
+        async with self.lock:
+            before=self.accounts
+            accounts=copy.deepcopy(before)
+            created=[]
+            names={a['username'].lower() for a in accounts.values()}
+            known={a['qq'] for a in accounts.values()}
+            for qq in qqs:
+                if qq in known:continue
+                if not await self.teams(qq):continue
+                if len(accounts)>=1000:raise WebAuthError('密码账号数量已达上限。')
+                username=qq if len(qq)>=3 else 'qq_'+qq
+                if username.lower() in names:
+                    username='qq_'+qq
+                    suffix=1
+                    while username.lower() in names:
+                        username=f'qq_{qq}_{suffix}';suffix+=1
+                aid=uuid4().hex
+                async with self.hash_slots:
+                    hashed=await asyncio.to_thread(password_hash,self._initial_password(aid))
+                account=dict(id=aid,username=username,qq=qq,enabled=True,hash=hashed,
+                    revision=uuid4().hex,created_at=self.clock(),initial_password=True)
+                accounts[aid]=account;known.add(qq);names.add(username.lower())
+                created.append(self.public_account(account))
+            self.require_open()
+            if created:
+                self.accounts=accounts
+                try:self.save()
+                except BaseException:
+                    self.accounts=before;raise
+            return created
+
+    async def credentials(self, qq):
+        """For a verified QQ owner or core administrator, never for public account lists."""
+        self.require_open()
+        await self.allowed_teams(qq)
+        self.require_open()
+        account=next((a for a in self.accounts.values() if a['qq']==qq),None)
+        if account is None:raise WebAuthError('密码账号尚未同步，请稍后重试。',503)
+        return dict(username=account['username'],enabled=account['enabled'],
+                    password=self._initial_password(account['id']) if account.get('initial_password') else None)
 
     async def create(self, username, password, qq):
         self.require_open()
@@ -150,7 +211,9 @@ class WebAccounts:
             else:
                 account=self.accounts[aid]
                 account['revision']=uuid4().hex
-                if action=='reset':account['hash']=hashed
+                if action=='reset':
+                    account['hash']=hashed
+                    account['initial_password']=False
                 else:account['enabled']=action=='enable'
             try:self.save()
             except BaseException:
@@ -255,7 +318,7 @@ class WebAccounts:
         await self.authenticate(token)
         session=self.sessions[token_key(token)]
         aid=session['account_id']
-        if not aid:raise WebAuthError('QQ登录码账号请联系后台管理员设置密码账号。')
+        if not aid:raise WebAuthError('请使用自动创建的账号密码登录后修改密码。')
         async with self.hash_slots:
             matched=await asyncio.to_thread(password_matches,self.accounts[aid]['hash'],old_password)
         if not matched:raise WebAuthError('原密码错误。',403)
