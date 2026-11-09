@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.33.2
+最新版本：v1.34.0
 
-- 文件：astrbot_plugin_battle_report-1.33.2.zip
-- 源码提交：a123b55eee8f2ce4f8b2d4ad50cf504f53884d2d
+- 文件：astrbot_plugin_battle_report-1.34.0.zip
+- 源码提交：833e46d19dc98f4c64b5c20c9953b42f66f58c32
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：670936ac3d7a3599a3fa5a6eeae239329fe0afe8ca7c64946783af04c1fa81fe
+- SHA256：8965d1982e073a5a045c745e36619e10a45b23241255b6145063badb8fa2d2cb
 
 旧版本安装包保留，按文件名选择。
 
@@ -276,3 +276,14 @@ v1.33.0：战队密码／QQ码登录后的会话固定7天，仅保存令牌摘�
 - [独立站可选静态资源](battle-report-web-1.33.2.zip)（不能当AstrBot插件安装）
 - [网页登录指南](TEAM_WEB_LOGIN_GUIDE-1.33.2.md)
 - [部署指南](STANDALONE_WEBUI_GUIDE-1.33.2.md)
+
+## v1.34.0 每日友谊胜场检查
+
+WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日期和对手统计双方各最多3胜，3:3正常，第4胜起显示超出数量。默认仅看超限，可看全部；全月汇总后分页、容器侧栏翻页、对应原文分页及全文复制。只统计当前战队跨群本地友谊整场，踢馆和云端归档不混入，未知／不符记录单独提示；战队登录只可检查当前负责战队。检查不修改战报或积分，schema21保持。
+
+1459项默认回归、11项隔离MySQL检查及真实AstrBot SDK／独立入口浏览器验证通过，覆盖桌面与手机、明细分页／实际复制、空结果／错误及异步清理。
+
+- [独立站可选静态资源](battle-report-web-1.34.0.zip)（不能当AstrBot插件安装）
+- [战报与友谊检查使用指南](REPORT_COMPARISON_GUIDE-1.34.0.md)
+- [网页登录指南](TEAM_WEB_LOGIN_GUIDE-1.34.0.md)
+- [部署指南](STANDALONE_WEBUI_GUIDE-1.34.0.md)
