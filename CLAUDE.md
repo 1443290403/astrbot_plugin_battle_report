@@ -281,3 +281,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 
 - 两侧箭头按当前Tab代理原分页按钮，不复制页码/范围逻辑。syncSidePaging共用底部边界、当前数据与加载状态，比较加载按sequence在finally释放；切Tab/加载/失败也同步，无数据及首末页禁用相应方向。手机预留边缘空隙，不遮正文。
 - 验证三Tab路由、跨页勾选、首末/单页、固定滚动位置和手机边界；不改数据库/QQ接口/框架iframe权限。
+
+
+## v1.29.4 容器外侧分页与页码栏
+
+- 覆盖v1.29.3的浏览器边缘定位：report-layout grid为左右轨道留位，rail-controls在容器内sticky，控件不得遮正文或回到viewport两边。右轨道按页码列/下一页箭头排列。
+- 页码列原生滚动，最多10行，低屏进一步限高；滚动边界隔离正文。pagingState以当前响应的total/offset/limit派生页码，jumpToPage走原查询加载，syncSidePaging统一同步禁用/高亮/作用域；切范围重建页码但不清选择篮。当前页可见只调整页码列scrollTop，禁止scrollIntoView拖动全文。
+- 验证超过10页的真实滚轮和直跳、当前页、宽屏容器相对位置、切Tab/恢复数据、跨页选择及手机不遮正文。数据库/QQ接口不变。

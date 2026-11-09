@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.29.3`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.29.4`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -431,7 +431,7 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **云端归档与批量 QQ 发送（v1.29.0，覆盖上述 v1.28 仅 SELECT 范围）：** 全部分页校验通过后，事务 UPSERT 独立 `cloud_battle_reports`（schema v21）。正整数网站 ID 主键，原文/解析快照/日期/来源/首次及最近抓取时间持久化，同 ID 更新不重复插入；整批失败回滚，不发布残缺差异，不改 matches/duels/统计/指纹。归档不随最近20次任务淘汰，网站未再检出的旧记录不自动删除。旧 JSON 历史未归档的云端记录须重新拉取。
 
-WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）、云端归档（第三位）。页面左右两侧固定上一页/下一页按钮，按当前Tab代理原底部分页按钮，不另算页码/筛选/勾选；渲染与切Tab同步状态，加载、无结果和首末边界禁用相应方向。comparisonLoading按最新请求sequence释放，不能让旧响应提前解锁；手机预留边缘空隙，按钮固定在iframe视口中线、不覆盖正文。本地/云端列表以全文卡片呈现，核对两侧也直接显示完整正文，仍保留单独原文对照弹窗。列表与弹窗共用复制函数，复制原始body，不拼入页面元信息、不压缩空白、不解析HTML；优先在点击回调同步创建只读textarea并execCommand(copy)，放入当前打开dialog或body以兼容焦点限制和opaque sandbox/HTTP。清理临时字段、恢复焦点及选择；失败后尝试Clipboard API，全部失败显示明确失败，不能显示假成功。复制不修改iframe权限、后台数据或原文。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
+WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）、云端归档（第三位）。战报视图外层用grid预留左右控件轨道，箭头贴容器外侧、轨道内sticky随滚动停靠，不再position:fixed于浏览器边缘。箭头按当前Tab代理原底部分页，右箭头左侧为原生纵向滚动页码栏；最多同时显示10行（低屏按可用高度缩短），overscroll-behavior隔离正文滚动。pagingState共用当前响应total/limit/offset，点击页码按原查询范围重载对应页，当前页aria-current高亮，保留跨页勾选；只调整页码栏自身scrollTop确保当前页可见，不调用全页scrollIntoView。加载禁用页码与方向，空结果隐藏页码、首末方向禁用；切Tab/类别/范围同步更新，comparisonLoading按最新sequence释放，旧响应不得提前解锁。手机grid缩窄轨道，控件在正文外，不靠覆盖正文腾位置。本地/云端列表以全文卡片呈现，核对两侧也直接显示完整正文，仍保留单独原文对照弹窗。列表与弹窗共用复制函数，复制原始body，不拼入页面元信息、不压缩空白、不解析HTML；优先在点击回调同步创建只读textarea并execCommand(copy)，放入当前打开dialog或body以兼容焦点限制和opaque sandbox/HTTP。清理临时字段、恢复焦点及选择；失败后尝试Clipboard API，全部失败显示明确失败，不能显示假成功。复制不修改iframe权限、后台数据或原文。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
 
 每收件人/分包保存回执，只有 message_id 确认才标记成功；网络/超时/缺回执为 unknown，不自动重试。手动重试仅 failed/cancelled，跳过成功和 unknown；重启/卸载不自动重放，进行中标记未知、尚未发送标记中断。每次请求25秒，整批15分钟，预览30分钟有效、重试24小时内。最近20批快照原子存 data_dir/report_dispatches（活动批保留），按后台用户名隔离历史和操作；关闭先停发送和核对任务、再关DB，失败仍移除本实例路由。发送回执独立于 matches.export_sent，不自动改变人工外发标记。
 
@@ -831,7 +831,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，发送尝试前存档、失败和超时不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
-| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、两侧固定分页及混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
+| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、容器外侧分页/滚动页码直跳及混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1468,7 +1468,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.3")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.4")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1503,3 +1503,6 @@ v1.29.2 验证：1325 项默认回归通过、5 项跳过。使用真实 v4.27.3
 
 
 v1.29.3 验证：Node语法检查及真实v4.27.3 bridge/Web SDK的sandbox浏览器验证通过，覆盖固定箭头在本地/核对/云端Tab的分页路由、首页/末页/单页状态、滚动后固定位置、跨页勾选保留、390px边界及正文避让；原全文复制的实际粘贴、发送预览/模拟OneBot回执、文本安全及登录保护继续通过。本次仅调整WebUI，不涉及SQL或QQ接口变更。
+
+
+v1.29.4 验证：Node语法检查与真实v4.27.3 bridge/Web SDK的sandbox浏览器检查通过；366份样本分13页，验证页码栏显示高度上限、真实滚轮仅滚页码、直接跳第12/13页与当前页高亮、切Tab/恢复数据后的页码更新、首末边界及跨页勾选。2200px宽屏核验箭头与页码位于战报容器外侧，滚动停靠和390px手机边界通过；原全文复制实际粘贴、发送预览/模拟回执和登录保护继续通过。仅调整WebUI，不改数据库或QQ接口。

@@ -142,14 +142,59 @@ function drawRows(data) {
   $('page-label').textContent = `第 ${offset + 1}–${Math.min(offset + data.limit,data.total)} 项，共 ${data.total} 项`;
   $('prev').disabled = !offset; $('next').disabled = offset + data.limit >= data.total;
 }
+function pagingState() {
+  const comparison = view === 'comparison', data = comparison ? lastResult : libraryData;
+  const ready = comparison ? !comparisonLoading && data?.job.status === 'completed' : !!data;
+  const limit = data?.limit || 30, pages = Math.ceil((data?.total || 0) / limit);
+  return {comparison, data, ready, limit, pages, current:Math.floor((data?.offset || 0) / limit) + 1};
+}
+function jumpToPage(page) {
+  const state = pagingState();
+  if (!state.ready || page < 1 || page > state.pages || page === state.current) return;
+  if (state.comparison) {offset = (page-1)*state.limit; refresh();}
+  else {libraryOffset = (page-1)*state.limit; loadLibrary();}
+}
+function syncPageNumbers(state) {
+  const panel = $('page-numbers');
+  panel.setAttribute('aria-busy', String(!state.ready));
+  if (!state.ready) {for (const button of panel.children) button.disabled=true; return;}
+  panel.hidden = !state.pages;
+  const scope = state.comparison ? `${view}:${jobId}:${category}` : `${view}:${JSON.stringify(state.data.query)}:${$('local-kind').value}`;
+  if (panel.dataset.scope !== scope || panel.children.length !== state.pages) {
+    panel.dataset.scope = scope; panel.dataset.current = ''; panel.scrollTop=0;
+    const buttons=[];
+    for (let page=1;page<=state.pages;page++) {
+      const button=node('button',page,'page-number');button.type='button';
+      button.setAttribute('aria-label',`第 ${page} 页`);button.title=`第 ${page} 页`;
+      button.addEventListener('click',()=>jumpToPage(page));buttons.push(button);
+    }
+    panel.replaceChildren(...buttons);
+  }
+  for (const button of panel.children) {
+    button.disabled=false;
+    button.setAttribute('aria-controls',state.comparison?'records':'library-records');
+    if(Number(button.textContent)===state.current)button.setAttribute('aria-current','page');
+    else button.removeAttribute('aria-current');
+  }
+  if(panel.dataset.current!==String(state.current)) {
+    panel.dataset.current=state.current;
+    const active=panel.children[state.current-1];
+    if(active) {
+      // Scroll only the page-number column; keep the report's reading position.
+      const top=active.offsetTop, bottom=top+active.offsetHeight;
+      if(top<panel.scrollTop)panel.scrollTop=top;
+      else if(bottom>panel.scrollTop+panel.clientHeight)panel.scrollTop=bottom-panel.clientHeight;
+    }
+  }
+}
 function syncSidePaging() {
-  const comparison = view === 'comparison', prefix = comparison ? '' : 'library-';
-  const ready = comparison ? !comparisonLoading && lastResult?.job.status === 'completed' : !!libraryData;
+  const state=pagingState(), {comparison,ready}=state, prefix = comparison ? '' : 'library-';
   for (const direction of ['prev','next']) {
     const button = $(`side-${direction}`);
     button.disabled = !ready || $(`${prefix}pagination`).hidden || $(`${prefix}${direction}`).disabled;
     button.setAttribute('aria-controls', comparison ? 'records' : 'library-records');
   }
+  syncPageNumbers(state);
 }
 for (const direction of ['prev','next']) $('side-'+direction).addEventListener('click',()=>{
   // Reuse the current tab's existing pagination action and boundaries.
