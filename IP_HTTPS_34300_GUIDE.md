@@ -88,13 +88,18 @@ apt-get install -y python3 openssl nginx
 docker cp astrbot:/AstrBot/data/plugins/astrbot_plugin_battle_report/scripts/setup_report_https.py /tmp/setup_report_https.py
 ```
 
-输入现在访问 `http://公网IP:34300` 时使用的公网 IPv4 地址，只填IP，不加端口：
+先设置公网IP变量。下面 `203.0.113.10` 只是文档示例，请在执行前把单引号里的地址替换成你当前访问34300时使用的真实公网IP；保留变量名、等号和单引号，等号两侧不要加空格。
 
 ```bash
-read -r -p '请输入当前公网IPv4地址，不加端口: ' report_public_ip
+report_public_ip='203.0.113.10'
+printf '当前公网IP：%s\n' "$report_public_ip"
 ```
 
-证书签给**公网IP**，不要填写NAT内部IP、容器IP或127.0.0.1。保持当前SSH终端；如果重新连接，重新执行这条输入命令。
+执行后应直接显示你自己的IP，不会再弹出输入提示。只填纯IP，不加 `http://`、`https://`、端口或路径。
+
+旧教程的 `read -r -p '提示语' report_public_ip` 中，引号内只是提示语；执行后还需要在终端另行输入IP。若终端现在仍在等待输入，先按 **Ctrl+C**，再执行上面的直接赋值命令。
+
+证书签给**公网IP**，不要填写NAT内部IP、容器IP或127.0.0.1。保持当前SSH终端；如果重新连接，重新执行这段赋值命令。
 
 ## 四、生成证书，或复用已有证书
 

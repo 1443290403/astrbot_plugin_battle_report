@@ -6,13 +6,12 @@
 
 ## 1. 生成证书和配置
 
-宿主机需有 Python3、OpenSSL 和 Nginx。更新插件后，在服务器执行：
+宿主机需有 Python3、OpenSSL 和 Nginx。下面的 `203.0.113.10` 只是文档示例，执行前替换成你的真实公网IP；端口 `6185` 按实际Docker输出调整。变量赋值只改单引号内的值，不加协议或路径，等号两侧不要加空格。更新插件后，在服务器执行：
 
 ```bash
 docker cp astrbot:/AstrBot/data/plugins/astrbot_plugin_battle_report/scripts/setup_report_https.py /tmp/setup_report_https.py
-read -r -p '服务器公网IPv4地址: ' report_public_ip
-read -r -p 'AstrBot宿主机端口，默认6185: ' report_backend_port
-report_backend_port=${report_backend_port:-6185}
+report_public_ip='203.0.113.10'
+report_backend_port='6185'
 python3 /tmp/setup_report_https.py --ip "$report_public_ip" --output /opt/battle-report-https --https-port 8443 --upstream "http://127.0.0.1:$report_backend_port"
 ```
 
