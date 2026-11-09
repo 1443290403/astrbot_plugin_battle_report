@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.29.2
+最新版本：v1.29.3
 
-- 文件：astrbot_plugin_battle_report-1.29.2.zip
-- 源码提交：3e939fa6165a14634170321395829820130f6437
+- 文件：astrbot_plugin_battle_report-1.29.3.zip
+- 源码提交：741c19e66e0218256a2283d9230e33e8810fbe18
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：54f1cc1de6bd19251b3b222a060ab7717c153293ba21b4b9749e6e26e6c1b3d3
+- SHA256：89b78ca3f5caf65c46966a4eff88d0bbfce2c5d9634c18da0ef3039fbda81f16
 
 旧版本安装包保留，按文件名选择。
 
@@ -163,3 +163,9 @@ v1.29.1：修复动态轮次已由CustomFilter唤醒，但处理器误查is_at_o
 v1.29.2：本地战报首位且默认打开，战报核对第二、云端第三；本地/云端卡片和核对两侧直接展示完整正文。统一复制全文按钮，点击同步兼容受限iframe/HTTP并备选Clipboard API，保留全文换行和双空格，复制失败明确反馈。1325项默认回归通过、5项跳过；真实v4.27.3 bridge/Web SDK和AstrBot相同sandbox的Chromium验证已实际复制后粘贴逐字比对，另覆盖备选API/失败、跨页勾选、发送预览/模拟OneBot回执、手机/深色和文本安全。数据库及QQ命令不变。
 
 - [v1.29.2 战报 WebUI 使用说明](REPORT_COMPARISON_GUIDE-1.29.2.md)
+
+## WebUI 两侧固定分页
+
+v1.29.3：页面左右两侧增加固定上一页/下一页箭头，自动操作当前Tab的本地、核对或云端列表，保留底部分页与跨页勾选。首页/末页/加载中禁用相应方向，手机给边缘按钮留空。Node语法和真实v4.27.3 bridge/Web SDK sandbox浏览器检查通过，覆盖三Tab、边界、滚动位置、手机正文避让及原全文复制/模拟QQ发送流程。SQL和QQ接口不变。
+
+- [v1.29.3 战报 WebUI 使用说明](REPORT_COMPARISON_GUIDE-1.29.3.md)
