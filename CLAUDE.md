@@ -310,3 +310,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 本地/云端加载前不可先清空旧卡片，否则文档高度塌缩导致scrollY和sticky轨道跳动。保留旧节点至成功响应原子替换，旧节点inert/aria-busy且翻页禁用；最新sequence负责解除，失败清旧节点并明确错误。
 - 短列表/空结果保留视口最小高度，让sticky有足够停靠空间；右轨道固定页码/箭头两列，页码隐藏也不移动箭头。不保留永久旧长页高度，也不强行scrollIntoView或回写全页scrollY。
 - 测试需阻塞API，在请求过程中而非只看请求后测量rows/scrollY/轨道矩形；另测短页、单条、空数据和既有复制/发送。独立外部入口尚未实现，不能在文档中把反向代理示意说成可直接公开现有HTML。
+
+
+## v1.30.0 独立战报入口
+
+- 原Pages及bridge不改；scripts/export_report_webui.py只导出六个静态文件，输出必须位于插件目录外且新建或为空，目录0755/文件0644供Nginx读取，不导出数据库配置或凭据。
+- 独立适配只允许同源固定comparison API，使用原AstrBot管理员及2FA、内存JWT/后端HttpOnly Cookie；不把token写storage/URL、不允许公开HTTP登录。401重新登录后不得自动重放POST，退出后清空页面。
+- Nginx仅代理登录／退出和插件核对前缀。后端仍依赖AstrBot在线，不自开插件端口、不提供匿名API或独立战队账号，不把前端筛选描述为服务端授权。模板、导出器、独立指南及README/REQUIREMENTS同步。

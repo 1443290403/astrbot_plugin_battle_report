@@ -838,6 +838,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
+| **F-47** | 独立战报管理入口 | scripts/export_report_webui.py / webui_standalone / deployment | 原AstrBot管理员登录、可选2FA、同源HTTP适配与下载、401不重放、退出清理；无域名SSH／HTTPS模板 | M-09、F-44、F-45 | 只导出6个静态文件，不新增数据库或账号 |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1042,6 +1043,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改独立WebUI入口** | ① 静态导出与原Pages分离 ② 同源固定插件API、AstrBot原账号及可选2FA、401不重放POST、退出清UI ③ 内存JWT/可选HttpOnly Cookie、公开HTTP拒绝 ④ Nginx登录/退出/插件前缀白名单、SSH与HTTPS两模板 ⑤ 导出防覆盖/目录权限、真实Nginx浏览器验证、README/部署指南 | 不关闭插件鉴权、不导出凭据、不把筛选当战队授权、不自开插件服务端口 |
 | **改WebUI筛选/布局** | ① 本地/云端COUNT与分页ID前的筛选SQL、未知胜负口径 ② 核对任一侧命中保留整组、过滤后分页、统计/下载完整范围 ③ API参数校验与前端复位/作用域/异步序号 ④ 搜索/战报等宽、外置轨道、同排等高及固定滚动条槽位 ⑤ 实际MySQL和浏览器长短卡片/空数据/筛选计数/跳页/复制/发送回归 | 不只筛当前页，不把未知算负场，不把云端网站胜方替换为插件重算；控件不得再次占内容列，不动统计/提交指纹/人工发送标记 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
 | **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 默认本地Tab、全文列表/复制、opaque sandbox中实际粘贴核验/焦点恢复/失败反馈及手机布局，浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
@@ -1363,6 +1365,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 |---|---|
 | `test_report_dispatch.py` | 模拟 OneBot：准备不发送、确认幂等、typed text/双空格、分包/多收件人、跳过成功/unknown、管理员复核、官方连接拒绝、账号校验、深拷贝/过期、重启不重放、取消和落盘失败 |
 | `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围；胜负SQL的COUNT/页码/类型组合、未知/无关队排除和网站胜负列 |
+| `test_standalone_export.py` | 静态资源白名单、注入顺序、版本、保留嵌入页、Nginx可读权限、拒绝非空／文件／插件内与符号链接目标、允许空目录 |
 | `test_report_comparison_webui.py` | 抓取/归档/比较顺序与失败、鉴权/13路由/生命周期、服务端来源重读和忽略伪造正文；胜负/未知/非法值、核对筛选先于分页且保留整组、无重新抓取 |
 | `test_platform_policy.py`（v1.29.5新增） | partial/装饰器混合包装后的动态入口、完整注册名与模块前缀核验、循环包装终止；原权限目录和配置不变 |
 | `test_runtime_router_keeps_partial_bound_dynamic_round_when_allowed`（test_main.py） | 先安装平台过滤，再partial绑定与修改显示名，验证允许时路由保留并实际输出战报，禁止时仍静默且不读取群历史 |
@@ -1477,7 +1480,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.7")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.30.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1523,7 +1526,10 @@ v1.29.5 验证：1335项默认回归通过、5项跳过；新增10项处理器�
 v1.29.6 验证：1348项默认回归通过、6项跳过；隔离MySQL8.4的75项检查通过，含胜负筛选后的COUNT/分页/类型组合及未知/无关队排除。真实v4.27.3 bridge/Web SDK sandbox浏览器验证：搜索/战报X与宽度一致、长短全文同排卡片等高、非空到空结果的视口/搜索栏几何不变、三个Tab的胜负筛选/总数/页码及核对不重抓、13页直跳和容器外侧控件、390px/深色、实际复制粘贴、发送预览/模拟回执及匿名拒绝。未连接生产QQ/DB；无schema迁移。
 
 
-外部独立访问状态（v1.29.7）：当前仍只支持AstrBot授权Pages/bridge入口。独立登录/HTTP适配及多用户服务端战队权限未实现，不得仅公开HTML或关闭现有鉴权。只给本人复用后台登录与多人独立账号是不同权限方案，不能把前端队名筛选当作后端授权。
+外部独立访问（v1.30.0，F-47）：导出器在插件目录外的新建／空目录中原子生成index/app/style/standalone.js/standalone.css/VERSION六个静态文件，明确0755目录与0644文件以兼容非root Nginx，不导出后端／凭据。原Pages继续使用bridge；导出页前置同接口HTTP适配器，固定同源 `/api/plug/astrbot_plugin_battle_report/comparison/`，保留服务端鉴权。使用AstrBot登录／退出接口及明文原密码（仅HTTPS或回环SSH入口）、可选TOTP／恢复码；JWT只在内存，Cookie由AstrBot决定。登录过期弹出登录，不自动重放读写请求，尤其不得自动重发QQ发送POST；退出调用后端再刷新清UI。Nginx仅允许登录／退出及插件核对前缀，其余API拒绝，不在插件内监听新端口。提供SSH回环和HTTPS模板，独立账号与服务端战队授权未实现；前端筛选不是授权。具体部署见STANDALONE_WEBUI_GUIDE.md。
 
 
 v1.29.7 验证：Node语法及真实v4.27.3 bridge/Web SDK sandbox浏览器检查通过。使用可阻塞的模拟API保持慢请求，核验旧卡片仍在、加载交互被禁用、同页刷新全过程scrollY/右轨道Y不变，长页切短页/单条/空数据时右箭头X/Y保持一致；等宽/等高/胜负筛选、13页跳转、390px/深色、实际复制粘贴及模拟发送继续通过。无SQL或QQ接口改动，未连接生产QQ/数据库。
+
+
+v1.30.0 验证：1353项默认回归通过、6项跳过。独立入口在隔离的真实Nginx上验证回环HTTP及HTTPS（测试证书）、代理白名单／匿名401／无关API404；使用AstrBot v4.27.3原密码校验、登录与JWT代码验证PBKDF2和旧MD5存储的原密码登录，2FA使用模拟校验器核验挑战与验证码传递。浏览器覆盖无iframe登录、内存token／Cookie复用、退出清UI、401后无自动POST重放、胜负筛选、全文复制实际粘贴、JSON下载、模拟OneBot发送与390px布局、公网HTTP登录禁用。未连接生产DB或真实QQ；无SQL／schema改动。
