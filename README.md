@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.32.1
+最新版本：v1.33.0
 
-- 文件：astrbot_plugin_battle_report-1.32.1.zip
-- 源码提交：907618f972fba72b3e0f6ff5a84b60cc6509854e
+- 文件：astrbot_plugin_battle_report-1.33.0.zip
+- 源码提交：69fec22e7512058a28350bdff8d4e3b3de9ac3b1
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：a44af7a5a65321d4eec41d01d9c1f2543c0e33ca06efeff5a2f9726967a5622a
+- SHA256：eb63f09be55f696e51ec6997fb051a843e7b4306c3bcb2cf29e745c50999b3c7
 
 旧版本安装包保留，按文件名选择。
 
@@ -242,3 +242,13 @@ v1.32.1：设置管理员改为逐个添加、移除的成员标签，默认搜�
 - [战报WebUI指南](REPORT_COMPARISON_GUIDE-1.32.1.md)
 - [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.32.1.md)
 - battle-report-web-1.32.1.zip仅为可选静态资源，不能当AstrBot插件安装。
+
+## 一周会话与密码加密访问
+
+v1.33.0：战队密码／QQ码登录后的会话固定7天，仅保存令牌摘要并可跨重启恢复；退出、改密、停用与撤权继续生效。管理员复用AstrBot原生通常7天的Secure Cookie，最近登录类型持久记录且不在失效后自动切换其他身份。公网独立入口与敏感密码操作要求HTTPS；只有IP可使用附带脚本生成IP证书和Nginx配置，客户端需导入信任CA，需实际部署后才生效，不自动修改服务器。1439项回归及真实CA验证的Nginx TLS／浏览器检查通过。
+
+- [仅IP的HTTPS配置与证书信任](IP_HTTPS_GUIDE-1.33.0.md)
+- [IP证书及配置生成脚本](setup_report_https-1.33.0.py)
+- [网页登录与一周会话](TEAM_WEB_LOGIN_GUIDE-1.33.0.md)
+- [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.33.0.md)
+- battle-report-web-1.33.0.zip仅为可选静态资源，不能当AstrBot插件安装。
