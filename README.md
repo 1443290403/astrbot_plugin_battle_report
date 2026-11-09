@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.30.0
+最新版本：v1.30.1
 
-- 文件：astrbot_plugin_battle_report-1.30.0.zip
-- 源码提交：478b3a2dedaa1cf69340425ecc946488923e68bd
+- 文件：astrbot_plugin_battle_report-1.30.1.zip
+- 源码提交：ea522131775564df22952a42eb11ff9497cd2634
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：abc6cfff693257a4f9176703ae566ecc78176104bd2cab0a4fc6353797d65b6a
+- SHA256：da205b4e1bb959bb1656933d613db855924d74b8f8b99499579297b6acc39139
 
 旧版本安装包保留，按文件名选择。
 
@@ -200,3 +200,10 @@ v1.30.0：使用原AstrBot管理员及可选两步验证直接登录独立页，
 - [独立静态前端ZIP](battle-report-web-1.30.0.zip)：供Nginx站点使用，不能当作AstrBot插件安装；插件安装请用上方 astrbot_plugin_battle_report 包。
 - [SSH转发Nginx模板](nginx-loopback-1.30.0.conf)
 - [HTTPS Nginx模板](nginx-https-1.30.0.conf)
+
+## 安装后自动提供独立入口
+
+v1.30.1：直接使用当前AstrBot地址的 /battle-report/，原管理员及可选2FA登录；无需手动导出、Nginx或新端口。冷启动／热安装自动挂载，停用清理本实例；只公开静态资源，API鉴权不变。1358项默认回归、192项动态轮次和184项平台隔离通过；实际上游适配器／鉴权／登录代码的隔离浏览器验证含过期不重放、复制、下载及模拟QQ发送。
+
+- [自动入口及可选部署指南](STANDALONE_WEBUI_GUIDE-1.30.1.md)
+- battle-report-web-1.30.1.zip 仅为可选独立静态站包，默认不需要，不可当作AstrBot插件安装。
