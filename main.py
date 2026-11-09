@@ -245,7 +245,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.29.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.29.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -1618,8 +1618,8 @@ class BattleReportPlugin(Star):
     @filter.custom_filter(RoundCommandFilter)
     async def round_cmd(self, event: AstrMessageEvent):
         """追加轮次：/第N轮 [玩家A [比分] 玩家B]；无追加时随机匹配上一轮胜者"""
-        if not getattr(event, "is_at_or_wake_command", False):
-            return
+        # 自定义过滤器匹配即可唤醒；AstrBot 此时仅设置 is_wake，
+        # 不保证设置 @/唤醒前缀专用的 is_at_or_wake_command。
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result(_NEED_GROUP)

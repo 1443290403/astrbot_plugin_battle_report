@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.29.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-07
+> 对应版本：`1.29.1`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -419,6 +419,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ### M-10 平台消息收发（QQ 适配器口径）
 
+**第N轮自定义唤醒（v1.29.1）：** RoundCommandFilter 严格匹配动态指令，框架 custom-filter 通过只保证 is_wake，不保证 is_at_or_wake_command。round_cmd 不得把后者当作已匹配指令的额外门槛，也不改写全局唤醒标志。保留首位平台权限过滤、私聊拒绝、群禁用和数据库检查、群历史读取、中文/数字解析、存活池与双空格直发流程；普通聊天不匹配，不新增 LLM 或 SQL 写入。
+
 **外部战报只读核对（v1.28.0）：** 后台Pages页面 `pages/report-comparison` 与 `ComparisonWebUI` 使用AstrBot官方bridge/`astrbot.api.web`和后台登录授权，不自开端口，不接受QQ侧用户权限代替后台登录。后台管理员显式选择本地home_team（跨群）和网站groupname；这不是群命令的战队解析兜底，不改_require_home或原群/角色检查。默认上个月按北京时间计算。网站starttime/endtime是发布时间，本地范围是比赛日期，分别校验；单次至多93天。只比较friendly，保留排除的踢馆数量。
 
 `report_site`固定HTTPS域名和查询路径，禁止用户信息、异站/非HTTPS跳转及选手/发布者过滤；全部分页成功、页码/总页数/记录数/唯一网站ID通过后才读取本地快照并比较。限时/重试/数据量边界防止无限抓取；失败不把部分网页数据当完整范围。任务原子保存，单实例一次一任务，最多保留20次；取消/重启不自动重跑，卸载先取消任务再关数据库，清理仅当前实例注册的API。
@@ -819,7 +821,7 @@ year = now.year - 1 if month > now.month else now.year
 | 编号 | 命令 | 入口 | 行为 | 依赖口径 | 落库 |
 |---|---|---|---|---|---|
 | **F-01** | `/排表 [规则]` + 名单 | `lineup_cmd` / `_prepare_lineup` / `lineup.parse_lineup` / `generate_template` | 解析 `队伍名: 成员1 成员2` 名单；首行非名单则视为规则；两队各自随机洗牌后按下标配对，生成第一轮 `0:0` 占位 + 空第二轮；人数少的一侧用 `TK` 占位 | M-01、M-02(校验群)、M-10(输出) | `teams`（覆盖式） |
-| **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
+| **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。完整动态指令匹配即可自定义唤醒，不再二次要求 @/全局前缀标志；平台前置权限与群禁用仍生效。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
 | **F-03** | `/记录 玩家名 比分 [对手]` | `record_cmd` / `lineup.record_from_info` | 找该选手**最后一场未记录**的 `0:0` 对阵填入比分；指定对手且无未记录对阵时，在最新轮次插入新对阵。比分支持 `2:0` 或紧凑 `20` | M-04、M-10、队对齐(见下) | 无 |
 | **F-38** | LLM 工具 `battle_report_lineup(lineup_text)` | `lineup_tool` / `_prepare_lineup` | 与 F-01 共用完整排表流程；按当前群保存名单，成功只直发一份原文并返回 None，错误文本交回模型。仅在用户明确要求并给出双方名单时调用；私聊/禁用/数据库检查不可绕过 | M-01、M-03、M-10、M-11 | `teams`（覆盖式，不写战报） |
 | **F-39** | QQ 官方群 `/友谊等车`（兼容 `/等车`、`/蹲车`）、`/进队等车`、`/发送群号`、`/离队`、`/解散`（兼容 `/解散队伍`）、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/友谊等车帮助`（兼容 `/等车帮助`） | `official_queue_cmd` / `WaitingQueues` | 官方群多车合并面板、4分钟房间广播、10分钟独立清理及首次满3人一次性重计时、入退队/满员/发车/解散定向提醒、每日车次编号；原账号关联见 F-40 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON；身份 SQL 见 F-40 |
@@ -1042,6 +1044,7 @@ year = now.year - 1 if month > now.month else now.year
 | **改战绩卡片** | ① record/my_record 与 `_record_results` 的范围和趋势分流 ② `stats.build_record_metrics` ③ `chart.make_record_images` 与共享 `_trend_image` ④ handler/渲染/指标/集合踢馆结果回归 ⑤ 帮助、预览与 README | 不把个人对局与战队整场混算、不吞掉长 ID 或截掉明细、不把趋势失败变成战绩查询失败；保留标准响应链 |
 | **改排行图片发送** | ① `ranking` 的标准 yield 响应链 ② 图片生成失败回退与点评展示行一致 ③ `tests/test_main.py` 图片先输出/点评后生成、不调用 stop_event/event.send、独立请求测试 ④ README/M-09 | 不绕开 AstrBot 回复装饰/发送阶段，不修改 DNS、不把网络故障宣称已修复、不将排行测试等同普通聊天全链路验证 |
 | **改排行点评** | ① `ranking` 的先发榜单/后点评路径及 `_ranking_commentary` ② `_ai_persona_prompt` 的插件统一人格解析 ③ `ranking_ai_comment`/`ai_persona_id` 配置四处 ④ `tests/test_main.py`、主群帮助与预览 | 复用本次查询的月份、范围与展示函数；不因图片提前 return 漏点评，不把 LLM 失败报成数据库查询失败，不另算积分或导入聊天历史 |
+| **改动态轮次入口** | ① RoundCommandFilter边界与中文/数字/斜杠 ② 平台首位过滤和路由器识别第N轮 ③ 自定义唤醒与@/前缀标志区别 ④ 群/DB/历史前置及round_cmd原文直发 ⑤ handler回归和真实WakingCheckStage验证 | 自定义唤醒仅置is_wake，不能因is_at_or_wake_command=False静默退出；不可绕过平台配置或扩大普通聊天匹配 |
 | **改战报原文输出** | ① 排表/记录/轮次三个 handler 的 `_send_report_text` ② `lineup.normalize_duel_spacing` ③ handler 与格式保留测试 ④ README/M-10 | 成功正文不得回到回复整理流程；错误提示正常保留，禁群/私聊/参数检查不能绕过；只规范比分外部分隔，不压缩 ID 内空格 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段（官方专用等车使用独立 HELP 和 `/帮助 等车`，不混入 OneBot 索引）③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
@@ -1363,6 +1366,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `test_command_args.py` | 引号/转义/标点、裸空格兼容、查询关键字保护、导出顺序/发送状态组合与冲突、排表→记录→轮次→重新解析完整链路 |
 | `test_database_lifecycle.py` | 唯一键并发冲突不得借第二条连接、初始化迁移失败释放池；发送状态迁移中断重放、截止 ID 范围包含边界、超过 100 份、战队隔离与取消回滚、导出状态字段 |
 | `test_winner.py` | 人头赛 / KOF 胜负判定（含替补不扩容、同名首发与替补区分、TK 占位、判罚） |
+| `test_round_custom_filter_wakeup_does_not_require_at_or_prefix_flag`（test_main.py） | 自定义唤醒但@/前缀专用标志为False时，四种中文/数字/斜杠形式实际发送战报，保持双空格、不改全局标志、不入库 |
 | `test_rounds.py` | `/第N轮` 随机配对、未完赛选手排除、本轮胜者重新入池、最新败绩/平分淘汰、重复执行无追加、同名队隔离、后续轮次、记录后再匹配链路、指定对阵、紧凑比分、队对齐、部分成功 |
 | `test_record.py` | `/记录` 找未记录对阵、右侧选手、插入最新轮次 |
 | `test_lineup.py` | 名单解析、模板生成、TK 占位、种子可复现 |
@@ -1464,7 +1468,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1490,3 +1494,6 @@ v1.28.0 验证：**1301 项测试通过，1 项跳过**。覆盖用户查询地�
 
 
 v1.29.0 验证：1321 项默认回归通过、5 项跳过；隔离 MySQL 8.4 的74项回归全部通过（含旧 INT 库升级、schema21重放、云端事务/并发/分页）。真实 v4.27.3 注册/分发184项隔离检查，以及官方bridge/Web SDK的Chromium验证覆盖三Tab、混合勾选、两种收件人、预览与模拟发送、重拉去重、390px/深色、匿名401和JSON下载。未连接生产数据库或发送真实QQ；开发网络未放行战报站，线上页面未实测。
+
+
+v1.29.1 验证：**1325 项测试通过，5 项跳过**；新增4项自定义唤醒回归，并使用真实 AstrBot v4.27.3／当前参考源码的唤醒阶段验证48种组合（中文/数字、带/不带斜杠、无前缀/其他前缀/斜杠前缀、平台允许/屏蔽）。另通过184项既有平台隔离检查。未登录真实QQ，不涉及数据库迁移。

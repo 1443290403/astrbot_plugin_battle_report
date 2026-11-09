@@ -262,3 +262,9 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - QQReportDispatch仅aiocqhttp原生私聊合并转发；自定义QQ或目标战队指定管理员，确认时再校验名单和bot QQ。先冻结预览、显式确认，typed text节点；最多200份/20收件人/8MiB，每50节点分包。
 - 回执按收件人/包落盘；有message_id才成功，unknown不得自动/手动重试，失败/未发送可显式重试；重启不重放。预览30分钟/重试24小时、单请求25秒/批15分钟，发送历史保留20批及活动批。不得修改人工export_sent；关闭发送/核对失败仍清理本实例路由，然后关DB。
 - 新测试test_report_dispatch与可选test_report_archive_mysql；浏览器使用真实AstrBot v4.27.3 bridge/Web SDK+隔离MySQL+模拟OneBot，不声称真实QQ或线上战报站已验证。
+
+
+## v1.29.1 动态轮次唤醒
+
+- RoundCommandFilter 通过即由框架自定义唤醒，AstrBot 只保证 is_wake，不保证 is_at_or_wake_command。round_cmd 不得再拿 @/前缀专用标志阻止已匹配指令，也不强制改写该标志。平台前置过滤、群/DB/历史检查和原配对/输出流程保留。
+- 入口回归必须覆盖中文/数字、斜杠/裸命令、is_at_or_wake_command=False。真实框架验证应从 WakingCheckStage 进入，不预设该标志为True，避免此前只直调handler漏掉边界。

@@ -880,6 +880,24 @@ def test_round_command_fills_only_available_survivors(plugin_module, tmp_path):
     obj.db.insert_report.assert_not_awaited()
 
 
+@pytest.mark.parametrize('command', ['/第二轮', '第二轮', '/第2轮', '第2轮'])
+def test_round_custom_filter_wakeup_does_not_require_at_or_prefix_flag(plugin_module, tmp_path, command):
+    obj = plugin(plugin_module, tmp_path)
+    obj._read_latest_report = AsyncMock(return_value=(
+        '战队: a队 VS b队\n时间: 2026.11.09\n规则: 2/3【KOF】\n地点: 100\n'
+        '------第一轮------\n云玩家  2:0  复读机\n萌新  0:2  鸽子\n------第二轮------'))
+    ev = event(command)
+    # AstrBot custom filter 唤醒只设置 is_wake，不设置 @/前缀专用标志。
+    ev.is_at_or_wake_command = False
+    ev.is_wake = True
+    assert plugin_module.RoundCommandFilter().filter(ev, {'wake_prefix': []})
+    assert asyncio.run(collect(obj.round_cmd(ev))) == []
+    ev.send.assert_awaited_once()
+    assert ev.send.await_args.args[0].splitlines()[-1] == '云玩家  0:0  鸽子'
+    assert not ev.is_at_or_wake_command
+    obj.db.insert_report.assert_not_awaited()
+
+
 @pytest.mark.parametrize('handler_name', ['lineup_cmd', 'record_cmd', 'round_cmd'])
 def test_report_output_sends_exact_double_spaces_without_decorating_pipeline(plugin_module, tmp_path, handler_name):
     obj = plugin(plugin_module, tmp_path)
