@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.31.1
+最新版本：v1.32.0
 
-- 文件：astrbot_plugin_battle_report-1.31.1.zip
-- 源码提交：9fd0f650889f5a59706e4b31800adc7b1371f83e
+- 文件：astrbot_plugin_battle_report-1.32.0.zip
+- 源码提交：aa24443ff699d69170fa8ff2154ff963ec1f586e
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：18ae717320eb98399885885762f57b6fc72390d8715a0b3a3311bd7a216f64f7
+- SHA256：4f9aa42e2eefda3cfda1937cfcbe747c0c6b672c3f11673d6280261f63abecb6
 
 旧版本安装包保留，按文件名选择。
 
@@ -224,3 +224,12 @@ v1.31.1：设置战队管理员时自动创建网页账号，默认QQ号及每�
 - [网页登录与初始密码](TEAM_WEB_LOGIN_GUIDE-1.31.1.md)
 - [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.31.1.md)
 - battle-report-web-1.31.1.zip仅为可选静态资源，不能当AstrBot插件安装。
+
+## 队伍管理与队员管理
+
+v1.32.0：战报WebUI新增队伍管理、队员管理Tab，仅原AstrBot管理员可见及可调用管理API，战队密码／QQ码会话均拒绝。支持分页搜索战队、管理员及绑定群概览、设置多名管理员并自动配置网页账号，按战队新增／编辑角色与QQ，绑定／解绑已有参赛ID及确认转绑。陈旧编辑拒绝覆盖，QQ变更与角色官方关联撤销同事务，历史战报不变。1414项默认回归、80项隔离MySQL检查及实际AstrBot SDK独立入口／Pages浏览器验证通过，未发真实QQ消息。
+
+- [网页登录与管理入口说明](TEAM_WEB_LOGIN_GUIDE-1.32.0.md)
+- [战报WebUI指南](REPORT_COMPARISON_GUIDE-1.32.0.md)
+- [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.32.0.md)
+- battle-report-web-1.32.0.zip仅为可选静态资源，不能当AstrBot插件安装。
