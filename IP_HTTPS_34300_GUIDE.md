@@ -1,6 +1,6 @@
 # AstrBot 战报管理 HTTPS 教程：公网 NAT 34300 与 HTTPS 34331
 
-适用插件：v1.33.0 及以上。本教程以你实际的 Docker 输出和 NAT 映射为准。命令在**服务器宿主机 SSH 终端**执行，使用 root；Nginx 安装在宿主机，不进入 AstrBot 容器。
+适用插件：v1.33.1 及以上。本教程以你实际的 Docker 输出和 NAT 映射为准。命令在**服务器宿主机 SSH 终端**执行，使用 root；Nginx 安装在宿主机，不进入 AstrBot 容器。
 
 ## 一、你的实际端口关系
 

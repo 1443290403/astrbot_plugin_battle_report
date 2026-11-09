@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.33.0
+最新版本：v1.33.1
 
-- 文件：astrbot_plugin_battle_report-1.33.0.zip
-- 源码提交：69fec22e7512058a28350bdff8d4e3b3de9ac3b1
+- 文件：astrbot_plugin_battle_report-1.33.1.zip
+- 源码提交：c0656a33c124f059fef2921f394f3fcb030fc9c9
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：eb63f09be55f696e51ec6997fb051a843e7b4306c3bcb2cf29e745c50999b3c7
+- SHA256：e4d9ff2c759be0414d9798fd65f72761e88881c0e4d3198dcdbf808d6d11e9a5
 
 旧版本安装包保留，按文件名选择。
 
@@ -260,3 +260,11 @@ v1.33.0：战队密码／QQ码登录后的会话固定7天，仅保存令牌摘�
 [通用IP HTTPS说明](IP_HTTPS_GUIDE-1.33.0.md)也已按Docker与NAT分层更新。仅文档修正，插件软件及安装包仍为v1.33.0。
 
 教程的IP设置已改为直接变量赋值，明确示例需替换，并解释旧read命令的提示语和实际输入的区别。
+
+## v1.33.1 战报页面精简
+
+移除页面顶部英文标题、战报管理标题、站点标签、说明与只读标记，直接从功能标签栏开始；Pages、自动独立入口和静态导出同步更新。保留独立入口账号操作区并调整顶部间距。8项既有检查通过，浏览器验证两种入口的1440px／390px布局与Tab切换。数据库schema21及权限不变。
+
+- [独立站可选静态资源](battle-report-web-1.33.1.zip)（不能当AstrBot插件安装）
+- [部署指南](STANDALONE_WEBUI_GUIDE-1.33.1.md)
+- [NAT端口与HTTPS教程](IP_HTTPS_34300_GUIDE.md)
