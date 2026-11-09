@@ -1601,3 +1601,6 @@ scripts/setup_report_https.py仅生成可选IPv4私有CA／含IP SAN服务器证
 
 
 v1.33.0 验证：1439项默认回归通过、11项跳过。真实OpenSSL生成IP证书并校验CA链／IP匹配和错误IP拒绝；真实Nginx HTTPS配合CA验证客户端，覆盖不受信CA拒绝、私钥／其他核心API拒绝、原AstrBot Cookie助手的Secure／HttpOnly／7天期限及浏览器重开恢复、战队认证服务重建后恢复与7天过期、过期不回落到残留管理员身份。实际SDK独立入口及原Pages继续验证权限、密码管理、复制／下载／模拟QQ发送；公网HTTP连隐藏表单触发也不发密码请求。本机／SSH回环保留，源SQL及schema21不变；未部署用户服务器或发送真实QQ消息。
+
+
+部署文档补充：IP_HTTPS_34300_GUIDE固定用户34300→容器6185映射，明确宿主机Nginx应回源127.0.0.1:34300，另以8443提供TLS；包含复制现有脚本、首次签发／复用已验证旧证书、定向修正旧回源URL、配置备份／nginx -t后重载／防火墙与IP SAN校验。只新增部署教程与索引，不改代码、默认端口、会话／schema或Docker映射。
