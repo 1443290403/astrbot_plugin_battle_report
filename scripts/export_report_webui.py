@@ -2,10 +2,25 @@
 import argparse
 from pathlib import Path
 import re
-import shutil
 import tempfile
 
 ROOT=Path(__file__).resolve().parents[1]
+
+
+def build_assets(root: Path=ROOT, *, builtin: bool=False):
+    """Build the same allowlisted assets for automatic hosting and optional export."""
+    page=root/'pages/report-comparison'
+    html=(page/'index.html').read_text('utf-8')
+    marker='<script type="module" src="./app.js"></script>'
+    if html.count(marker)!=1:raise ValueError('页面脚本入口不符合预期。')
+    extra='<meta name="battle-report-entry" content="builtin">\n' if builtin else ''
+    html=html.replace('</head>',extra+'<link rel="stylesheet" href="./standalone.css">\n</head>',1)
+    html=html.replace(marker,'<script src="./standalone.js"></script>\n'+marker,1)
+    version=re.search(r'^version:\s*(\S+)',(root/'metadata.yaml').read_text('utf-8'),re.M).group(1)
+    assets={'index.html':html.encode('utf-8'),'VERSION':(version+'\n').encode('utf-8')}
+    for name in ('app.js','style.css'):assets[name]=(page/name).read_bytes()
+    for name in ('standalone.js','standalone.css'):assets[name]=(root/'webui_standalone'/name).read_bytes()
+    return assets
 
 
 def export(output: Path, *, root: Path=ROOT):
@@ -15,19 +30,11 @@ def export(output: Path, *, root: Path=ROOT):
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError('输出目录已存在且不为空，请使用新的目录。')
     output.parent.mkdir(parents=True,exist_ok=True)
-    version=re.search(r'^version:\s*(\S+)',(root/'metadata.yaml').read_text('utf-8'),re.M).group(1)
+    assets=build_assets(root)
+    version=assets['VERSION'].decode().strip()
     with tempfile.TemporaryDirectory(prefix='.battle-report-web-',dir=output.parent) as temporary:
         stage=Path(temporary)/'site';stage.mkdir()
-        page=root/'pages/report-comparison'
-        html=(page/'index.html').read_text('utf-8')
-        marker='<script type="module" src="./app.js"></script>'
-        if html.count(marker)!=1:raise ValueError('页面脚本入口不符合预期。')
-        html=html.replace('</head>','<link rel="stylesheet" href="./standalone.css">\n</head>',1)
-        html=html.replace(marker,'<script src="./standalone.js"></script>\n'+marker,1)
-        (stage/'index.html').write_text(html,'utf-8')
-        for filename in ('app.js','style.css'):shutil.copyfile(page/filename,stage/filename)
-        for filename in ('standalone.js','standalone.css'):shutil.copyfile(root/'webui_standalone'/filename,stage/filename)
-        (stage/'VERSION').write_text(version+'\n','utf-8')
+        for filename,content in assets.items():(stage/filename).write_bytes(content)
         # Nginx workers commonly run as a different user, including after docker cp.
         # These files are public static assets only; never export backend config here.
         for asset in stage.iterdir():asset.chmod(0o644)

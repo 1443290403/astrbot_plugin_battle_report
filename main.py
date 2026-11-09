@@ -245,7 +245,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.30.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.30.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -263,6 +263,7 @@ class BattleReportPlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._install_platform_permissions()
         self._comparison_webui = None
+        self._standalone_frontend = None
         if callable(getattr(self.context, 'register_web_api', None)):
             try:
                 from .report_webui import ComparisonWebUI
@@ -270,6 +271,29 @@ class BattleReportPlugin(Star):
                 self._comparison_webui.register()
             except Exception:
                 logger.exception('战报对比 WebUI 初始化失败，原有指令继续可用')
+        if self._comparison_webui:
+            try:
+                from .standalone_web import StandaloneFrontend
+                self._standalone_frontend = StandaloneFrontend(self.context, logger)
+                self._register_standalone_frontend()
+            except Exception:
+                logger.exception('独立战报入口初始化失败，后台 Pages 及原有指令继续可用')
+
+    def _register_standalone_frontend(self):
+        frontend = getattr(self, '_standalone_frontend', None)
+        if not frontend:
+            return False
+        try:
+            return frontend.register()
+        except Exception:
+            logger.exception('独立战报入口注册失败，后台 Pages 及原有指令继续可用')
+            return False
+
+    @filter.on_astrbot_loaded()
+    async def report_frontend_loaded(self):
+        # On cold startup the dashboard APP is constructed after plugin loading.
+        if getattr(self, '_standalone_frontend', None) and not self._register_standalone_frontend():
+            logger.warning('当前 AstrBot 未提供兼容的独立页面挂载接口，可继续使用后台 Pages 入口')
 
     def _command_allowed(self, event, command):
         platform = getattr(event, 'get_platform_name', lambda: '')()
@@ -348,6 +372,12 @@ class BattleReportPlugin(Star):
             logger.warning(f"设置 /第N轮 显示名失败: {e}")
 
     async def terminate(self):
+        frontend = getattr(self, '_standalone_frontend', None)
+        if frontend:
+            try:
+                frontend.close()
+            except Exception:
+                logger.exception('独立战报入口移除失败，继续清理任务和数据库')
         task = getattr(self, "_waiting_task", None)
         if task:
             task.cancel()

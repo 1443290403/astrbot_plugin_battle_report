@@ -5,7 +5,10 @@
   let token = '', authenticated = false, readyResolve;
   const ready = new Promise(resolve => { readyResolve = resolve; });
   const loopback = ['localhost','127.0.0.1','[::1]'].includes(location.hostname);
-  const secure = location.protocol === 'https:' || loopback;
+  // The built-in entry follows the existing dashboard's transport settings.
+  // An exported, separately hosted site still requires HTTPS or loopback.
+  const builtin = document.querySelector('meta[name="battle-report-entry"]')?.content === 'builtin';
+  const secure = builtin || location.protocol === 'https:' || loopback;
   const dialog = document.createElement('dialog');
   dialog.id = 'standalone-login';
   dialog.setAttribute('aria-labelledby','standalone-login-title');

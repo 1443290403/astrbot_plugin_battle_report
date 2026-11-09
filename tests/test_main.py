@@ -87,7 +87,8 @@ def plugin_module(monkeypatch):
     module('astrbot')
     module('astrbot.api', AstrBotConfig=dict, logger=logging.getLogger('test_plugin'))
     module('astrbot.api.event', AstrMessageEvent=object, filter=SimpleNamespace(
-        command=command, llm_tool=llm_tool, custom_filter=custom_filter))
+        command=command, llm_tool=llm_tool, custom_filter=custom_filter,
+        on_astrbot_loaded=lambda: lambda fn: fn))
     module('astrbot.api.event.filter', CustomFilter=CustomFilter)
     module('astrbot.api.message_components', **{
         name: type(name, (Component,), {}) for name in ['At', 'File', 'Image', 'Node', 'Nodes', 'Plain', 'Reply']})
@@ -3101,3 +3102,31 @@ def test_comparison_page_registers_on_constructor_and_stops_before_database(plug
     asyncio.run(obj.terminate())
     obj.db.close.assert_awaited_once()
     assert not routes and obj._comparison_webui.jobs.closed
+
+
+@pytest.mark.parametrize('cold_start', [True, False])
+def test_standalone_mounts_on_startup_or_install_and_unmounts_on_disable(plugin_module,tmp_path,monkeypatch,cold_start):
+    fastapi=pytest.importorskip('fastapi')
+    routes=[]
+    monkeypatch.setattr(plugin_module,'StarTools',SimpleNamespace(get_data_dir=lambda:tmp_path))
+    context=SimpleNamespace(register_web_api=lambda *entry:routes.append(entry),registered_web_apis=routes)
+    app=fastapi.FastAPI()
+    app.state.core_lifecycle=SimpleNamespace(star_context=context)
+    original=list(app.router.routes)
+    adapter=SimpleNamespace(_app=app)
+    server=types.ModuleType('astrbot.dashboard.server')
+    server.APP=None if cold_start else adapter
+    dashboard=types.ModuleType('astrbot.dashboard')
+    dashboard.server=server
+    monkeypatch.setitem(sys.modules,'astrbot.dashboard',dashboard)
+    monkeypatch.setitem(sys.modules,'astrbot.dashboard.server',server)
+    obj=plugin_module.BattleReportPlugin(context,{})
+    assert obj._standalone_frontend is not None
+    assert len(app.router.routes)==len(original)+(0 if cold_start else 2)
+    server.APP=adapter
+    asyncio.run(obj.report_frontend_loaded())
+    assert len(app.router.routes)==len(original)+2
+    asyncio.run(obj.report_frontend_loaded())
+    assert len(app.router.routes)==len(original)+2
+    asyncio.run(obj.terminate())
+    assert app.router.routes==original and not routes

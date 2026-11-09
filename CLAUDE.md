@@ -317,3 +317,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 原Pages及bridge不改；scripts/export_report_webui.py只导出六个静态文件，输出必须位于插件目录外且新建或为空，目录0755/文件0644供Nginx读取，不导出数据库配置或凭据。
 - 独立适配只允许同源固定comparison API，使用原AstrBot管理员及2FA、内存JWT/后端HttpOnly Cookie；不把token写storage/URL、不允许公开HTTP登录。401重新登录后不得自动重放POST，退出后清空页面。
 - Nginx仅代理登录／退出和插件核对前缀。后端仍依赖AstrBot在线，不自开插件端口、不提供匿名API或独立战队账号，不把前端筛选描述为服务端授权。模板、导出器、独立指南及README/REQUIREMENTS同步。
+
+
+## v1.30.1 自动独立入口
+
+- 默认在原后台端口/battle-report/自动挂载，构造期热安装、on_astrbot_loaded冷启动；APP._app与core_lifecycle.star_context必须匹配当前context，不挂错旧core。无新监听端口，不写核心／Nginx／Docker配置。
+- SPA兜底前插入精确前缀，只替换本插件标记旧路由，关闭按对象身份移除本实例，不能删新实例或其他插件路由；兼容失败保留Pages，卸载失败仍清任务／DB。只公开六个静态文件，不修改API鉴权或后台中间件。
+- build_assets为自动挂载和手动导出唯一静态构建路径。内置HTML标记沿用后台HTTP／HTTPS；覆盖v1.30.0的内置登录协议限制，手动独立静态站仍要求HTTPS／回环。JWT及401不自动重放规则不变。
