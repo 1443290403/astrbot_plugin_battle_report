@@ -19,6 +19,26 @@ except ImportError:
 PLUGIN_NAME = 'astrbot_plugin_battle_report'
 
 
+def validate_outcome(value):
+    if value not in ('all', 'win', 'loss'):
+        raise ComparisonError('胜负筛选无效。')
+    return value
+
+
+def outcome_matches(record, team, outcome, *, site=False):
+    """以查询战队看整场胜负；不把未知胜负或未参与的记录算作负场。"""
+    team = str(team or '').upper()
+    winner = str(record.get('winner') or '').upper()
+    sides = {str(record.get(key) or '').upper() for key in ('team_a', 'team_b')} - {''}
+    loser = str(record.get('loser') or '').upper() if site else ''
+    if site and loser:
+        return bool(team and winner and loser != winner and
+                    (winner == team if outcome == 'win' else loser == team))
+    if team not in sides or winner not in sides:
+        return False
+    return winner == team if outcome == 'win' else winner != team
+
+
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -173,7 +193,8 @@ class ComparisonJobs:
             except asyncio.CancelledError:
                 pass
 
-    async def get(self, job_id, category='matched', offset=0, limit=30):
+    async def get(self, job_id, category='matched', offset=0, limit=30, *, outcome='all'):
+        validate_outcome(outcome)
         path = self.result_path(job_id)
         job = dict(self.jobs[job_id])
         output = dict(job=job, records=[], total=0, offset=offset, limit=limit)
@@ -185,8 +206,15 @@ class ComparisonJobs:
             selected = next((c for c in result['categories'] if c['key'] == category), None)
             if selected is None:
                 raise ComparisonError('未知的差异类型。')
-            output.update(meta=result['meta'], notes=result['notes'], total=selected['count'],
-                          records=selected['records'][offset:offset + limit])
+            records = selected['records']
+            if outcome != 'all':
+                records = [row for row in records if any(
+                    outcome_matches(record, job['query']['site_team'] if side == 'site' else job['query']['team'],
+                                    outcome, site=side == 'site')
+                    for side in ('site', 'local') for record in row[side])]
+            output.update(meta=result['meta'], notes=result['notes'], outcome=outcome,
+                          total=selected['count'] if outcome == 'all' else len(records),
+                          records=records[offset:offset + limit])
         return output
 
 
@@ -343,7 +371,8 @@ class ComparisonWebUI:
                 raise ComparisonError('分页参数无效。') from exc
             if offset < 0 or not 1 <= limit <= 100:
                 raise ComparisonError('分页参数无效。')
-            return await self.jobs.get(job_id, request.query.get('category', 'matched'), offset, limit)
+            return await self.jobs.get(job_id, request.query.get('category', 'matched'), offset, limit,
+                                       outcome=validate_outcome(request.query.get('outcome', 'all')))
         return await self.respond(handle)
 
     async def cancel(self, job_id):
@@ -380,7 +409,8 @@ class ComparisonWebUI:
             kind = request.query.get('kind', 'all')
             if kind not in ('all', 'friendly', 'raid'):
                 raise ComparisonError('战报类型无效。')
-            result = await self.plugin.db.get_webui_local_reports(query.team, query.start, query.end, kind, offset, limit)
+            outcome = validate_outcome(request.query.get('outcome', 'all'))
+            result = await self.plugin.db.get_webui_local_reports(query.team, query.start, query.end, kind, offset, limit, outcome=outcome)
             return dict(total=result['total'], records=[self.local_record(r) for r in result['records']],
                         offset=offset, limit=limit, query=asdict(query))
         return await self.respond(handle)
@@ -389,7 +419,8 @@ class ComparisonWebUI:
         async def handle(request):
             self.require_db()
             query, offset, limit = self.page_params(request)
-            result = await self.plugin.db.get_cloud_reports(query.start, query.end, query.site_team, offset, limit)
+            outcome = validate_outcome(request.query.get('outcome', 'all'))
+            result = await self.plugin.db.get_cloud_reports(query.start, query.end, query.site_team, offset, limit, outcome=outcome)
             return dict(total=result['total'], records=[self.cloud_record(r) for r in result['records']],
                         offset=offset, limit=limit, query=asdict(query))
         return await self.respond(handle)

@@ -79,3 +79,34 @@ def test_local_pagination_and_team_scoped_id_lookup():
         assert (await db.get_webui_local_reports('a队','2026-10-01','2026-10-31','all',0,30))['total']==2
         assert (await db.get_cloud_reports('2026-10-01','2026-10-31','a队',0,30))['total']==1
     run_db(check)
+
+
+def test_webui_outcome_filters_sql_count_and_pages_for_local_and_cloud():
+    async def check(db):
+        wins=[]
+        for i,(winner,kind,other_team) in enumerate([
+            ('A队','friendly',False),('B队','friendly',False),('', 'friendly',False),
+            ('A队','raid',False),('无关队','friendly',False),('C队','friendly',True),
+        ]):
+            body=BODY.replace('云玩家',f'示例玩家{i}')
+            if other_team:body=body.replace('a队 VS b队','c队 VS d队')
+            parsed=parse_battle_report(body).report;parsed.group_id='isolated-group'
+            mid=await db.insert_report(parsed,winner,'a队',body)
+            await db._execute('UPDATE matches SET kind=%s WHERE id=%s',(kind,mid))
+            if winner=='A队':wins.append(mid)
+        first=await db.get_webui_local_reports('a队','2026-10-01','2026-10-31','all',0,1,outcome='win')
+        second=await db.get_webui_local_reports('a队','2026-10-01','2026-10-31','all',1,1,outcome='win')
+        assert first['total']==second['total']==2
+        assert {first['records'][0]['match_id'],second['records'][0]['match_id']}==set(wins)
+        assert (await db.get_webui_local_reports('a队','2026-10-01','2026-10-31','all',0,30,outcome='loss'))['total']==1
+        assert (await db.get_webui_local_reports('a队','2026-10-01','2026-10-31','friendly',0,30,outcome='win'))['total']==1
+        assert (await db.get_webui_local_reports('a队','2026-10-01','2026-10-31','raid',0,30,outcome='win'))['total']==1
+        rows=[cloud(str(i)) for i in range(1,5)]
+        rows[1].update(winner_site='B队',loser_site='A队')
+        rows[2].update(winner_site='',loser_site='')
+        rows[3].update(winner_site='C队',loser_site='D队')
+        await db.archive_cloud_reports(rows,'a队','https://rep.ygobbs2.com/')
+        assert (await db.get_cloud_reports('2026-10-01','2026-10-31','a队',0,30))['total']==4
+        assert (await db.get_cloud_reports('2026-10-01','2026-10-31','a队',0,30,outcome='win'))['total']==1
+        assert (await db.get_cloud_reports('2026-10-01','2026-10-31','a队',0,30,outcome='loss'))['total']==1
+    run_db(check)

@@ -108,7 +108,8 @@ function categories(job) {
     e.addEventListener('click', () => { category = c.key; offset = 0; refresh(); });
     return e;
   }));
-  $('category-note').textContent = (job.categories || []).find(c => c.key === category)?.note || '';
+  $('category-note').textContent = ((job.categories || []).find(c => c.key === category)?.note || '')
+    + ($('report-outcome').value==='all'?'':` 当前仅显示${$('report-outcome').value==='win'?'胜场':'负场'}；上方为完整核对统计。`);
 }
 function drawRows(data) {
   $('records').replaceChildren(...data.records.map(row => {
@@ -159,7 +160,7 @@ function syncPageNumbers(state) {
   panel.setAttribute('aria-busy', String(!state.ready));
   if (!state.ready) {for (const button of panel.children) button.disabled=true; return;}
   panel.hidden = !state.pages;
-  const scope = state.comparison ? `${view}:${jobId}:${category}` : `${view}:${JSON.stringify(state.data.query)}:${$('local-kind').value}`;
+  const scope = state.comparison ? `${view}:${jobId}:${category}:${$('report-outcome').value}` : `${view}:${JSON.stringify(state.data.query)}:${$('local-kind').value}:${$('report-outcome').value}`;
   if (panel.dataset.scope !== scope || panel.children.length !== state.pages) {
     panel.dataset.scope = scope; panel.dataset.current = ''; panel.scrollTop=0;
     const buttons=[];
@@ -205,7 +206,7 @@ async function refresh() {
   const selected = jobId, version = ++sequence;
   comparisonLoading = true; syncSidePaging();
   try {
-    const data = await bridge.apiGet(`comparison/jobs/${selected}`,{category,offset,limit:30});
+    const data = await bridge.apiGet(`comparison/jobs/${selected}`,{category,offset,limit:30,outcome:$('report-outcome').value});
     if (version !== sequence || selected !== jobId) return;
     lastResult = data;
     const job = data.job, active = ['pending','running'].includes(job.status);
@@ -319,7 +320,7 @@ async function loadLibrary() {
   try {
     const data=await bridge.apiGet(`comparison/${view==='local'?'local-reports':'cloud-reports'}`,{
       team:$('team').value.trim(),site_team:view==='cloud'?$('site-team').value.trim():'',month:$('month').value,
-      kind:$('local-kind').value,offset:libraryOffset,limit:30});
+      kind:$('local-kind').value,outcome:$('report-outcome').value,offset:libraryOffset,limit:30});
     if (version!==librarySequence || selectedView!==view) return;
     libraryData=data;
     $('library-scope').textContent=`${data.query.team} · ${data.query.start} 至 ${data.query.end} · 共 ${data.total} 份`;
@@ -342,6 +343,11 @@ async function loadLibrary() {
     selectionChanged();
   } catch(e) {if(version===librarySequence){notice(e.message);$('library-empty').querySelector('h3').textContent='未能读取战报';$('library-empty').querySelector('p').textContent='请检查范围或连接后重新刷新。';}} finally {if(version===librarySequence){setRunning(running);syncSidePaging();}}
 }
+$('report-outcome').addEventListener('change',()=>{
+  offset=0;libraryOffset=0;
+  if(view==='comparison'){if(jobId)refresh();}
+  else if(dbReady && $('team').value && $('month').value)loadLibrary();
+});
 $('local-kind').addEventListener('change',()=>{libraryOffset=0;loadLibrary();});
 $('library-prev').addEventListener('click',()=>{libraryOffset=Math.max(0,libraryOffset-30);loadLibrary();});
 $('library-next').addEventListener('click',()=>{if(libraryData&&libraryOffset+30<libraryData.total){libraryOffset+=30;loadLibrary();}});

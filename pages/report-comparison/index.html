@@ -13,7 +13,7 @@
     <form id="query-form">
       <div class="form-grid"><label>本地战队<input id="team" list="teams" maxlength="64" placeholder="选择或输入战队" required><datalist id="teams"></datalist></label>
       <label>比赛月份<input id="month" type="month" required></label>
-      <label hidden>网站战队名<input disabled id="site-team" maxlength="64" placeholder="默认与本地战队相同"></label></div>
+      <label hidden>网站战队名<input disabled id="site-team" maxlength="64" placeholder="默认与本地战队相同"></label><label>查询战队胜负<select id="report-outcome"><option value="all">全部</option><option value="win">胜场</option><option value="loss">负场</option></select></label></div>
       <details class="advanced" hidden><summary>网站查询地址与发布时间范围</summary>
         <label class="url-label">粘贴战报站查询地址<div class="url-row"><input id="source-url" type="url" disabled placeholder="https://rep.ygobbs2.com/?c=search…"><button id="apply-url" type="button" class="secondary">读取地址</button></div></label>
         <div class="date-grid"><label>发布开始日期<input id="publish-start" type="date" disabled></label><label>发布结束日期<input id="publish-end" type="date" disabled></label></div>

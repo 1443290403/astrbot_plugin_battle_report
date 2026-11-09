@@ -2114,7 +2114,7 @@ class Database:
         return reports
 
     async def get_webui_local_reports(self, home_team: str, start: str, end: str, kind: str,
-                                       offset: int, limit: int) -> dict:
+                                       offset: int, limit: int, *, outcome: str = 'all') -> dict:
         """本地上传列表；先分页比赛ID，再读取所选页对局，避免按duel分页。"""
         where = 'home_team = %s AND match_time BETWEEN %s AND %s'
         params = [home_team, start, end]
@@ -2123,6 +2123,11 @@ class Database:
                 raise ValueError('战报类型无效。')
             where += ' AND kind = %s'
             params.append(kind)
+        if outcome not in ('all', 'win', 'loss'):
+            raise ValueError('胜负筛选无效。')
+        if outcome != 'all':
+            where += ' AND home_team IN (team_a, team_b) AND winner IN (team_a, team_b)'
+            where += ' AND winner = home_team' if outcome == 'win' else ' AND winner <> home_team'
         count = await self._query('SELECT COUNT(*) AS n FROM matches WHERE ' + where, tuple(params))
         ids = await self._query('SELECT id FROM matches WHERE ' + where + ' ORDER BY id DESC LIMIT %s OFFSET %s',
                                 tuple(params + [limit, offset]))
@@ -2187,12 +2192,18 @@ class Database:
                 raise
         return dict(total=len(rows), inserted=inserted, refreshed=refreshed)
 
-    async def get_cloud_reports(self, start: str, end: str, team: str, offset: int, limit: int) -> dict:
+    async def get_cloud_reports(self, start: str, end: str, team: str, offset: int, limit: int, *, outcome: str = 'all') -> dict:
         where = 'COALESCE(match_time, publish_date) BETWEEN %s AND %s'
         params = [start, end]
         if team:
             where += ' AND (team_a=%s OR team_b=%s OR winner_site=%s OR loser_site=%s OR query_team=%s)'
             params += [team] * 5
+        if outcome not in ('all', 'win', 'loss') or (outcome != 'all' and not team):
+            raise ValueError('胜负筛选无效。')
+        if outcome != 'all':
+            where += " AND winner_site <> '' AND loser_site <> '' AND winner_site <> loser_site"
+            where += ' AND winner_site = %s' if outcome == 'win' else ' AND loser_site = %s'
+            params.append(team)
         count = await self._query('SELECT COUNT(*) AS n FROM cloud_battle_reports WHERE ' + where, tuple(params))
         rows = await self._query('SELECT * FROM cloud_battle_reports WHERE ' + where
                                  + ' ORDER BY cloud_id DESC LIMIT %s OFFSET %s', tuple(params + [limit, offset]))

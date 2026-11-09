@@ -260,7 +260,7 @@ def build_comparison(site_records, reports, meta):
     def site(r):
         return dict(id=str(r['id']), team_a=r.get('team_a', ''), team_b=r.get('team_b', ''),
                     match_time=r.get('match_time', ''), rule=r.get('rule', ''),
-                    location=r.get('location', ''), winner=r.get('winner_site', ''),
+                    location=r.get('location', ''), winner=r.get('winner_site', ''), loser=r.get('loser_site', ''),
                     publish_date=r.get('publish_date', ''), publisher=r.get('publisher', ''),
                     body=r['body'], errors=r.get('parse_errors', []), warnings=r.get('parse_warnings', []))
 

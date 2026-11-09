@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.29.5`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.29.6`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -433,11 +433,15 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 **云端归档与批量 QQ 发送（v1.29.0，覆盖上述 v1.28 仅 SELECT 范围）：** 全部分页校验通过后，事务 UPSERT 独立 `cloud_battle_reports`（schema v21）。正整数网站 ID 主键，原文/解析快照/日期/来源/首次及最近抓取时间持久化，同 ID 更新不重复插入；整批失败回滚，不发布残缺差异，不改 matches/duels/统计/指纹。归档不随最近20次任务淘汰，网站未再检出的旧记录不自动删除。旧 JSON 历史未归档的云端记录须重新拉取。
 
-WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）、云端归档（第三位）。战报视图外层用grid预留左右控件轨道，箭头贴容器外侧、轨道内sticky随滚动停靠，不再position:fixed于浏览器边缘。箭头按当前Tab代理原底部分页，右箭头左侧为原生纵向滚动页码栏；最多同时显示10行（低屏按可用高度缩短），overscroll-behavior隔离正文滚动。pagingState共用当前响应total/limit/offset，点击页码按原查询范围重载对应页，当前页aria-current高亮，保留跨页勾选；只调整页码栏自身scrollTop确保当前页可见，不调用全页scrollIntoView。加载禁用页码与方向，空结果隐藏页码、首末方向禁用；切Tab/类别/范围同步更新，comparisonLoading按最新sequence释放，旧响应不得提前解锁。手机grid缩窄轨道，控件在正文外，不靠覆盖正文腾位置。本地/云端列表以全文卡片呈现，核对两侧也直接显示完整正文，仍保留单独原文对照弹窗。列表与弹窗共用复制函数，复制原始body，不拼入页面元信息、不压缩空白、不解析HTML；优先在点击回调同步创建只读textarea并execCommand(copy)，放入当前打开dialog或body以兼容焦点限制和opaque sandbox/HTTP。清理临时字段、恢复焦点及选择；失败后尝试Clipboard API，全部失败显示明确失败，不能显示假成功。复制不修改iframe权限、后台数据或原文。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
+WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）、云端归档（第三位）。战报视图外层grid的左右轨道宽度改为0，轨道自身在容器外偏移，body整体预留外侧操作空间；搜索栏、选择篮与战报视图使用同一个内容宽度，不得只缩窄战报。箭头在外侧轨道sticky，不固定浏览器边缘。library-records的同排卡片stretch/height100%等高，pre全文不截断；html始终overflow-y:scroll并保留scrollbar-gutter:stable，空结果/加载不能因纵向滚动条显隐横向跳动。箭头按当前Tab代理原底部分页，右箭头左侧为原生纵向滚动页码栏；最多同时显示10行（低屏按可用高度缩短），overscroll-behavior隔离正文滚动。pagingState共用当前响应total/limit/offset，点击页码按原查询范围重载对应页，当前页aria-current高亮，保留跨页勾选；只调整页码栏自身scrollTop确保当前页可见，不调用全页scrollIntoView。加载禁用页码与方向，空结果隐藏页码、首末方向禁用；切Tab/类别/范围同步更新，comparisonLoading按最新sequence释放，旧响应不得提前解锁。手机grid缩窄轨道，控件在正文外，不靠覆盖正文腾位置。本地/云端列表以全文卡片呈现，核对两侧也直接显示完整正文，仍保留单独原文对照弹窗。列表与弹窗共用复制函数，复制原始body，不拼入页面元信息、不压缩空白、不解析HTML；优先在点击回调同步创建只读textarea并execCommand(copy)，放入当前打开dialog或body以兼容焦点限制和opaque sandbox/HTTP。清理临时字段、恢复焦点及选择；失败后尝试Clipboard API，全部失败显示明确失败，不能显示假成功。复制不修改iframe权限、后台数据或原文。本地按 home_team/比赛月份分页，可选全部/友谊/踢馆；比较仍只含友谊。跨页勾选用 source+ID 去重，本地还校验 home_team，服务端按 ID 重读原文，忽略客户端正文。后台登录用户可选择 OneBot 连接和发送 QQ、自定义1至20个 QQ 或目标战队管理员中的指定子集。准备阶段只读取机器人登录信息，冻结最多200份/8MiB原文和收件人并预览，显式确认后每50节点分包调用 send_private_forward_msg；节点 content 是 typed text，保持双空格和字面 CQ 文本。只支持 aiocqhttp，不将官方 OpenID 当 QQ。管理员列表及机器人账号在确认时复核。
 
 每收件人/分包保存回执，只有 message_id 确认才标记成功；网络/超时/缺回执为 unknown，不自动重试。手动重试仅 failed/cancelled，跳过成功和 unknown；重启/卸载不自动重放，进行中标记未知、尚未发送标记中断。每次请求25秒，整批15分钟，预览30分钟有效、重试24小时内。最近20批快照原子存 data_dir/report_dispatches（活动批保留），按后台用户名隔离历史和操作；关闭先停发送和核对任务、再关DB，失败仍移除本实例路由。发送回执独立于 matches.export_sent，不自动改变人工外发标记。
 
 
+
+**WebUI胜负筛选（v1.29.6）：** report-outcome为全部/胜场/负场，参照当前查询战队；切换后页码归零，选择篮保留。本地SQL按home_team/比赛日期/kind及winner筛选后再COUNT和分页比赛ID，未知胜方、胜方不在双方及本队未参赛不算负场。云端按网站winner_site/loser_site与site_team筛选，排除空标注和胜负同队，不重新推算或改写站点胜负；全量归档不变。Database两种分页方法新增可选outcome关键字，默认all兼容旧调用，不改schema21。后台入口校验参数，拒绝其他值。
+
+核对结果GET在原分类记录上按胜负过滤后再分页，不重抓网站、不重算完整分类统计；任一侧记录命中就保留整组对照。网站侧用winner/loser（新JSON增加loser），旧历史无loser时按已解析双方与展示胜方判断，无法判断则只在全部显示；本地侧按原核对展示胜方。上方统计及JSON下载仍保留完整任务范围，UI标明列表筛选状态。不得因筛选拆散不一致的双方原文，也不得写入本地比赛、指纹或人工发送标记。
 
 **平台指令配置（v1.27.0）：** platform_command_profiles 为命名 template_list，每项包含 platform_ids 精确连接ID列表、mode（仅开放勾选指令/全部开放/全部屏蔽）及 allowed_commands 多选。首个匹配项生效，空目标不匹配，未配置保留原范围；同协议不同实例独立。只按连接ID匹配，不按平台类型、QQ号或群号解析。COMMANDS/HANDLER_COMMANDS/COMMAND_ALIASES 是配置与执行共同目录，别名统一规范；第N轮通过稳定函数名映射，不依赖显示名。
 
@@ -833,7 +837,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，发送尝试前存档、失败和超时不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
-| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、容器外侧分页/滚动页码直跳及混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
+| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1038,6 +1042,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改WebUI筛选/布局** | ① 本地/云端COUNT与分页ID前的筛选SQL、未知胜负口径 ② 核对任一侧命中保留整组、过滤后分页、统计/下载完整范围 ③ API参数校验与前端复位/作用域/异步序号 ④ 搜索/战报等宽、外置轨道、同排等高及固定滚动条槽位 ⑤ 实际MySQL和浏览器长短卡片/空数据/筛选计数/跳页/复制/发送回归 | 不只筛当前页，不把未知算负场，不把云端网站胜方替换为插件重算；控件不得再次占内容列，不动统计/提交指纹/人工发送标记 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
 | **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 默认本地Tab、全文列表/复制、opaque sandbox中实际粘贴核验/焦点恢复/失败反馈及手机布局，浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
 | **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
@@ -1357,8 +1362,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_report_dispatch.py` | 模拟 OneBot：准备不发送、确认幂等、typed text/双空格、分包/多收件人、跳过成功/unknown、管理员复核、官方连接拒绝、账号校验、深拷贝/过期、重启不重放、取消和落盘失败 |
-| `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围 |
-| `test_report_comparison_webui.py` | 抓取/归档/比较顺序与失败、鉴权/13路由/生命周期、服务端来源重读和忽略伪造正文 |
+| `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围；胜负SQL的COUNT/页码/类型组合、未知/无关队排除和网站胜负列 |
+| `test_report_comparison_webui.py` | 抓取/归档/比较顺序与失败、鉴权/13路由/生命周期、服务端来源重读和忽略伪造正文；胜负/未知/非法值、核对筛选先于分页且保留整组、无重新抓取 |
 | `test_platform_policy.py`（v1.29.5新增） | partial/装饰器混合包装后的动态入口、完整注册名与模块前缀核验、循环包装终止；原权限目录和配置不变 |
 | `test_runtime_router_keeps_partial_bound_dynamic_round_when_allowed`（test_main.py） | 先安装平台过滤，再partial绑定与修改显示名，验证允许时路由保留并实际输出战报，禁止时仍静默且不读取群历史 |
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
@@ -1472,7 +1477,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.5")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.6")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1513,3 +1518,6 @@ v1.29.4 验证：Node语法检查与真实v4.27.3 bridge/Web SDK的sandbox浏览
 
 
 v1.29.5 验证：1335项默认回归通过、5项跳过；新增10项处理器包装/稳定身份/运行期路由回归。对旧v1.29.4安装包使用实际AstrBot注册、StarManager绑定、显示名修改、唤醒与分发代码复现无发送，修复版通过192种组合：v4.27.3及当前参考源码、重复加载、中文/数字及斜杠/裸形式、三种前缀、默认/仅开放/全部开放/禁止策略。测试走实际群历史读取、配对与双空格原文输出，QQ/数据库I/O模拟；另通过184项既有跨平台/第三方/未知指令LLM隔离检查。无数据库迁移，未连接生产QQ或数据库。
+
+
+v1.29.6 验证：1348项默认回归通过、6项跳过；隔离MySQL8.4的75项检查通过，含胜负筛选后的COUNT/分页/类型组合及未知/无关队排除。真实v4.27.3 bridge/Web SDK sandbox浏览器验证：搜索/战报X与宽度一致、长短全文同排卡片等高、非空到空结果的视口/搜索栏几何不变、三个Tab的胜负筛选/总数/页码及核对不重抓、13页直跳和容器外侧控件、390px/深色、实际复制粘贴、发送预览/模拟回执及匿名拒绝。未连接生产QQ/DB；无schema迁移。

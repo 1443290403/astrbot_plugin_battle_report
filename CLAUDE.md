@@ -295,3 +295,11 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - handler.handler在AstrBot加载后是partial(raw, instance)，没有__name__；round_cmd显示名又改为/第N轮。权限解析不能只取callback.__name__或显示名，否则匹配/唤醒成功后仍被activated_handlers路由静默移除。
 - handler_command优先以精确模块前缀验证的handler_full_name解析原函数名；缺元数据时解包partial/__wrapped__并防循环，最后保留普通handler_name兜底。不得根据用户消息绕过原平台配置或放开未知回调。
 - 测试必须包含StarManager实际partial绑定和initialize显示名修改，再进唤醒/分发；仅手写bound method无法覆盖部署状态。重复重载时前置过滤器需指向新实例。
+
+
+## v1.29.6 全宽战报、等高卡片与胜负筛选
+
+- 覆盖v1.29.4有宽度轨道的实现：report-layout左右grid轨道0宽，侧栏用外侧偏移，整个body统一留操作边距。搜索/选择篮/战报必须等宽；卡片同排stretch/100%等高，不截断原文。html保留overflow-y:scroll和stable槽位，空数据不产生水平抖动。
+- WebUI全部/胜场/负场先筛选再COUNT/分页。本地以home_team/已存winner且确实参赛为准，云端以site_team及网站winner_site/loser_site为准；未知不算负场。可选outcome默认all，数据库schema21不变。
+- 核对GET只过滤已完成结果，任一侧符合保留整组，完整分类统计/JSON不变，切换筛选重置页码并保留选择篮。新增site.loser用于网站筛选，旧历史可按已解析双方兜底。
+- 验证MySQL的总数/页码/类型组合，浏览器等宽/长短同排等高/空数据几何/各Tab筛选与不重抓，以及复制和发送链路。

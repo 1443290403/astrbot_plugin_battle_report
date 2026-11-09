@@ -355,3 +355,48 @@ def test_dispatch_shutdown_failure_still_cancels_comparison_and_cleans_routes(tm
     ui.dispatch.close=AsyncMock(side_effect=OSError('disk full'))
     with pytest.raises(OSError):asyncio.run(ui.close())
     assert ui.jobs.closed and not routes
+
+
+@pytest.mark.parametrize('record,team,outcome,site,expected', [
+    ({'team_a':'A队','team_b':'B队','winner':'A队'},'a队','win',False,True),
+    ({'team_a':'A队','team_b':'B队','winner':'B队'},'a队','loss',False,True),
+    ({'team_a':'A队','team_b':'B队','winner':''},'a队','loss',False,False),
+    ({'team_a':'A队','team_b':'B队','winner':'无关队'},'a队','loss',False,False),
+    ({'team_a':'A队','team_b':'B队','winner':'A队'},'其他队','loss',False,False),
+    ({'winner':'A队','loser':'B队'},'a队','win',True,True),
+    ({'winner':'A队','loser':'B队'},'b队','loss',True,True),
+    ({'winner':'A队','loser':'A队'},'a队','loss',True,False),
+    ({'team_a':'A队','team_b':'B队','winner':'B队'},'a队','loss',True,True),
+])
+def test_outcome_filter_uses_query_team_and_excludes_unknown(record,team,outcome,site,expected):
+    from report_webui import outcome_matches
+    assert outcome_matches(record,team,outcome,site=site) is expected
+
+
+@pytest.mark.parametrize('value',['won',"win OR 1=1",None])
+def test_invalid_outcome_is_rejected(value):
+    from report_webui import validate_outcome
+    with pytest.raises(ComparisonError,match='胜负'):
+        validate_outcome(value)
+
+
+def test_comparison_outcome_filters_before_paging_preserves_pairs_and_does_not_recrawl(tmp_path):
+    async def scenario():
+        site=dict(record(),winner_site='B队',loser_site='A队')
+        reports=[report(1)]+[report(i,BODY.replace('云玩家',f'示例玩家{i}')) for i in (2,3,4)]
+        reports[1]['winner']='B队'
+        client=SimpleNamespace(crawl=AsyncMock(return_value=[site]))
+        jobs=ComparisonJobs(tmp_path,AsyncMock(return_value=reports),client=client)
+        job=await jobs.start(payload());await jobs.task
+        first=await jobs.get(job['id'],'only_in_db',0,1,outcome='win')
+        second=await jobs.get(job['id'],'only_in_db',1,1,outcome='win')
+        assert first['total']==second['total']==2
+        assert len(first['records'])==len(second['records'])==1
+        assert first['records'][0]['local'][0]['id']!=second['records'][0]['local'][0]['id']
+        for outcome in ('win','loss'):
+            paired=await jobs.get(job['id'],'winner_mismatch',outcome=outcome)
+            assert paired['total']==1
+            assert paired['records'][0]['site'] and paired['records'][0]['local']
+        assert first['job']['summary']['db_total']==4
+        client.crawl.assert_awaited_once()
+    asyncio.run(scenario())
