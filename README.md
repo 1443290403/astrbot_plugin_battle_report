@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.29.7
+最新版本：v1.30.0
 
-- 文件：astrbot_plugin_battle_report-1.29.7.zip
-- 源码提交：ca1ff675a8a56b9c77b674abfe8c8bb816f6e5fc
+- 文件：astrbot_plugin_battle_report-1.30.0.zip
+- 源码提交：478b3a2dedaa1cf69340425ecc946488923e68bd
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：668a0d72927ee773230e6241dd6f43520151a2be92b48a7656c02d65aa8dd4b1
+- SHA256：abc6cfff693257a4f9176703ae566ecc78176104bd2cab0a4fc6353797d65b6a
 
 旧版本安装包保留，按文件名选择。
 
@@ -191,3 +191,12 @@ v1.29.6：战报与搜索栏等宽，翻页工具外置不占内容列；同排�
 v1.29.7：加载期间保留旧卡片与文档高度，并暂时禁用交互，新数据返回后一次替换；短页/空结果保留视口高度，右侧页码/箭头固定列位，避免纵向和横向跳动。错误时清旧结果，防止误认筛选数据。真实sandbox浏览器在阻塞API期间核验rows/scrollY/右轨道位置，以及短页/单条/空数据、复制和模拟发送。独立外部登录入口尚未实现，使用说明补充部署架构与权限范围说明；无新端口或匿名API。
 
 - [v1.29.7 WebUI使用与外部访问说明](REPORT_COMPARISON_GUIDE-1.29.7.md)
+
+## 独立战报管理入口
+
+v1.30.0：使用原AstrBot管理员及可选两步验证直接登录独立页，复用插件API与OneBot；提供SSH转发和域名HTTPS Nginx模板。查询、复制、下载、模拟QQ发送及登录过期不重放检查通过，原后台Pages继续可用。
+
+- [独立入口部署指南](STANDALONE_WEBUI_GUIDE-1.30.0.md)
+- [独立静态前端ZIP](battle-report-web-1.30.0.zip)：供Nginx站点使用，不能当作AstrBot插件安装；插件安装请用上方 astrbot_plugin_battle_report 包。
+- [SSH转发Nginx模板](nginx-loopback-1.30.0.conf)
+- [HTTPS Nginx模板](nginx-https-1.30.0.conf)
