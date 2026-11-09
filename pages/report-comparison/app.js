@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
 let jobId = '', category = 'matched', offset = 0, timer, sequence = 0, dbReady = false, running = false;
-let lastResult;
+let lastResult, comparisonLoading = false;
 let view = 'local', libraryOffset = 0, libraryData, librarySequence = 0;
 const selection = new Map();
 let dispatchId = '', dispatchTimer, dispatchSequence = 0, dispatchRunning = false;
@@ -142,9 +142,23 @@ function drawRows(data) {
   $('page-label').textContent = `第 ${offset + 1}–${Math.min(offset + data.limit,data.total)} 项，共 ${data.total} 项`;
   $('prev').disabled = !offset; $('next').disabled = offset + data.limit >= data.total;
 }
+function syncSidePaging() {
+  const comparison = view === 'comparison', prefix = comparison ? '' : 'library-';
+  const ready = comparison ? !comparisonLoading && lastResult?.job.status === 'completed' : !!libraryData;
+  for (const direction of ['prev','next']) {
+    const button = $(`side-${direction}`);
+    button.disabled = !ready || $(`${prefix}pagination`).hidden || $(`${prefix}${direction}`).disabled;
+    button.setAttribute('aria-controls', comparison ? 'records' : 'library-records');
+  }
+}
+for (const direction of ['prev','next']) $('side-'+direction).addEventListener('click',()=>{
+  // Reuse the current tab's existing pagination action and boundaries.
+  $(`${view === 'comparison' ? '' : 'library-'}${direction}`).click();
+});
 async function refresh() {
   clearTimeout(timer); if (!jobId) return;
   const selected = jobId, version = ++sequence;
+  comparisonLoading = true; syncSidePaging();
   try {
     const data = await bridge.apiGet(`comparison/jobs/${selected}`,{category,offset,limit:30});
     if (version !== sequence || selected !== jobId) return;
@@ -179,7 +193,7 @@ async function refresh() {
   } catch(e) {
     if (selected !== jobId || version !== sequence) return;
     notice(e.message); if (running) timer = setTimeout(refresh,3000);
-  }
+  } finally {if (version === sequence) {comparisonLoading = false; syncSidePaging();}}
 }
 $('history').addEventListener('change', () => { if (!$('history').value) return; jobId = $('history').value; category = 'matched'; offset = 0; notice(); refresh(); });
 $('prev').addEventListener('click', () => {offset = Math.max(0,offset - 30); refresh();});
@@ -248,13 +262,14 @@ function activateView(next) {
   $('library-description').textContent=view==='local'?'按本地比赛编号显示，不依赖是否抓取过网站。':'完整拉取后按云端ID保存一份；再次拉取刷新原记录。';
   if (view!=='comparison' && dbReady && $('team').value && $('month').value) loadLibrary();
   else if (view==='comparison' && jobId && !lastResult) refresh();
+  syncSidePaging();
 }
 document.querySelectorAll('#view-tabs button').forEach(b=>b.addEventListener('click',()=>activateView(b.dataset.view)));
 function storedTime(value) { return value ? new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(Number(value)*1000)) : '未记录'; }
 async function loadLibrary() {
   if (view==='comparison') return;
   const selectedView=view, version=++librarySequence;
-  $('start').disabled=true; notice();libraryData=null;$('library-records').replaceChildren();$('library-pagination').hidden=true;
+  $('start').disabled=true; notice();libraryData=null;$('library-records').replaceChildren();$('library-pagination').hidden=true; syncSidePaging();
   $('library-empty').hidden=false;$('library-empty').querySelector('h3').textContent='正在读取战报';$('library-empty').querySelector('p').textContent='';
   try {
     const data=await bridge.apiGet(`comparison/${view==='local'?'local-reports':'cloud-reports'}`,{
@@ -280,7 +295,7 @@ async function loadLibrary() {
     $('library-page-label').textContent=`第 ${libraryOffset+1}–${Math.min(libraryOffset+data.limit,data.total)} 项，共 ${data.total} 项`;
     $('library-prev').disabled=!libraryOffset; $('library-next').disabled=libraryOffset+data.limit>=data.total;
     selectionChanged();
-  } catch(e) {if(version===librarySequence){notice(e.message);$('library-empty').querySelector('h3').textContent='未能读取战报';$('library-empty').querySelector('p').textContent='请检查范围或连接后重新刷新。';}} finally {if(version===librarySequence)setRunning(running);}
+  } catch(e) {if(version===librarySequence){notice(e.message);$('library-empty').querySelector('h3').textContent='未能读取战报';$('library-empty').querySelector('p').textContent='请检查范围或连接后重新刷新。';}} finally {if(version===librarySequence){setRunning(running);syncSidePaging();}}
 }
 $('local-kind').addEventListener('change',()=>{libraryOffset=0;loadLibrary();});
 $('library-prev').addEventListener('click',()=>{libraryOffset=Math.max(0,libraryOffset-30);loadLibrary();});

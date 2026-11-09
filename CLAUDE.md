@@ -275,3 +275,9 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 默认/首位本地战报，核对第二、云端第三，初始化不自动切到历史核对。列表直接呈现body全文，纯textContent/pre-wrap，不截断、压空白或执行HTML。
 - copyButton共用于列表/弹窗；同步用户点击的textarea+execCommand兼容opaque iframe及HTTP，当前dialog内放临时字段以免焦点被困；移除字段、恢复焦点/选择，备选Clipboard API。只有成功才回执已复制，全失败明确反馈；不能放宽iframe权限。
 - 浏览器验证必须使用真实sandbox属性，复制后真实粘贴逐字比对，而非只断言按钮文案；另覆盖备选API/拒绝、临时字段清理、手机布局与原跨页发送行为。数据库schema21和QQ指令不变。
+
+
+## v1.29.3 固定分页
+
+- 两侧箭头按当前Tab代理原分页按钮，不复制页码/范围逻辑。syncSidePaging共用底部边界、当前数据与加载状态，比较加载按sequence在finally释放；切Tab/加载/失败也同步，无数据及首末页禁用相应方向。手机预留边缘空隙，不遮正文。
+- 验证三Tab路由、跨页勾选、首末/单页、固定滚动位置和手机边界；不改数据库/QQ接口/框架iframe权限。
