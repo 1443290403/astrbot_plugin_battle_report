@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.31.0
+最新版本：v1.31.1
 
-- 文件：astrbot_plugin_battle_report-1.31.0.zip
-- 源码提交：56ac98954971c6f9440fe9e9047c9c2f06fe676a
+- 文件：astrbot_plugin_battle_report-1.31.1.zip
+- 源码提交：9fd0f650889f5a59706e4b31800adc7b1371f83e
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：5aa252ecff8d55efa9918e12b95c52dd73d01c77926f18cc99df662be83509ea
+- SHA256：18ae717320eb98399885885762f57b6fc72390d8715a0b3a3311bd7a216f64f7
 
 旧版本安装包保留，按文件名选择。
 
@@ -216,3 +216,11 @@ v1.31.0：曾满员的队伍超时后，未进入新车的原成员可补发一�
 - [等车与超时补发说明](OFFICIAL_QUEUE_GUIDE-1.31.0.md)
 - [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.31.0.md)
 - battle-report-web-1.31.0.zip 仅为可选静态资源包，默认无需下载，不能当AstrBot插件安装。
+
+## 管理员账号自动创建
+
+v1.31.1：设置战队管理员时自动创建网页账号，默认QQ号及每账号独立随机初始密码；启动补齐旧名单，本人私聊 /战报登录 获取账号、初始密码和一次性码。原后台仍可查看未修改初始密码、重置及启停，无需手工建号。重复授权、跨战队与重启保留已有账号、密码和停用状态。1388项默认回归、76项隔离MySQL检查通过；实际AstrBot SDK独立入口和Pages浏览器验证使用模拟QQ。
+
+- [网页登录与初始密码](TEAM_WEB_LOGIN_GUIDE-1.31.1.md)
+- [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.31.1.md)
+- battle-report-web-1.31.1.zip仅为可选静态资源，不能当AstrBot插件安装。
