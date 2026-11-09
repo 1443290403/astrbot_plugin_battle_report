@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.33.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.33.1`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -853,7 +853,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，发送尝试前存档、失败和超时不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
-| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
+| **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 移除顶部介绍标题区并直接呈现功能Tab；本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 | **F-47** | 自动独立战报管理入口 | standalone_web / scripts/export_report_webui.py / webui_standalone | 现有后台端口自动挂载/battle-report/，冷启／热安装／停用清理；原账号及2FA、401不重放；可选静态导出／Nginx | M-09、F-44、F-45、F-46 | 不新增端口／配置／账号；只公开6个静态资源 |
 | **F-50** | 一周会话与HTTPS访问 | WebAccounts / StandaloneFrontend / setup_report_https | 战队7天摘要会话跨重启恢复／持久撤销、管理员原Cookie及登录类型恢复、公网TLS保护、仅IP证书／代理配置生成 | M-10、F-47、F-48 | 原子JSON会话摘要；可选主机证书与Nginx配置，无schema变更 |
 | **F-49** | WebUI队伍／队员管理 | WebManagement / ComparisonWebUI / get_webui_teams / get_webui_members / get_webui_players | 仅核心后台身份，战队／管理员及群概览、管理员成员候选／可移除标签／单QQ手动兜底、角色资料／QQ与已有参赛ID绑定管理、搜索分页及并发修改检查 | M-02、M-03、M-10、F-48 | 复用team_admins/users/player_ids及原身份锁；无schema迁移 |
@@ -1604,3 +1604,8 @@ v1.33.0 验证：1439项默认回归通过、11项跳过。真实OpenSSL生成IP
 
 
 NAT部署文档：以实际docker port输出0.0.0.0:6185为准，公网34300由服务商NAT转发至宿主机6185，Docker为6185→6185；新公网34331经TCP NAT到宿主机Nginx8443，回源127.0.0.1:6185。专用教程加入absolute_redirect off保持相对跳转，保留Host公网端口，区分本机8443校验与公网34331访问、NAT及两侧防火墙；旧错误回源34300定向改回6185，保留证书。IP输入改为直接变量赋值，示例地址明确须替换，补充read提示语与实际输入的区别及退出等待状态的方法。仅修改教程／索引，不改插件、schema或任何已部署的Docker／NAT配置。
+
+
+v1.33.1 页面精简：移除共用HTML的顶部header及专属样式（英文标题、战报管理标题、站点标签、说明、只读标记），不保留占位。Pages、自动独立入口和可选静态导出共用同一份页面；保留独立入口账号操作区及登录／详情对话框的eyebrow样式。数据库schema21、接口与权限不变。
+
+验证：8项既有独立入口／静态导出检查通过；浏览器使用真实AstrBot v4.27.3 Pages桥接和独立入口适配器，覆盖1440px桌面与390px手机、功能Tab切换、标题移除、无横向溢出及账号操作区不遮挡。使用隔离样本和模拟连接，未连接生产数据库或发送QQ消息。

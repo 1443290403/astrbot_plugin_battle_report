@@ -1,6 +1,6 @@
 # 战队对战战报
 
-![版本](https://img.shields.io/badge/版本-1.33.0-brightgreen)
+![版本](https://img.shields.io/badge/版本-1.33.1-brightgreen)
 ![AstrBot](https://img.shields.io/badge/AstrBot-v4.27.3+-blue)
 
 ## 🌟 插件简介
@@ -526,6 +526,10 @@ a队踢馆b队
 由 `requirements.txt` 自动安装，无需手动处理。
 
 ## 📝 更新日志
+
+### v1.33.1
+
+- 移除战报页面顶部标题区，包含英文标题、站点标签、说明和只读标记，页面直接从功能标签栏开始；内嵌、自动独立入口与静态导出同步更新。
 
 ### v1.33.0
 
