@@ -4,6 +4,7 @@
 """
 import asyncio
 import csv
+from functools import partial
 import importlib
 import json
 import logging
@@ -896,6 +897,43 @@ def test_round_custom_filter_wakeup_does_not_require_at_or_prefix_flag(plugin_mo
     assert ev.send.await_args.args[0].splitlines()[-1] == '云玩家  0:0  鸽子'
     assert not ev.is_at_or_wake_command
     obj.db.insert_report.assert_not_awaited()
+
+
+@pytest.mark.parametrize('allowed', [True, False])
+@pytest.mark.parametrize('command', ['/第二轮', '/第2轮'])
+def test_runtime_router_keeps_partial_bound_dynamic_round_when_allowed(
+        plugin_module, tmp_path, allowed, command):
+    obj = plugin(plugin_module, tmp_path)
+    obj.config['platform_command_profiles'] = [{'platform_ids':['native-test'],
+        'mode':'仅开放勾选指令','allowed_commands':['第N轮'] if allowed else []}]
+    obj._read_latest_report = AsyncMock(return_value=(
+        '战队: a队 VS b队\n时间: 2026.11.09\n规则: 2/3【KOF】\n地点: 100\n'
+        '------第一轮------\n云玩家  2:0  复读机\n萌新  0:2  鸽子\n------第二轮------'))
+    obj._install_platform_permissions()
+    registry = sys.modules['astrbot.core.star.star_handler'].star_handlers_registry
+    target = next(h for h in registry.handlers if h.handler_name == 'round_cmd')
+    # StarManager binds raw functions using functools.partial; initialize renames this handler.
+    target.handler = partial(type(obj).round_cmd, obj)
+    target.handler_name = '/第N轮'
+    gate = next(h for h in registry.handlers if h.handler_name == 'official_queue_cmd')
+    gate.handler = partial(type(obj).official_queue_cmd, obj)
+    ev = event(command)
+    ev.get_platform_name = lambda:'aiocqhttp'
+    ev.get_platform_id = lambda:'native-test'
+    ev.is_at_or_wake_command = False
+    assert plugin_module.RoundCommandFilter().filter(ev,{})
+    ev.set_extra('activated_handlers',[gate,target])
+    asyncio.run(gate.handler(ev))
+    assert (target in ev.get_extra('activated_handlers')) is allowed
+    ev.should_call_llm.assert_called_once_with(True)
+    ev.stop_event.assert_not_called()
+    if allowed:
+        assert asyncio.run(collect(target.handler(ev))) == []
+        ev.send.assert_awaited_once()
+        assert ev.send.await_args.args[0].splitlines()[-1] == '云玩家  0:0  鸽子'
+    else:
+        ev.send.assert_not_awaited()
+        obj._read_latest_report.assert_not_awaited()
 
 
 @pytest.mark.parametrize('handler_name', ['lineup_cmd', 'record_cmd', 'round_cmd'])

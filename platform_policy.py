@@ -1,5 +1,7 @@
 """战报平台指令权限：只管理本插件入口，不替代角色与群权限校验。"""
 
+from functools import partial
+
 HANDLER_COMMANDS = {
     "confirm_identity": "确认关联",
     "revoke_identity": "解除官方关联",
@@ -150,7 +152,26 @@ COMMANDS = tuple(dict.fromkeys([*HANDLER_COMMANDS.values(), *QUEUE_COMMANDS.valu
 
 
 def handler_command(handler):
-    name = getattr(getattr(handler, 'handler', None), '__name__', None)
+    # 注册全名在实例绑定和显示名修改后保持不变，优先使用它识别入口。
+    module = getattr(handler, 'handler_module_path', None)
+    full_name = getattr(handler, 'handler_full_name', None)
+    if module and isinstance(full_name, str) and full_name.startswith(str(module) + '_'):
+        command = HANDLER_COMMANDS.get(full_name[len(str(module)) + 1:])
+        if command:
+            return command
+    # StarManager 用 partial(raw_handler, plugin_instance) 绑定处理器；
+    # partial 没有 __name__，装饰器还可能再通过 __wrapped__ 包装一层。
+    function = getattr(handler, 'handler', None)
+    seen = set()
+    while function is not None and id(function) not in seen:
+        seen.add(id(function))
+        if isinstance(function, partial):
+            function = function.func
+        elif getattr(function, '__wrapped__', None) is not None:
+            function = function.__wrapped__
+        else:
+            break
+    name = getattr(function, '__name__', None)
     return HANDLER_COMMANDS.get(name) or HANDLER_COMMANDS.get(getattr(handler, 'handler_name', None))
 
 

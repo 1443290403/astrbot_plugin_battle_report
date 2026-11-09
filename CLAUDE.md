@@ -288,3 +288,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 覆盖v1.29.3的浏览器边缘定位：report-layout grid为左右轨道留位，rail-controls在容器内sticky，控件不得遮正文或回到viewport两边。右轨道按页码列/下一页箭头排列。
 - 页码列原生滚动，最多10行，低屏进一步限高；滚动边界隔离正文。pagingState以当前响应的total/offset/limit派生页码，jumpToPage走原查询加载，syncSidePaging统一同步禁用/高亮/作用域；切范围重建页码但不清选择篮。当前页可见只调整页码列scrollTop，禁止scrollIntoView拖动全文。
 - 验证超过10页的真实滚轮和直跳、当前页、宽屏容器相对位置、切Tab/恢复数据、跨页选择及手机不遮正文。数据库/QQ接口不变。
+
+
+## v1.29.5 动态处理器被运行期路由误过滤
+
+- handler.handler在AstrBot加载后是partial(raw, instance)，没有__name__；round_cmd显示名又改为/第N轮。权限解析不能只取callback.__name__或显示名，否则匹配/唤醒成功后仍被activated_handlers路由静默移除。
+- handler_command优先以精确模块前缀验证的handler_full_name解析原函数名；缺元数据时解包partial/__wrapped__并防循环，最后保留普通handler_name兜底。不得根据用户消息绕过原平台配置或放开未知回调。
+- 测试必须包含StarManager实际partial绑定和initialize显示名修改，再进唤醒/分发；仅手写bound method无法覆盖部署状态。重复重载时前置过滤器需指向新实例。

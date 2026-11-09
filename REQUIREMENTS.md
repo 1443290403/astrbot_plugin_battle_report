@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.29.4`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.29.5`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -419,6 +419,8 @@ main.py                    命令入口 / 权限 / 平台消息收发 / 编排
 
 ### M-10 平台消息收发（QQ 适配器口径）
 
+**动态处理器身份（v1.29.5）：** AstrBot StarManager在构造插件后用partial(raw_handler, instance)绑定回调，initialize又将round_cmd的显示名改为/第N轮。partial没有__name__，不得因此把动态处理器当未知入口移出activated_handlers。platform_policy.handler_command优先读取handler_full_name中精确匹配handler_module_path前缀的原函数名；缺完整元数据时解包partial及__wrapped__，用seen防循环，再兜底原handler_name。不能通过显示名或消息文本放行任意处理器，原平台配置仍是授权来源。构造期过滤与运行期路由共用同一身份解析；重载时过滤器指向新实例。注册/显示名/包装的变化不影响指令权限键第N轮。
+
 **第N轮自定义唤醒（v1.29.1）：** RoundCommandFilter 严格匹配动态指令，框架 custom-filter 通过只保证 is_wake，不保证 is_at_or_wake_command。round_cmd 不得把后者当作已匹配指令的额外门槛，也不改写全局唤醒标志。保留首位平台权限过滤、私聊拒绝、群禁用和数据库检查、群历史读取、中文/数字解析、存活池与双空格直发流程；普通聊天不匹配，不新增 LLM 或 SQL 写入。
 
 **外部战报只读核对（v1.28.0）：** 后台Pages页面 `pages/report-comparison` 与 `ComparisonWebUI` 使用AstrBot官方bridge/`astrbot.api.web`和后台登录授权，不自开端口，不接受QQ侧用户权限代替后台登录。后台管理员显式选择本地home_team（跨群）和网站groupname；这不是群命令的战队解析兜底，不改_require_home或原群/角色检查。默认上个月按北京时间计算。网站starttime/endtime是发布时间，本地范围是比赛日期，分别校验；单次至多93天。只比较friendly，保留排除的踢馆数量。
@@ -821,7 +823,7 @@ year = now.year - 1 if month > now.month else now.year
 | 编号 | 命令 | 入口 | 行为 | 依赖口径 | 落库 |
 |---|---|---|---|---|---|
 | **F-01** | `/排表 [规则]` + 名单 | `lineup_cmd` / `_prepare_lineup` / `lineup.parse_lineup` / `generate_template` | 解析 `队伍名: 成员1 成员2` 名单；首行非名单则视为规则；两队各自随机洗牌后按下标配对，生成第一轮 `0:0` 占位 + 空第二轮；人数少的一侧用 `TK` 占位 | M-01、M-02(校验群)、M-10(输出) | `teams`（覆盖式） |
-| **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。完整动态指令匹配即可自定义唤醒，不再二次要求 @/全局前缀标志；平台前置权限与群禁用仍生效。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
+| **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。完整动态指令匹配即可自定义唤醒，不再二次要求 @/全局前缀标志；平台前置权限与群禁用仍生效；运行期使用稳定注册身份或解包后的函数名识别动态处理器。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
 | **F-03** | `/记录 玩家名 比分 [对手]` | `record_cmd` / `lineup.record_from_info` | 找该选手**最后一场未记录**的 `0:0` 对阵填入比分；指定对手且无未记录对阵时，在最新轮次插入新对阵。比分支持 `2:0` 或紧凑 `20` | M-04、M-10、队对齐(见下) | 无 |
 | **F-38** | LLM 工具 `battle_report_lineup(lineup_text)` | `lineup_tool` / `_prepare_lineup` | 与 F-01 共用完整排表流程；按当前群保存名单，成功只直发一份原文并返回 None，错误文本交回模型。仅在用户明确要求并给出双方名单时调用；私聊/禁用/数据库检查不可绕过 | M-01、M-03、M-10、M-11 | `teams`（覆盖式，不写战报） |
 | **F-39** | QQ 官方群 `/友谊等车`（兼容 `/等车`、`/蹲车`）、`/进队等车`、`/发送群号`、`/离队`、`/解散`（兼容 `/解散队伍`）、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/友谊等车帮助`（兼容 `/等车帮助`） | `official_queue_cmd` / `WaitingQueues` | 官方群多车合并面板、4分钟房间广播、10分钟独立清理及首次满3人一次性重计时、入退队/满员/发车/解散定向提醒、每日车次编号；原账号关联见 F-40 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON；身份 SQL 见 F-40 |
@@ -1044,7 +1046,7 @@ year = now.year - 1 if month > now.month else now.year
 | **改战绩卡片** | ① record/my_record 与 `_record_results` 的范围和趋势分流 ② `stats.build_record_metrics` ③ `chart.make_record_images` 与共享 `_trend_image` ④ handler/渲染/指标/集合踢馆结果回归 ⑤ 帮助、预览与 README | 不把个人对局与战队整场混算、不吞掉长 ID 或截掉明细、不把趋势失败变成战绩查询失败；保留标准响应链 |
 | **改排行图片发送** | ① `ranking` 的标准 yield 响应链 ② 图片生成失败回退与点评展示行一致 ③ `tests/test_main.py` 图片先输出/点评后生成、不调用 stop_event/event.send、独立请求测试 ④ README/M-09 | 不绕开 AstrBot 回复装饰/发送阶段，不修改 DNS、不把网络故障宣称已修复、不将排行测试等同普通聊天全链路验证 |
 | **改排行点评** | ① `ranking` 的先发榜单/后点评路径及 `_ranking_commentary` ② `_ai_persona_prompt` 的插件统一人格解析 ③ `ranking_ai_comment`/`ai_persona_id` 配置四处 ④ `tests/test_main.py`、主群帮助与预览 | 复用本次查询的月份、范围与展示函数；不因图片提前 return 漏点评，不把 LLM 失败报成数据库查询失败，不另算积分或导入聊天历史 |
-| **改动态轮次入口** | ① RoundCommandFilter边界与中文/数字/斜杠 ② 平台首位过滤和路由器识别第N轮 ③ 自定义唤醒与@/前缀标志区别 ④ 群/DB/历史前置及round_cmd原文直发 ⑤ handler回归和真实WakingCheckStage验证 | 自定义唤醒仅置is_wake，不能因is_at_or_wake_command=False静默退出；不可绕过平台配置或扩大普通聊天匹配 |
+| **改动态轮次入口** | ① RoundCommandFilter边界与中文/数字/斜杠 ② 平台首位过滤和路由器识别第N轮 ③ 自定义唤醒与@/前缀标志区别、稳定注册身份/partial与__wrapped__解包 ④ 群/DB/历史前置及round_cmd原文直发 ⑤ 实际StarManager绑定+显示名修改+WakingCheckStage+StarRequestSubStage整段验证及重复重载 | 自定义唤醒仅置is_wake，不能因is_at_or_wake_command=False静默退出；不可绕过平台配置或扩大普通聊天匹配 |
 | **改战报原文输出** | ① 排表/记录/轮次三个 handler 的 `_send_report_text` ② `lineup.normalize_duel_spacing` ③ handler 与格式保留测试 ④ README/M-10 | 成功正文不得回到回复整理流程；错误提示正常保留，禁群/私聊/参数检查不能绕过；只规范比分外部分隔，不压缩 ID 内空格 |
 | **新增一条命令** | ① `main.py` 加 handler + `@filter.command(name, alias={"/"+name})` ② `stats.HELP_SECTIONS` 加段（官方专用等车使用独立 HELP 和 `/帮助 等车`，不混入 OneBot 索引）③ `help_guide.WORKFLOWS` 对应流程补上使用场景 ④ 前置校验（选 `_group_check`/`_require_home`/`_admin_check`）⑤ `tests/` | 别名必须**同时注册带 `/` 与不带 `/`** 两种；`ALL_SECTIONS` 会自动纳入，不用改 |
 | **战报格式加一个头字段**（如 `裁判:`） | ① `parser` 加正则 + `BattleReport` 字段 ② `matches` 表加列 + `SCHEMA_VERSION` + 迁移 ③ `insert_report` ④ `lineup.generate_template` ⑤ 导出还原 `report_to_text`/`format_report` ⑥ CSV 表头 ⑦ **`_header_block` 的头部提取** | M-10：`战队:` 是 3 处的识别标志，别动它 |
@@ -1357,6 +1359,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `test_report_dispatch.py` | 模拟 OneBot：准备不发送、确认幂等、typed text/双空格、分包/多收件人、跳过成功/unknown、管理员复核、官方连接拒绝、账号校验、深拷贝/过期、重启不重放、取消和落盘失败 |
 | `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围 |
 | `test_report_comparison_webui.py` | 抓取/归档/比较顺序与失败、鉴权/13路由/生命周期、服务端来源重读和忽略伪造正文 |
+| `test_platform_policy.py`（v1.29.5新增） | partial/装饰器混合包装后的动态入口、完整注册名与模块前缀核验、循环包装终止；原权限目录和配置不变 |
+| `test_runtime_router_keeps_partial_bound_dynamic_round_when_allowed`（test_main.py） | 先安装平台过滤，再partial绑定与修改显示名，验证允许时路由保留并实际输出战报，禁止时仍静默且不读取群历史 |
 | `test_parser.py` | 战报解析、标记剥离、**替补推断**、月份/导出参数、合法日期、中文冒号批量拆分、非法判罚及同队校验 |
 | `test_official_identity.py` | SQLite 事务执行真实 SQL：哈希码/QQ确认/一次性/过期/归属变化/唯一关联/AppID/撤销/回滚/首次设置；另有可选原生 MySQL 用例 |
 | `test_official_queue.py` | 240/600秒边界、首次满员粘性标志、进退队/并发/解散/跨日编号、合并广播、v1到v2迁移/重启/待发/原子写回滚、作用域与旧按钮去重、原生填入及三列按钮；不连接 QQ |
@@ -1468,7 +1472,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.4")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.29.5")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1506,3 +1510,6 @@ v1.29.3 验证：Node语法检查及真实v4.27.3 bridge/Web SDK的sandbox浏览
 
 
 v1.29.4 验证：Node语法检查与真实v4.27.3 bridge/Web SDK的sandbox浏览器检查通过；366份样本分13页，验证页码栏显示高度上限、真实滚轮仅滚页码、直接跳第12/13页与当前页高亮、切Tab/恢复数据后的页码更新、首末边界及跨页勾选。2200px宽屏核验箭头与页码位于战报容器外侧，滚动停靠和390px手机边界通过；原全文复制实际粘贴、发送预览/模拟回执和登录保护继续通过。仅调整WebUI，不改数据库或QQ接口。
+
+
+v1.29.5 验证：1335项默认回归通过、5项跳过；新增10项处理器包装/稳定身份/运行期路由回归。对旧v1.29.4安装包使用实际AstrBot注册、StarManager绑定、显示名修改、唤醒与分发代码复现无发送，修复版通过192种组合：v4.27.3及当前参考源码、重复加载、中文/数字及斜杠/裸形式、三种前缀、默认/仅开放/全部开放/禁止策略。测试走实际群历史读取、配对与双空格原文输出，QQ/数据库I/O模拟；另通过184项既有跨平台/第三方/未知指令LLM隔离检查。无数据库迁移，未连接生产QQ或数据库。

@@ -1,5 +1,6 @@
 import ast
 import json
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,6 +84,39 @@ def test_round_display_name_does_not_change_handler_permission():
     async def round_cmd():
         pass
     assert policy.handler_command(SimpleNamespace(handler=round_cmd, handler_name='/第N轮')) == '第N轮'
+
+
+@pytest.mark.parametrize('binding', ['partial', 'wrapped_partial', 'partial_wrapped'])
+def test_renamed_round_permission_survives_astrbot_runtime_binding(binding):
+    async def round_cmd(self, event):
+        pass
+    def wrapped(fn):
+        async def runtime_wrapper(*args, **kwargs):
+            return await fn(*args, **kwargs)
+        runtime_wrapper.__wrapped__ = fn
+        return runtime_wrapper
+    handler = partial(round_cmd, object())
+    if binding == 'wrapped_partial':
+        handler = wrapped(handler)
+    elif binding == 'partial_wrapped':
+        handler = partial(wrapped(round_cmd), object())
+    assert policy.handler_command(SimpleNamespace(handler=handler, handler_name='/第N轮')) == '第N轮'
+
+
+@pytest.mark.parametrize('module,expected', [('plugin.main','第N轮'),('other.main',None)])
+def test_registered_full_name_is_stable_but_must_match_handler_module(module, expected):
+    async def runtime_wrapper():
+        pass
+    handler=SimpleNamespace(handler=runtime_wrapper,handler_name='/第N轮',
+        handler_module_path=module,handler_full_name='plugin.main_round_cmd')
+    assert policy.handler_command(handler)==expected
+
+
+def test_handler_wrapper_cycle_does_not_loop_or_grant_unknown_command():
+    async def runtime_wrapper():
+        pass
+    runtime_wrapper.__wrapped__=runtime_wrapper
+    assert policy.handler_command(SimpleNamespace(handler=runtime_wrapper,handler_name='unknown')) is None
 
 
 def test_all_legacy_queue_actions_have_one_configurable_permission():
