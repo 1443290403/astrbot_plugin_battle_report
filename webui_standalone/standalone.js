@@ -11,7 +11,7 @@
   function rememberMode(mode){document.cookie=`${preferenceName}=${mode}; Max-Age=604800; Path=/; SameSite=Strict${location.protocol==='https:'?'; Secure':''}`;}
   const dialog=document.createElement('dialog');
   dialog.id='standalone-login';dialog.setAttribute('aria-labelledby','standalone-login-title');
-  dialog.innerHTML='<form id="standalone-login-form"><p class="eyebrow">BATTLE REPORT</p><h2 id="standalone-login-title">登录战报管理</h2><label>登录方式<select id="standalone-login-mode"><option value="master">AstrBot 管理员</option><option value="password">战队管理员账号密码</option><option value="code">QQ 登录码</option></select></label><p id="standalone-login-hint" class="hint"></p><label id="standalone-username-label">用户名<input id="standalone-username" autocomplete="username" maxlength="200" required></label><label id="standalone-password-label">密码<input id="standalone-password" type="password" autocomplete="current-password" required></label><label id="standalone-totp-label">动态验证码或恢复码<input id="standalone-code" autocomplete="one-time-code" placeholder="未启用两步验证时留空"></label><label id="standalone-login-code-label" hidden>一次性登录码<input id="standalone-login-code" autocomplete="one-time-code" maxlength="1024"></label><p id="standalone-login-error" class="notice" role="alert" hidden></p><button id="standalone-login-submit" type="submit">登录</button></form>';
+  dialog.innerHTML='<form id="standalone-login-form"><p class="eyebrow">BATTLE REPORT</p><h2 id="standalone-login-title">登录战报管理</h2><label>登录方式<select id="standalone-login-mode"><option value="master">AstrBot 管理员</option><option value="password">战队管理员账号密码</option><option value="code">QQ 登录码</option></select></label><p id="standalone-login-hint" class="hint"></p><label id="standalone-username-label">用户名<input id="standalone-username" autocomplete="username" maxlength="200" required></label><label id="standalone-password-label">密码<input id="standalone-password" type="password" autocomplete="current-password" required></label><label id="standalone-totp-label">动态验证码或恢复码<input id="standalone-code" autocomplete="one-time-code" placeholder="未启用两步验证时留空"></label><label id="standalone-login-code-label" hidden>一次性登录码<input id="standalone-login-code" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="8位字母和数字" maxlength="1024"></label><p id="standalone-login-error" class="notice" role="alert" hidden></p><button id="standalone-login-submit" type="submit">登录</button></form>';
   document.body.append(dialog);dialog.addEventListener('cancel',event=>event.preventDefault());
   const bar=document.createElement('aside');bar.className='standalone-session';
   bar.innerHTML='<span id="standalone-session-label">独立战报管理</span><button id="standalone-password-open" type="button" class="secondary" hidden>修改密码</button><button id="standalone-logout" type="button" class="secondary" hidden>退出登录</button>';
@@ -20,13 +20,18 @@
   passwordDialog.innerHTML='<form id="standalone-password-form"><div class="dialog-top"><h2>修改登录密码</h2><button id="standalone-password-close" type="button" class="secondary">关闭 ×</button></div><label>原密码<input id="standalone-old-password" type="password" autocomplete="current-password" required maxlength="256"></label><label>新密码<input id="standalone-new-password" type="password" autocomplete="new-password" required minlength="8" maxlength="256"></label><p id="standalone-password-error" class="notice" hidden></p><button type="submit">保存新密码</button></form>';
   document.body.append(passwordDialog);
   const $=id=>document.getElementById(id);
+  function loginCode(text){
+    const labeled=text.match(/战报登录码(?:（[^）]*）)?[：:]\s*([A-HJ-NP-Z2-9]{8})(?![A-Za-z0-9_-])/i);
+    const line=text.match(/(?:^|[\r\n])\s*([A-HJ-NP-Z2-9]{8})\s*(?=$|[\r\n])/i);
+    return (labeled?.[1] || line?.[1] || text).toUpperCase();
+  }
   function loginFields(){
     const mode=$('standalone-login-mode').value;
     $('standalone-username-label').hidden=mode==='code';$('standalone-password-label').hidden=mode==='code';
     $('standalone-username').required=mode!=='code';$('standalone-password').required=mode!=='code';
     $('standalone-totp-label').hidden=mode!=='master';$('standalone-login-code-label').hidden=mode!=='code';
     $('standalone-login-code').required=mode==='code';
-    $('standalone-login-hint').textContent=mode==='master'?'使用现有 AstrBot 后台管理员账号。':mode==='password'?'账号默认是管理员QQ号，私聊机器人发送 /战报登录 获取初始密码。':'先私聊 SnowLuma／OneBot 机器人发送 /战报登录，再粘贴5分钟内有效的一次性登录码。';
+    $('standalone-login-hint').textContent=mode==='master'?'使用现有 AstrBot 后台管理员账号。':mode==='password'?'账号默认是管理员QQ号，私聊机器人发送 /战报登录 获取初始密码。':'先私聊 SnowLuma／OneBot 机器人发送 /战报登录，输入收到的8位登录码。';
   }
   if(['master','password','code'].includes(preferredMode))$('standalone-login-mode').value=preferredMode;
   $('standalone-login-mode').addEventListener('change',loginFields);loginFields();
@@ -104,7 +109,7 @@
       sessionMode=mode==='master'?'master':'team';token='';
       const path=mode==='master'?'/api/auth/login':TEAM+'auth/'+(mode==='code'?'code-login':'login');
       const pasted=$('standalone-login-code').value.trim();
-      const body=mode==='code'?{code:pasted.match(/brc_[A-Za-z0-9_-]{32}/)?.[0] || pasted}:{username:$('standalone-username').value.trim(),password:$('standalone-password').value,...(mode==='master'?{code:$('standalone-code').value.trim() || undefined,trust_device_flag:false}:{})};
+      const body=mode==='code'?{code:loginCode(pasted)}:{username:$('standalone-username').value.trim(),password:$('standalone-password').value,...(mode==='master'?{code:$('standalone-code').value.trim() || undefined,trust_device_flag:false}:{})};
       const data=await readEnvelope(await fetchResponse(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
       token=typeof data?.token==='string'?data.token:'';
       await verifySession();loggedIn(data.actor || {role:'master'});

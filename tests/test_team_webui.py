@@ -103,6 +103,22 @@ async def team_login(site,client,qq='20000001'):
     return response.json()['data']['token']
 
 
+def test_short_login_code_api_accepts_lowercase_and_rejects_invalid_inputs_without_consuming(site):
+    async def run():
+        code=await site.ui.auth.issue_code('20000001')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
+            for invalid in [code[:-1],code+'A',code+'-', 'O0I1AB23', 'Ａ234BCDE', {'code':code}]:
+                response=await client.post('/battle-report/auth/code-login',json=dict(code=invalid))
+                assert response.status_code==401
+            response=await client.post('/battle-report/auth/code-login',json=dict(code=' '+code.lower()+'\n'))
+            assert response.status_code==200,response.text
+            assert response.json()['data']['actor']['qq']=='20000001'
+            assert 'secure' in response.headers['set-cookie'].lower()
+            assert (await client.post('/battle-report/auth/code-login',json=dict(code=code))).status_code==401
+        await site.close()
+    asyncio.run(run())
+
+
 def test_scoped_login_all_api_boundaries_and_account_management_are_server_enforced(site):
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:

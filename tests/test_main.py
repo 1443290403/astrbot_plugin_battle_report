@@ -3145,7 +3145,7 @@ def test_team_login_code_only_for_real_onebot_private_team_admin(plugin_module,t
     result=asyncio.run(collect(obj.report_web_login(ev)))
     if issued:
         ev.stop_event.assert_called_once();ev.send.assert_awaited_once()
-        assert 'brc_' in ev.send.await_args.args[0] and '5分钟' in ev.send.await_args.args[0]
+        assert re.search(r'(?m)^[A-HJ-NP-Z2-9]{8}$',ev.send.await_args.args[0]) and '5分钟' in ev.send.await_args.args[0]
         assert not result and len(auth.codes)==1
     else:
         ev.send.assert_not_awaited();assert not auth.codes
@@ -3194,8 +3194,8 @@ def test_private_login_returns_initial_account_and_keeps_code_when_store_fails(p
         reply=ev.send.await_args.args[0]
         creds=await auth.credentials('10001')
         assert '登录账号：10001' in reply and creds['password'] in reply
-        assert 'brc_' in reply and '5分钟' in reply
-        code=re.search(r'brc_[A-Za-z0-9_-]+',reply).group()
+        assert re.search(r'(?m)^[A-HJ-NP-Z2-9]{8}$',reply) and '5分钟' in reply
+        code=re.search(r'(?m)^[A-HJ-NP-Z2-9]{8}$',reply).group()
         assert await auth.login_code(code,'one')
         account=auth.list_accounts()[0]
         await auth.update(account['id'],dict(action='reset',password='ChangedPass9'))
@@ -3205,5 +3205,5 @@ def test_private_login_returns_initial_account_and_keeps_code_when_store_fails(p
         auth.code_issued_at.clear()
         auth.ensure_accounts=AsyncMock(side_effect=OSError('disk full'))
         await collect(obj.report_web_login(ev))
-        assert '暂未同步' in ev.send.await_args.args[0] and 'brc_' in ev.send.await_args.args[0]
+        assert '暂未同步' in ev.send.await_args.args[0] and re.search(r'(?m)^[A-HJ-NP-Z2-9]{8}$',ev.send.await_args.args[0])
     asyncio.run(run())

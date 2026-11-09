@@ -21,6 +21,8 @@ ITERATIONS = 600_000
 SESSION_TTL = 7 * 24 * 3600
 CODE_TTL = 300
 CODE_COOLDOWN = 30
+CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+CODE_PATTERN = re.compile(r'[' + CODE_ALPHABET + r']{8}', re.IGNORECASE | re.ASCII)
 
 
 class WebAuthError(ValueError):
@@ -297,8 +299,14 @@ class WebAccounts:
         issued=self.code_issued_at.get(qq)
         if issued is not None and self.clock()-issued<CODE_COOLDOWN:
             raise WebAuthError('请稍后再获取登录码喵。',429)
+        # Keep issued codes unique, including the code about to be replaced.
+        for _ in range(32):
+            code=''.join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+            if not code.isalpha() and not code.isdigit() and token_key(code) not in self.codes:
+                break
+        else:
+            raise WebAuthError('登录码暂时无法生成，请稍后重试喵。',503)
         self.codes={k:c for k,c in self.codes.items() if c['qq']!=qq}
-        code='brc_'+secrets.token_urlsafe(24)
         self.code_issued_at[qq]=self.clock()
         if len(self.code_issued_at)>2000:self.code_issued_at.pop(next(iter(self.code_issued_at)))
         self.codes[token_key(code)]=dict(qq=qq,issued=self.clock(),expires=self.clock()+CODE_TTL)
@@ -307,8 +315,9 @@ class WebAccounts:
 
     async def login_code(self, code, client):
         self.limit(client)
-        if not isinstance(code,str) or len(code)>128:raise WebAuthError('登录码无效或已过期。',401)
-        record=self.codes.pop(token_key(code.strip()),None)
+        if not isinstance(code,str) or len(code)>128 or not CODE_PATTERN.fullmatch(code.strip()):
+            raise WebAuthError('登录码无效或已过期。',401)
+        record=self.codes.pop(token_key(code.strip().upper()),None)
         if record is None or record['expires']<=self.clock():raise WebAuthError('登录码无效或已过期。',401)
         await self.allowed_teams(record['qq'])
         return self.new_session(record['qq'])

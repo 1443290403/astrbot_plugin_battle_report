@@ -1,6 +1,7 @@
 """独立凭据、QQ取码、会话撤销与落盘失败；不接触真实QQ或生产配置。"""
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock
 import pytest
@@ -38,6 +39,42 @@ def test_password_storage_and_change_revoke_existing_password_sessions(auth):
     asyncio.run(run())
 
 
+def test_short_codes_do_not_collide_or_cross_qq_accounts(auth,monkeypatch):
+    import web_accounts
+    service,clock,_=auth
+    choices=iter('ABCDEFGH23456789ABCD2345ABCD2345EFGH6789ABCD2345EFGH6789JKLM2345')
+    monkeypatch.setattr(web_accounts.secrets,'choice',lambda _:next(choices))
+    async def run():
+        first=await service.issue_code('20000001')
+        second=await service.issue_code('20000002')
+        assert first!=second and len(service.codes)==2
+        clock[0]+=31
+        replacement=await service.issue_code('20000001')
+        assert replacement not in (first,second) and len(service.codes)==2
+        with pytest.raises(WebAuthError):await service.login_code(first,'old')
+        one=await service.login_code(replacement,'one')
+        two=await service.login_code(second,'two')
+        assert (await service.authenticate(one))['qq']=='20000001'
+        assert (await service.authenticate(two))['qq']=='20000002'
+    asyncio.run(run())
+
+
+def test_short_code_generation_failure_keeps_previous_code_without_starting_cooldown(auth,monkeypatch):
+    import web_accounts
+    service,clock,_=auth
+    async def run():
+        previous=await service.issue_code('20000001')
+        before=service.codes.copy()
+        clock[0]+=31
+        monkeypatch.setattr(web_accounts.secrets,'choice',lambda _:'A')
+        with pytest.raises(WebAuthError) as error:await service.issue_code('20000001')
+        assert error.value.status==503
+        assert service.codes==before and '20000001' not in service.code_issued_at
+        token=await service.login_code(previous,'one')
+        assert (await service.authenticate(token))['qq']=='20000001'
+    asyncio.run(run())
+
+
 def test_code_is_single_use_latest_only_expires_and_does_not_need_password_account(auth):
     service,clock,_=auth
     async def run():
@@ -47,8 +84,10 @@ def test_code_is_single_use_latest_only_expires_and_does_not_need_password_accou
         assert error.value.status==429
         clock[0]+=31
         code=await service.issue_code('20000001')
+        assert re.fullmatch(r'[A-HJ-NP-Z2-9]{8}',code)
+        assert any(c.isdigit() for c in code) and any(c.isalpha() for c in code)
         with pytest.raises(WebAuthError):await service.login_code(old,'one')
-        attempts=await asyncio.gather(service.login_code(code,'two'),service.login_code(code,'three'),return_exceptions=True)
+        attempts=await asyncio.gather(service.login_code(' '+code.lower()+'\n','two'),service.login_code(code,'three'),return_exceptions=True)
         assert sum(isinstance(x,str) for x in attempts)==1
         token=next(x for x in attempts if isinstance(x,str))
         assert (await service.authenticate(token))['password_login'] is False
