@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.30.1
+最新版本：v1.31.0
 
-- 文件：astrbot_plugin_battle_report-1.30.1.zip
-- 源码提交：ea522131775564df22952a42eb11ff9497cd2634
+- 文件：astrbot_plugin_battle_report-1.31.0.zip
+- 源码提交：56ac98954971c6f9440fe9e9047c9c2f06fe676a
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：da205b4e1bb959bb1656933d613db855924d74b8f8b99499579297b6acc39139
+- SHA256：5aa252ecff8d55efa9918e12b95c52dd73d01c77926f18cc99df662be83509ea
 
 旧版本安装包保留，按文件名选择。
 
@@ -207,3 +207,12 @@ v1.30.1：直接使用当前AstrBot地址的 /battle-report/，原管理员及�
 
 - [自动入口及可选部署指南](STANDALONE_WEBUI_GUIDE-1.30.1.md)
 - battle-report-web-1.30.1.zip 仅为可选独立静态站包，默认不需要，不可当作AstrBot插件安装。
+
+## 超时补发与战队管理员登录
+
+v1.31.0：曾满员的队伍超时后，未进入新车的原成员可补发一次群号；进入新车后旧权限失效，快照及一次消费随重启保留。战队管理员支持独立账号密码与QQ一次性码，原后台管理员登录保留；服务端按当前QQ管理战队限制查询、核对／历史／下载、QQ目录与发送分包。新增密码账号管理及OneBot私聊 /战报登录。1378项默认回归、76项隔离MySQL、192项动态轮次和184项平台隔离检查通过；独立／原Pages及可选Nginx的浏览器／HTTP测试使用模拟QQ，未发真实消息。
+
+- [战队管理员两种登录方式](TEAM_WEB_LOGIN_GUIDE-1.31.0.md)
+- [等车与超时补发说明](OFFICIAL_QUEUE_GUIDE-1.31.0.md)
+- [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.31.0.md)
+- battle-report-web-1.31.0.zip 仅为可选静态资源包，默认无需下载，不能当AstrBot插件安装。
