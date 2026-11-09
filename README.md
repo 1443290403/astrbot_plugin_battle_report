@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.33.1
+最新版本：v1.33.2
 
-- 文件：astrbot_plugin_battle_report-1.33.1.zip
-- 源码提交：c0656a33c124f059fef2921f394f3fcb030fc9c9
+- 文件：astrbot_plugin_battle_report-1.33.2.zip
+- 源码提交：a123b55eee8f2ce4f8b2d4ad50cf504f53884d2d
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：e4d9ff2c759be0414d9798fd65f72761e88881c0e4d3198dcdbf808d6d11e9a5
+- SHA256：670936ac3d7a3599a3fa5a6eeae239329fe0afe8ca7c64946783af04c1fa81fe
 
 旧版本安装包保留，按文件名选择。
 
@@ -268,3 +268,11 @@ v1.33.0：战队密码／QQ码登录后的会话固定7天，仅保存令牌摘�
 - [独立站可选静态资源](battle-report-web-1.33.1.zip)（不能当AstrBot插件安装）
 - [部署指南](STANDALONE_WEBUI_GUIDE-1.33.1.md)
 - [NAT端口与HTTPS教程](IP_HTTPS_34300_GUIDE.md)
+
+## v1.33.2 八位QQ登录码
+
+一次性QQ登录码简化为8位字母数字组合，不区分大小写并排除0/1/I/O；支持手输或粘贴整条机器人回复。保留5分钟有效、限用一次、30秒取码间隔、新码废旧及登录限流；检查当前全部有效码避免碰撞。43项账号/API/导出检查、9项OneBot命令入口检查及真实浏览器登录验证通过。已登录会话仍固定7天，数据库schema21及权限不变。
+
+- [独立站可选静态资源](battle-report-web-1.33.2.zip)（不能当AstrBot插件安装）
+- [网页登录指南](TEAM_WEB_LOGIN_GUIDE-1.33.2.md)
+- [部署指南](STANDALONE_WEBUI_GUIDE-1.33.2.md)
