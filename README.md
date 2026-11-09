@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.32.0
+最新版本：v1.32.1
 
-- 文件：astrbot_plugin_battle_report-1.32.0.zip
-- 源码提交：aa24443ff699d69170fa8ff2154ff963ec1f586e
+- 文件：astrbot_plugin_battle_report-1.32.1.zip
+- 源码提交：907618f972fba72b3e0f6ff5a84b60cc6509854e
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：4f9aa42e2eefda3cfda1937cfcbe747c0c6b672c3f11673d6280261f63abecb6
+- SHA256：a44af7a5a65321d4eec41d01d9c1f2543c0e33ca06efeff5a2f9726967a5622a
 
 旧版本安装包保留，按文件名选择。
 
@@ -233,3 +233,12 @@ v1.32.0：战报WebUI新增队伍管理、队员管理Tab，仅原AstrBot管理�
 - [战报WebUI指南](REPORT_COMPARISON_GUIDE-1.32.0.md)
 - [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.32.0.md)
 - battle-report-web-1.32.0.zip仅为可选静态资源，不能当AstrBot插件安装。
+
+## 战队管理员成员选择
+
+v1.32.1：设置管理员改为逐个添加、移除的成员标签，默认搜索选择本战队已有角色，无QQ角色禁选；没有对应角色时可手动添加单QQ，重复QQ合并，不再输入分隔符。既有管理员保留，候选分页／搜索保留选择，切战队／关闭／切身份清理草稿并隔离迟到响应，保存才更新授权。1416项默认回归及实际SDK浏览器检查通过；不修改数据库SQL／schema或管理员授权范围。
+
+- [网页登录与管理员设置](TEAM_WEB_LOGIN_GUIDE-1.32.1.md)
+- [战报WebUI指南](REPORT_COMPARISON_GUIDE-1.32.1.md)
+- [默认入口及可选静态站部署](STANDALONE_WEBUI_GUIDE-1.32.1.md)
+- battle-report-web-1.32.1.zip仅为可选静态资源，不能当AstrBot插件安装。
