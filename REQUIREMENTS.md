@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.29.7`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.31.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -515,6 +515,16 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 
 ---
 
+**战队网页登录（v1.31.0，F-48）：** 默认独立入口新增 `/battle-report/auth/{action}` 与 `/battle-report/api/comparison/...`，只接受插件自有随机会话，不能签发或复用核心后台JWT。核心 `/api/plug` 原鉴权保留。原后台账号权限不变，战队身份由密码记录绑定QQ或OneBot私聊登录码证明；服务端按 `team_admins` 当前QQ名单查询授权，不按群角色或公开ID认领。`get_admin_teams` 只读参数化SELECT，无schema变化。
+
+密码账号文件 `web_accounts.json` 版本1，PBKDF2-SHA256 600000轮／独立随机盐／0600原子写；同名大小写不敏感、QQ唯一，不存明文。密码重置／修改／停用／删除以revision撤销旧密码会话，不撤销QQ取码身份。QQ授权删除后两方式的后续请求都拒绝，观察到全部授权撤销的会话作废；恢复授权需重新登录。登录码5分钟、30秒换码间隔／新码废旧／限用一次；会话8小时，服务器只存哈希，不落盘，退出／重载失效。限流和线程池限制在插件会话，不改核心中间件／配置／LLM。HTTP沿用后台协议，HTTPS及转发HTTPS的Cookie Secure，HttpOnly／SameSite Strict／path=/battle-report；令牌只在页面内存，不入storage／URL。身份过期／切换清空旧正文和选择，generation拒绝旧异步响应，不自动重放POST。
+
+所有本地／云端COUNT分页前的原SQL战队范围保持；战队会话额外校验home_team和site_team均授权。云端按服务端team_a/team_b/winner_site/loser_site/query_team归属，按ID选取再校验，不能信客户端scope或body。核对历史按授权战队过滤，get/cancel/download都重新检查，后台抓取归档／读取本地时再核验；战队创建者每QQ保留20次，原后台核对保留原共享20次。QQ目录仅自己授权战队；自定义QQ仍可转发本队原文。发送owner为team-qq:QQ，两登录方式共享；plan.team_qq、cloud access_teams只能由服务端生成，预览／详情／确认／重试按当前权限检查，逐分包重新核验，撤销／DB异常停止未发部分，unknown仍不重试。发送历史每创建者保留20批。ContextVar按请求及异步任务隔离身份，密码账号管理只允许原后台；不会给战队会话开放模型／配置等核心接口。
+
+**满员超时补发（v1.31.0，F-39）：** JSONv2 rooms新增可选late_cars，曾满员的活动车超时后原子转为成员快照和eligible发起人，活动面板／广播移除且原超时通知保留；未满员超时、人工解散、已发车不存补发。只在原scope内，当发送人未加入新车时可补发一次并通知快照中其他成员；第一次补发原子消耗整辆旧车，通知与普通数字群号仍走原outbox／after顺序。新车实际入队与eligible清除同事务，之后离队不恢复，按用户只保留最近一辆可补发旧车，空eligible快照删除；重启不复活活动队伍，旧版已删除的历史无法补建。不延长原计时或放宽活动车至少3人的要求，跨群／AppID／连接仍隔离。
+
+---
+
 ### M-11 群属性、流程帮助与提交限制
 
 - 群名维持友谊群、战报群、主群；未设置时默认友谊群，不新增别名、不改写旧行。
@@ -830,7 +840,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-02** | `/第N轮 [玩家A [比分] 玩家B]` | `round_cmd`（`RoundCommandFilter` 自定义过滤器）/ `lineup.build_next_round` | 读群聊最近一条战报，追加第 N 轮（N≥2，数字或中文）。完整动态指令匹配即可自定义唤醒，不再二次要求 @/全局前缀标志；平台前置权限与群禁用仍生效；运行期使用稳定注册身份或解包后的函数名识别动态处理器。无参数 → 从上一轮及本轮的空闲存活选手中随机配对（见下）；有参数 → 指定对阵或直接记比分 | M-04(胜者需非 0:0)、M-10(读群历史)、队对齐(见下) | 无 |
 | **F-03** | `/记录 玩家名 比分 [对手]` | `record_cmd` / `lineup.record_from_info` | 找该选手**最后一场未记录**的 `0:0` 对阵填入比分；指定对手且无未记录对阵时，在最新轮次插入新对阵。比分支持 `2:0` 或紧凑 `20` | M-04、M-10、队对齐(见下) | 无 |
 | **F-38** | LLM 工具 `battle_report_lineup(lineup_text)` | `lineup_tool` / `_prepare_lineup` | 与 F-01 共用完整排表流程；按当前群保存名单，成功只直发一份原文并返回 None，错误文本交回模型。仅在用户明确要求并给出双方名单时调用；私聊/禁用/数据库检查不可绕过 | M-01、M-03、M-10、M-11 | `teams`（覆盖式，不写战报） |
-| **F-39** | QQ 官方群 `/友谊等车`（兼容 `/等车`、`/蹲车`）、`/进队等车`、`/发送群号`、`/离队`、`/解散`（兼容 `/解散队伍`）、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/友谊等车帮助`（兼容 `/等车帮助`） | `official_queue_cmd` / `WaitingQueues` | 官方群多车合并面板、4分钟房间广播、10分钟独立清理及首次满3人一次性重计时、入退队/满员/发车/解散定向提醒、每日车次编号；原账号关联见 F-40 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON；身份 SQL 见 F-40 |
+| **F-39** | QQ 官方群 `/友谊等车`（兼容 `/等车`、`/蹲车`）、`/进队等车`、`/发送群号`、`/离队`、`/解散`（兼容 `/解散队伍`）、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/友谊等车帮助`（兼容 `/等车帮助`） | `official_queue_cmd` / `WaitingQueues` | 官方群多车合并面板、4分钟房间广播、10分钟独立清理及首次满3人一次性重计时、满员超时未入新车可补发一次群号、入退队/满员/发车/解散定向提醒、每日车次编号；原账号关联见 F-40 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON；身份 SQL 见 F-40 |
 | **F-40** | `/等车ID 角色或参赛ID`、`/确认关联 确认码`、`/解除官方关联` | request_official_link / confirm_official_link / revoke_official_links / _identity_qq | 原 QQ 确认 OpenID 对原用户的关联；两端同一原 QQ 身份和已有全部插件权限；保留原 QQ/角色/参赛 ID，支持即时撤销，不信任旧 JSON 展示关联 | M-02、M-03、M-10 | official_user_accounts / official_link_requests；schema v20 |
 | **F-41** | QQ群命令与默认对话隔离 | OfficialQueueFilter / official_queue_cmd / command_guard | 群内斜杠命令及已注册裸命令不回落默认LLM；保留插件分发、原参数及普通聊天，不依赖chat前缀 | M-10 | 不写数据库/队列 |
 | **F-42** | 按机器人连接ID手动分配本插件指令 | platform_policy / _install_platform_permissions / _filter_platform_handlers | 命名配置、多选/全部开放/全部屏蔽、别名统一、参数前静默拒绝、AI排表同权限；其他插件与原业务权限保留 | M-10 | 仅插件配置，无DB/队列迁移 |
@@ -839,6 +849,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 | **F-47** | 自动独立战报管理入口 | standalone_web / scripts/export_report_webui.py / webui_standalone | 现有后台端口自动挂载/battle-report/，冷启／热安装／停用清理；原账号及2FA、401不重放；可选静态导出／Nginx | M-09、F-44、F-45、F-46 | 不新增端口／配置／账号；只公开6个静态资源 |
+| **F-48** | 战队管理员密码／QQ登录码 | WebAccounts / StandaloneFrontend / ComparisonWebUI / report_web_login | 独立密码账号管理与私聊取码、当前QQ授权战队全服务端检查、私有会话不兼容核心JWT、撤权及发送分包复核 | M-01、M-02、M-09、M-10、F-47 | web_accounts.json 哈希凭据；码／会话仅内存；原team_admins只读，无schema迁移 |
 
 **共同约束：**
 - 三者都只**回发新文本**，用户需再 `/发送` 才入库
@@ -1043,6 +1054,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改战队网页登录** | ① 加盐密码文件0600／原子落盘回滚、独立高熵会话与一次性码、限流／过期／注销／重启／并发改密／卸载 ② OneBot私聊QQ证明与platform_policy/schema选项标签／帮助 ③ 当前team_admins授权、本地home_team／云端服务端归属、核对查询及历史／取消／下载、管理员目录、服务端重读／批次身份／每包复核 ④ ContextVar身份、核心JWT与战队会话隔离、账号管理仅原后台 ⑤ 三登录方式／Cookie／失效清数据／异步旧响应丢弃／不重放、实际SDK浏览器和隔离MySQL、文档 | 不信客户端角色／QQ／正文／scope，不将队名筛选当授权，不把密码账号停用当QQ授权撤销，不记录口令或原始码／会话 |
 | **改独立WebUI入口** | ① 自动挂载的冷启动／热安装／重载／卸载与兼容回退、静态白名单、SPA前路由顺序、原Pages保留 ② 同源固定插件API、AstrBot原账号及可选2FA、401不重放POST、退出清UI ③ 内存JWT/可选HttpOnly Cookie、内置沿用后台协议／导出站公开HTTP拒绝 ④ Nginx登录/退出/插件前缀白名单、SSH与HTTPS两模板 ⑤ 导出防覆盖/目录权限、真实Nginx浏览器验证、README/部署指南 | 不关闭插件鉴权、不导出凭据、不把筛选当战队授权、不自开插件服务端口 |
 | **改WebUI筛选/布局** | ① 本地/云端COUNT与分页ID前的筛选SQL、未知胜负口径 ② 核对任一侧命中保留整组、过滤后分页、统计/下载完整范围 ③ API参数校验与前端复位/作用域/异步序号 ④ 搜索/战报等宽、外置轨道、同排等高及固定滚动条槽位 ⑤ 实际MySQL和浏览器长短卡片/空数据/筛选计数/跳页/复制/发送回归 | 不只筛当前页，不把未知算负场，不把云端网站胜方替换为插件重算；控件不得再次占内容列，不动统计/提交指纹/人工发送标记 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
@@ -1365,6 +1377,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 |---|---|
 | `test_report_dispatch.py` | 模拟 OneBot：准备不发送、确认幂等、typed text/双空格、分包/多收件人、跳过成功/unknown、管理员复核、官方连接拒绝、账号校验、深拷贝/过期、重启不重放、取消和落盘失败 |
 | `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围；胜负SQL的COUNT/页码/类型组合、未知/无关队排除和网站胜负列 |
+| `test_web_accounts.py` | PBKDF2／0600／无明文、大小写／唯一QQ、一次性／过期／换码／重启、密码修改及停用／删除／授权撤销、Cookie会话边界、限流、存储失败回滚、并发管理员改密和卸载阻止旧写入 |
+| `test_team_webui.py` | 实际路由+SDK边界桩：跨队参数／源地址／战报ID／核对ID／下载／取消／名单／批次／后台账号管理拒绝、原JWT与战队会话隔离、撤权后停止未发送分包、双用户并发ContextVar、HTTPS代理Cookie、重复码／logout／payload限额 |
 | `test_standalone_web.py`／test_main.py自动入口生命周期 | 现有端口静态路由先于SPA、6文件白名单／HEAD／非法路径拒绝、原API匿名401不变、冷启／热安装、重复挂载／新旧实例卸载边界、旧core APP拒绝、保留其他路由及原Pages |
 | `test_standalone_export.py` | 静态资源白名单、注入顺序、版本、保留嵌入页、Nginx可读权限、拒绝非空／文件／插件内与符号链接目标、允许空目录 |
 | `test_report_comparison_webui.py` | 抓取/归档/比较顺序与失败、鉴权/13路由/生命周期、服务端来源重读和忽略伪造正文；胜负/未知/非法值、核对筛选先于分页且保留整组、无重新抓取 |
@@ -1481,7 +1495,7 @@ v1.19.3 验证：**684 项通过、1 项跳过**。覆盖真实排表/记录/轮
 
 ## 13. 运维与版本
 
-- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.30.1")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
+- **版本号有三处，必须同步改**：`metadata.yaml` 的 `version`、`main.py` 的 `@register(..., "1.31.0")`、`README.md` 第 3 行的版本徽章（实际漏改的就是这一处）
 - **部署**：插件目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`，管理面板启用（`requirements.txt` 自动装 `aiomysql`、`Pillow`）
 - **启动即迁移**：`initialize()` 建库建表 + 跑 `_init_schema` 迁移；迁移异常会导致全插件"数据库未连接"
 - **凭据**：MySQL 密码存于 `data/config/astrbot_plugin_battle_report_config.json`；本仓库是公开仓库，勿把生产凭据写入代码或提交
@@ -1540,3 +1554,9 @@ v1.30.0 验证：1353项默认回归通过、6项跳过。独立入口在隔离�
 
 
 v1.30.1 验证：1358项默认回归通过、6项跳过。冷启动／热安装、重复注册、旧实例卸载不删新实例、原路由顺序和API匿名401、静态白名单／HEAD／遍历拒绝均通过。实际AstrBot v4.27.3兼容适配器构造及原鉴权中间件／密码／登录／JWT代码下的浏览器验证：无Nginx或独立端口，/battle-report/直接登录与2FA挑战传递、内存JWT／可用Cookie复用、公开HTTP沿用后台协议且无Cookie时仍可用JWT、退出清UI、401不重放、筛选／全文复制实际粘贴／JSON下载／模拟QQ发送、手机布局；手动导出站仍拒绝公网HTTP登录。真实注册／绑定／唤醒／分发192项动态轮次及184项平台隔离检查通过。未连接生产DB或真实QQ，无SQL／schema或服务器配置改动。
+
+
+配置及测试补充（v1.31.0）：不新增插件顶层配置或数据库版本；platform_command_profiles目录增加“战报登录 · OneBot私聊”，受原平台前置过滤并额外校验私聊及现任战队管理员。账号在网页管理而非_conf_schema明文保存。test_main覆盖取码平台／群／权限、原自动挂载及16条核心插件路由；test_official_queue覆盖满员超时直接补发／tick后补发／重启、一次消费、入新车后永久作废、未满员及人工解散拒绝。隔离MySQL覆盖get_admin_teams查询与撤销，不使用生产配置。
+
+
+v1.31.0 验证：1378项默认回归通过、7项跳过；隔离MySQL8.4的76项检查通过，含QQ管理战队查询／撤销及参数化范围。浏览器使用真实AstrBot v4.27.3 Web SDK／兼容层／鉴权及登录代码，覆盖密码账号创建／重置／启停、密码及QQ码登录、Cookie复用／改密／过期不重放、跨队／核心API拒绝、撤权清旧数据与切换QQ、全文复制／JSON下载／模拟QQ发送和390px；可选真实Nginx HTTP／HTTPS（测试证书）验证新增auth／team API转发、Secure Cookie、范围拒绝和退出。真实注册／绑定／动态轮次192项、平台隔离184项继续通过。官方等车仅模拟时钟／接口验证，覆盖满员超时后一次补发／重启、入新车后永久失效、未满员／人工解散拒绝；未发送真实QQ消息、未连接生产数据库或当前在线战报站。数据库schema21及原LLM／网络配置不变。

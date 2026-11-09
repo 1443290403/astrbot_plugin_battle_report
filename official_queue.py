@@ -35,7 +35,8 @@ HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n
         '入队后自动定位你的队伍，不用填写车号。\n'
         '/等车ID 角色或参赛ID：关联原账号，首次用原 QQ /确认关联 确认码\n'
         '每4分钟统一广播；建队10分钟清理，首次满3人重新计10分钟并提醒接友谊。\n'
-        '之后进出不延时，一人同时只在一队；车次号按北京时间每日重新从1编号喵。')
+        '之后进出不延时，一人同时只在一队；车次号按北京时间每日重新从1编号喵。\n'
+        '满员超时后，未加入新车仍可补发一次群号喵。')
 
 
 def parse_command(text):
@@ -140,6 +141,21 @@ class WaitingQueues:
                 cooldown = room.get('call_all_until', 0)
                 if type(cooldown) not in (int, float) or not math.isfinite(cooldown) or cooldown < 0:
                     raise ValueError('等车呼叫全体冷却格式错误')
+                late = room.get('late_cars', {})
+                if not isinstance(late, dict):
+                    raise ValueError('等车超时发车存档错误')
+                eligible = set()
+                for cid, car in late.items():
+                    if (not isinstance(car, dict) or car.get('id') != cid or not isinstance(cid, str)
+                            or not cid.startswith('C') or type(car.get('number')) is not int or car['number'] < 1
+                            or not isinstance(car.get('members'), dict) or not isinstance(car.get('eligible'), list)
+                            or not car['eligible'] or any(not isinstance(u,str) for u in car['eligible'])
+                            or len(set(car['eligible'])) != len(car['eligible'])
+                            or not set(car['eligible']).issubset(car['members']) or eligible.intersection(car['eligible'])
+                            or any(not isinstance(u,str) or not isinstance(m,dict) or not isinstance(m.get('name'),str)
+                                   for u,m in car['members'].items())):
+                        raise ValueError('等车超时发车存档错误')
+                    eligible.update(car['eligible'])
                 for car in room['cars']:
                     if (not isinstance(car.get('id'), str) or not car['id'].startswith('C')
                             or type(car.get('number')) is not int or car['number'] < 1
@@ -158,6 +174,8 @@ class WaitingQueues:
                     for value in times:
                         if type(value) not in (int, float) or not math.isfinite(value):
                             raise ValueError('等车存档计时错误')
+                if users.intersection(eligible):
+                    raise ValueError('已进入新车次的成员不能保留旧车发车权限')
                 for notice in room['outbox']:
                     if (not isinstance(notice, dict) or not isinstance(notice.get('id'), str)
                             or not isinstance(notice.get('text'), str) or not isinstance(notice.get('users'), list)
@@ -272,8 +290,35 @@ class WaitingQueues:
         with self.edit():
             for car in expired:
                 room['cars'].remove(car)
+                if car['ready'] and car['members']:
+                    late = room.setdefault('late_cars', {})
+                    for uid in car['members']:
+                        self.forget_late_departure(room, uid)
+                    late[car['id']] = dict(id=car['id'],number=car['number'],
+                                           members=copy.deepcopy(car['members']),eligible=list(car['members']))
                 why = '满员后长时间未发车' if car['ready'] else '未凑满3人'
                 self.notify(room, f'{car["number"]}号车{why}，已自动解散喵。', car['members'])
+
+    @staticmethod
+    def forget_late_departure(room, uid):
+        late = room.get('late_cars', {})
+        for cid, car in list(late.items()):
+            if uid in car['eligible']:
+                car['eligible'].remove(uid)
+            if not car['eligible']:
+                del late[cid]
+
+    @staticmethod
+    def departure(room, target, uid):
+        current = ([car for car in room['cars'] if car['id']==target or str(car['number'])==target]
+                   if target else [car for car in room['cars'] if uid in car['members']])
+        if current:
+            return WaitingQueues.select(room,target,uid), False
+        old = [car for car in room.get('late_cars',{}).values() if uid in car['eligible']
+               and (not target or car['id']==target or str(car['number'])==target)]
+        if len(old)==1:
+            return old[0], True
+        return WaitingQueues.select(room,target,uid), False
 
     @staticmethod
     def update_timer(car, now):
@@ -428,6 +473,8 @@ class WaitingQueues:
                             car = dict(id=f'C{room["next_number"]}_' + uuid4().hex[:8].upper(), number=room['next_number'],
                                        day=day_key(now), owner=uid, members={} if own else {uid: dict(name=name, joined_at=now)},
                                        ready=False, deadline=now + GATHER_TIMEOUT)
+                            if not own:
+                                self.forget_late_departure(room, uid)
                             if not room['cars']:
                                 room['next_refresh'] = now + REFRESH
                             room['next_number'] += 1
@@ -440,6 +487,7 @@ class WaitingQueues:
                             if any(uid in q['members'] and q['id'] != car['id'] for q in room['cars']):
                                 raise ValueError('你已经在另一队了喵，请先离队。')
                             if uid not in car['members']:
+                                self.forget_late_departure(room, uid)
                                 previous_members = dict(car['members'])
                                 car['members'][uid] = dict(name=name, joined_at=self.clock())
                                 if self.update_timer(car, self.clock()):
@@ -461,12 +509,15 @@ class WaitingQueues:
                     elif action == '人齐了发车':
                         if len(args) not in (1, 2) or not re.fullmatch(r'[1-9][0-9]{4,11}', args[-1]):
                             raise ValueError('用法喵：/发送群号 群号')
-                        car = self.select(room, args[0] if len(args) == 2 else None, uid)
+                        car, late = self.departure(room, args[0] if len(args) == 2 else None, uid)
                         if uid not in car['members']:
                             raise ValueError('只有本车成员可以发送群号喵。')
-                        if len(car['members']) < 3:
+                        if not late and len(car['members']) < 3:
                             raise ValueError('至少凑满3人才能发送群号喵。')
-                        room['cars'].remove(car)
+                        if late:
+                            del room['late_cars'][car['id']]
+                        else:
+                            room['cars'].remove(car)
                         others = {user: member for user, member in car['members'].items() if user != uid}
                         notice_id = self.notify(room, f'{car["number"]}号车发车啦！\n'
                                                '快来集合喵～', others)

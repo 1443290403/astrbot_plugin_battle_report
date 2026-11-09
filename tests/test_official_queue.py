@@ -863,3 +863,74 @@ def test_panels_only_fill_names_but_notifications_keep_native_mentions(setup_que
         assert len(texts(send, '快去接友谊')) == 1
         assert len([c for c in send.await_args_list if c.kwargs.get('plain') and c.args[1] == '123456789']) == 1
     asyncio.run(scenario())
+
+
+def test_ready_expiry_can_depart_once_without_new_membership_even_after_restart(setup_queue):
+    service, clock, send, act = setup_queue
+    async def run():
+        await act()
+        await act('我也要等车',uid='u2')
+        await act('我也要等车',uid='u3')
+        clock[0]=601
+        # Command-side expiry also preserves the last full car; no tick required.
+        await act('人齐了发车','123456789')
+        assert not service.room(SCOPE)['cars'] and not service.room(SCOPE)['late_cars']
+        notice=texts(send,'发车啦')[-1]
+        assert queue.mention('u2') in notice and queue.mention('u3') in notice and queue.mention('u1') not in notice
+        assert any(c.args[1]=='123456789' and c.kwargs.get('plain') for c in send.await_args_list)
+        before=len(texts(send,'发车啦'))
+        await act('人齐了发车','123456789',uid='u2')
+        assert len(texts(send,'发车啦'))==before
+        # A second expired car is retained across restart without becoming active.
+        await act(uid='u4')
+        await act('我也要等车',uid='u5')
+        await act('我也要等车',uid='u6')
+        clock[0]=1202
+        await service.tick()
+        restored=queue.WaitingQueues(service.path,send,None,None,clock=lambda:clock[0])
+        assert not restored.room(SCOPE)['cars']
+        await restored.execute(SCOPE,'人齐了发车','123456789','u4','name','after-restart')
+        assert queue.mention('u5') in texts(send,'发车啦')[-1]
+        assert not restored.room(SCOPE)['late_cars']
+    asyncio.run(run())
+
+
+def test_new_membership_permanently_revokes_old_departure_even_after_leaving(setup_queue):
+    service, clock, send, act = setup_queue
+    async def run():
+        await act()
+        await act('我也要等车',uid='u2')
+        await act('我也要等车',uid='u3')
+        old=service.room(SCOPE)['cars'][0]['id']
+        clock[0]=601
+        await service.tick()
+        await act(uid='other')
+        await act('我也要等车',uid='u1')
+        assert 'u1' not in service.room(SCOPE)['late_cars'][old]['eligible']
+        await act('跑路了再见',uid='u1')
+        before=len(texts(send,'发车啦'))
+        await act('人齐了发车','123456789',uid='u1')
+        assert len(texts(send,'发车啦'))==before
+        # A member who has not joined another car can still notify the original snapshot.
+        await act('人齐了发车','123456789',uid='u2')
+        assert all(queue.mention(u) in texts(send,'发车啦')[-1] for u in ['u1','u3'])
+        assert service.room(SCOPE)['cars'][0]['members'].keys()=={'other'}
+    asyncio.run(run())
+
+
+def test_partial_expiry_and_manual_dissolution_do_not_allow_late_departure(setup_queue):
+    service, clock, send, act = setup_queue
+    async def run():
+        await act()
+        await act('我也要等车',uid='u2')
+        clock[0]=601
+        await service.tick()
+        assert not service.room(SCOPE).get('late_cars')
+        await act('人齐了发车','123456789')
+        assert not texts(send,'发车啦')
+        await act()
+        for uid in ['u2','u3']:await act('我也要等车',uid=uid)
+        await act('解散队伍')
+        await act('人齐了发车','123456789')
+        assert not texts(send,'发车啦')
+    asyncio.run(run())

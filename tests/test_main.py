@@ -3095,7 +3095,7 @@ def test_comparison_page_registers_on_constructor_and_stops_before_database(plug
     monkeypatch.setattr(plugin_module,'StarTools',SimpleNamespace(get_data_dir=lambda:tmp_path))
     context=SimpleNamespace(register_web_api=lambda *entry:routes.append(entry),registered_web_apis=routes)
     obj=plugin_module.BattleReportPlugin(context,{})
-    assert obj._comparison_webui is not None and len(routes)==13
+    assert obj._comparison_webui is not None and len(routes)==16
     assert all(r[0].startswith('/astrbot_plugin_battle_report/comparison/') for r in routes)
     assert obj.db is None and not obj.db_ready
     obj.db=SimpleNamespace(close=AsyncMock())
@@ -3122,11 +3122,31 @@ def test_standalone_mounts_on_startup_or_install_and_unmounts_on_disable(plugin_
     monkeypatch.setitem(sys.modules,'astrbot.dashboard.server',server)
     obj=plugin_module.BattleReportPlugin(context,{})
     assert obj._standalone_frontend is not None
-    assert len(app.router.routes)==len(original)+(0 if cold_start else 2)
+    assert len(app.router.routes)==len(original)+(0 if cold_start else 4)
     server.APP=adapter
     asyncio.run(obj.report_frontend_loaded())
-    assert len(app.router.routes)==len(original)+2
+    assert len(app.router.routes)==len(original)+4
     asyncio.run(obj.report_frontend_loaded())
-    assert len(app.router.routes)==len(original)+2
+    assert len(app.router.routes)==len(original)+4
     asyncio.run(obj.terminate())
     assert app.router.routes==original and not routes
+
+
+@pytest.mark.parametrize('platform,group,authorized,issued',[
+    ('aiocqhttp','',True,True),('aiocqhttp','100',True,False),
+    ('qq_official','',True,False),('aiocqhttp','',False,False),
+])
+def test_team_login_code_only_for_real_onebot_private_team_admin(plugin_module,tmp_path,platform,group,authorized,issued):
+    obj=plugin(plugin_module,tmp_path)
+    from web_accounts import WebAccounts
+    auth=WebAccounts(tmp_path/'web_accounts.json',AsyncMock(return_value=['a队'] if authorized else []))
+    obj._comparison_webui=SimpleNamespace(auth=auth)
+    ev=event(group=group);ev.get_platform_name=lambda:platform
+    result=asyncio.run(collect(obj.report_web_login(ev)))
+    if issued:
+        ev.stop_event.assert_called_once();ev.send.assert_awaited_once()
+        assert 'brc_' in ev.send.await_args.args[0] and '5分钟' in ev.send.await_args.args[0]
+        assert not result and len(auth.codes)==1
+    else:
+        ev.send.assert_not_awaited();assert not auth.codes
+        if group and platform=='aiocqhttp':assert '私聊' in result[0]

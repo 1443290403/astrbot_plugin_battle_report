@@ -53,7 +53,7 @@ def test_auto_entry_precedes_spa_and_exposes_only_static_assets():
                 head = await client.head('/battle-report/'+filename)
                 assert head.status_code == 200 and not head.content
                 assert int(head.headers['content-length']) == len(content)
-            for filename in ['main.py','metadata.yaml','request_reviews.json','%2e%2e%2fmetadata.yaml','app.js/extra','//app.js']:
+            for filename in ['main.py','metadata.yaml','request_reviews.json','web_accounts.json','%2e%2e%2fmetadata.yaml','app.js/extra','//app.js']:
                 assert (await client.get('/battle-report/'+filename)).status_code == 404
             assert (await client.post('/battle-report/index.html')).status_code == 405
             assert (await client.get('/api/plug/astrbot_plugin_battle_report/comparison/options')).status_code == 401
@@ -74,10 +74,10 @@ def test_reload_replaces_only_own_routes_and_old_unload_keeps_new_entry():
     assert old.register(adapter) and app.router.routes == registered
     new = StandaloneFrontend(context, logging.getLogger('test'))
     assert new.register(adapter)
-    assert len(app.router.routes) == len(original_routes)+2
+    assert len(app.router.routes) == len(original_routes)+4
     old.close()
     assert all(route in app.router.routes for route in new.routes)
-    assert app.router.routes[2:] == original_routes
+    assert app.router.routes[4:] == original_routes
     new.close()
     new.close()
     assert app.router.routes == original_routes

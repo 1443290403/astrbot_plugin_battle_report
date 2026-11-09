@@ -3,6 +3,7 @@
 from functools import partial
 
 HANDLER_COMMANDS = {
+    "report_web_login": "战报登录",
     "confirm_identity": "确认关联",
     "revoke_identity": "解除官方关联",
     "request_list": "申请列表",
@@ -47,6 +48,8 @@ HANDLER_COMMANDS = {
 }
 
 COMMAND_ALIASES = {
+    "战报登录": "战报登录",
+    "/战报登录": "战报登录",
     "确认关联": "确认关联",
     "/确认关联": "确认关联",
     "解除官方关联": "解除官方关联",
@@ -147,7 +150,7 @@ QUEUE_COMMANDS = {
     '等车ID': '等车ID', '等车帮助': '等车帮助', '呼叫全体': '呼叫全体',
 }
 OFFICIAL_PLATFORMS = {'qq_official', 'qq_official_webhook'}
-ONEBOT_ONLY = {'确认关联', '解除官方关联', '申请审批', '申请列表', '刷新申请', '导出群成员'}
+ONEBOT_ONLY = {'确认关联', '解除官方关联', '申请审批', '申请列表', '刷新申请', '导出群成员','战报登录'}
 COMMANDS = tuple(dict.fromkeys([*HANDLER_COMMANDS.values(), *QUEUE_COMMANDS.values()]))
 
 

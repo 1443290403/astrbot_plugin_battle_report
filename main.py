@@ -245,7 +245,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.30.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.31.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -274,7 +274,7 @@ class BattleReportPlugin(Star):
         if self._comparison_webui:
             try:
                 from .standalone_web import StandaloneFrontend
-                self._standalone_frontend = StandaloneFrontend(self.context, logger)
+                self._standalone_frontend = StandaloneFrontend(self.context, logger,webui=self._comparison_webui)
                 self._register_standalone_frontend()
             except Exception:
                 logger.exception('独立战报入口初始化失败，后台 Pages 及原有指令继续可用')
@@ -294,6 +294,32 @@ class BattleReportPlugin(Star):
         # On cold startup the dashboard APP is constructed after plugin loading.
         if getattr(self, '_standalone_frontend', None) and not self._register_standalone_frontend():
             logger.warning('当前 AstrBot 未提供兼容的独立页面挂载接口，可继续使用后台 Pages 入口')
+
+    @filter.command('战报登录',alias={'/战报登录'})
+    async def report_web_login(self,event:AstrMessageEvent):
+        if getattr(event,'get_platform_name',lambda:'')()!='aiocqhttp':
+            return
+        if event.get_group_id():
+            yield event.plain_result('请私聊机器人使用 /战报登录 获取登录码喵。')
+            return
+        ui=getattr(self,'_comparison_webui',None)
+        if ui is None or ui.auth is None:
+            yield event.plain_result('战报登录暂不可用，请联系管理员喵。')
+            return
+        try:
+            from .web_accounts import WebAuthError
+            code=await ui.auth.issue_code(str(event.get_sender_id()))
+        except WebAuthError as exc:
+            message=str(exc)
+            yield event.plain_result(message if '喵' in message else message.rstrip('。')+'喵。')
+            return
+        except Exception:
+            logger.exception('战报登录码生成失败')
+            yield event.plain_result('登录码暂时无法生成，请稍后重试喵。')
+            return
+        event.stop_event()
+        await event.send(event.plain_result('战报登录码：\n'+code+
+            '\n在网页选择“QQ登录码”登录，5分钟内有效、限用一次喵。'))
 
     def _command_allowed(self, event, command):
         platform = getattr(event, 'get_platform_name', lambda: '')()

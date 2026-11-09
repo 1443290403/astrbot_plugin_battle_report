@@ -4,14 +4,19 @@ Only static assets are public. Authentication and all data APIs remain owned by
 AstrBot. The dashboard compatibility adapter is checked before installing routes.
 """
 from pathlib import Path
+import json
+import re
 
 try:
     from .scripts.export_report_webui import build_assets
+    from .web_accounts import WebAuthError,SESSION_TTL
 except ImportError:
     from scripts.export_report_webui import build_assets
+    from web_accounts import WebAuthError,SESSION_TTL
 
 PREFIX = '/battle-report'
 OWNER = 'astrbot_plugin_battle_report.standalone'
+COOKIE = 'battle_report_session'
 HEADERS = {
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
@@ -25,12 +30,98 @@ MEDIA = {'index.html':'text/html','app.js':'application/javascript',
 
 
 class StandaloneFrontend:
-    def __init__(self, context, log, *, root=Path(__file__).resolve().parent):
+    def __init__(self, context, log, *, root=Path(__file__).resolve().parent, webui=None):
         self.context=context
         self.log=log
         self.assets=build_assets(root, builtin=True)
         self.app=None
         self.routes=[]
+        self.webui=webui
+
+    def auth(self):
+        if self.webui is None or self.webui.auth is None:
+            raise WebAuthError('战队管理员登录暂不可用，请查看 AstrBot 日志。',503)
+        return self.webui.auth
+
+    @staticmethod
+    def token(request):
+        header=request.headers.get('authorization','')
+        if header:return header.removeprefix('Bearer ').strip() if header.startswith('Bearer ') else ''
+        return request.cookies.get(COOKIE,'')
+
+    @staticmethod
+    async def payload(request,limit=8192):
+        body=bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body)>limit:raise WebAuthError('请求内容过大。',413)
+        request._body=bytes(body)
+        try:value=json.loads(body)
+        except (ValueError,UnicodeError):raise WebAuthError('请求格式无效。')
+        if not isinstance(value,dict):raise WebAuthError('请求格式无效。')
+        return value
+
+    async def auth_endpoint(self, request):
+        from starlette.responses import JSONResponse
+        try:
+            auth=self.auth()
+            action=request.path_params['action']
+            expected='GET' if action=='session' else 'POST'
+            if action not in ('session','login','code-login','logout','password'):
+                raise WebAuthError('接口不存在。',404)
+            if request.method!=expected:raise WebAuthError('请求方法无效。',405)
+            if request.headers.get('sec-fetch-site')=='cross-site':raise WebAuthError('请从本页面操作。',403)
+            token=self.token(request)
+            if action=='logout':
+                auth.logout(token)
+                response=JSONResponse(dict(status='ok',data=dict(logged_out=True)),headers=HEADERS)
+                response.delete_cookie(COOKIE,path=PREFIX,httponly=True,samesite='strict')
+                return response
+            if action=='session':
+                actor=await auth.authenticate(token)
+                return JSONResponse(dict(status='ok',data=actor),headers=HEADERS)
+            payload=await self.payload(request)
+            client=request.client.host if request.client else 'unknown'
+            if action=='login':token=await auth.login(payload.get('username'),payload.get('password'),client)
+            elif action=='code-login':token=await auth.login_code(payload.get('code'),client)
+            else:token=await auth.change_password(token,payload.get('old_password'),payload.get('new_password'))
+            actor=await auth.authenticate(token)
+            response=JSONResponse(dict(status='ok',data=dict(token=token,actor=actor)),headers=HEADERS)
+            encrypted=(request.url.scheme=='https' or request.headers.get('x-forwarded-proto','').split(',')[0].strip().lower()=='https')
+            response.set_cookie(COOKIE,token,max_age=SESSION_TTL,path=PREFIX,
+                                secure=encrypted,httponly=True,samesite='strict')
+            return response
+        except WebAuthError as exc:
+            return JSONResponse(dict(status='error',message=str(exc)),status_code=exc.status,headers=HEADERS)
+        except Exception:
+            self.log.exception('战报登录请求失败')
+            return JSONResponse(dict(status='error',message='请求未完成，请查看 AstrBot 日志。'),status_code=500,headers=HEADERS)
+
+    async def team_api(self, request):
+        from starlette.responses import JSONResponse
+        try:
+            actor=await self.auth().authenticate(self.token(request))
+            endpoint=request.path_params['endpoint']
+            method='GET' if request.method=='HEAD' else request.method
+            matched=False
+            for pattern,handler,methods in self.webui.endpoints():
+                expression=re.sub(r'<([a-z_]+)>',r'(?P<\1>[^/]+)',pattern)
+                match=re.fullmatch(expression,endpoint)
+                if not match:continue
+                matched=True
+                if method not in methods:continue
+                if method=='POST':await self.payload(request,1024*1024)
+                from astrbot.api.web import PluginRequest,bind_request_context
+                with self.webui.bind_team(actor),bind_request_context(PluginRequest(request,username=actor['owner'])):
+                    response=await handler(**match.groupdict())
+                    response.headers.update(HEADERS)
+                    return response
+            raise WebAuthError('请求方法无效。' if matched else '接口不存在。',405 if matched else 404)
+        except WebAuthError as exc:
+            return JSONResponse(dict(status='error',message=str(exc)),status_code=exc.status,headers=HEADERS)
+        except Exception:
+            self.log.exception('战队管理员战报请求失败')
+            return JSONResponse(dict(status='error',message='请求未完成，请查看 AstrBot 日志。'),status_code=500,headers=HEADERS)
 
     def register(self, adapter=None):
         if adapter is None:
@@ -58,7 +149,10 @@ class StandaloneFrontend:
             headers={**HEADERS,'Content-Length':str(len(content))}
             return Response(b'' if request.method=='HEAD' else content,media_type=MEDIA[name],headers=headers)
 
-        routes=[Route(PREFIX,redirect,methods=['GET']),Route(PREFIX+'/{asset:path}',serve,methods=['GET'])]
+        routes=[Route(PREFIX,redirect,methods=['GET']),
+                Route(PREFIX+'/auth/{action}',self.auth_endpoint,methods=['GET','POST']),
+                Route(PREFIX+'/api/comparison/{endpoint:path}',self.team_api,methods=['GET','POST']),
+                Route(PREFIX+'/{asset:path}',serve,methods=['GET'])]
         for route in routes:route._battle_report_owner=OWNER
         self.close()
         # Static SPA catch-alls must stay behind this exact prefix. Other routes

@@ -1,5 +1,7 @@
 """AstrBot 后台战报核对、独立云端归档及QQ手动批量发送。"""
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
@@ -12,11 +14,21 @@ from uuid import uuid4
 try:
     from .report_site import ComparisonError, ComparisonQuery, SiteClient, previous_month
     from .report_comparison import build_comparison
+    from .web_accounts import WebAuthError
 except ImportError:
     from report_site import ComparisonError, ComparisonQuery, SiteClient, previous_month
     from report_comparison import build_comparison
+    from web_accounts import WebAuthError
 
 PLUGIN_NAME = 'astrbot_plugin_battle_report'
+
+
+class PermissionDenied(ComparisonError):
+    pass
+
+
+def team_key(value):
+    return str(value or '').strip().upper()
 
 
 def validate_outcome(value):
@@ -99,7 +111,7 @@ class ComparisonJobs:
     def history(self):
         return sorted(self.jobs.values(), key=lambda j: j['created_at'], reverse=True)[:20]
 
-    async def start(self, payload):
+    async def start(self, payload, *, owner=None):
         query = ComparisonQuery.from_payload(payload)
         async with self.lock:
             if self.closed:
@@ -109,10 +121,11 @@ class ComparisonJobs:
             job_id = uuid4().hex
             job = dict(id=job_id, status='pending', created_at=timestamp(), query=asdict(query),
                        page=0, pages=0, records=0, message='准备抓取网站战报。')
+            if owner is not None:job['owner']=owner
             self.save(job)
             self.jobs[job_id] = job
             # 仅保留最近20次本功能的结果，避免无限积累整月原文。
-            previous = [old for old in self.history_all() if old['id'] != job_id]
+            previous = [old for old in self.history_all() if old['id'] != job_id and old.get('owner')==owner]
             for old in previous[19:]:
                 self.result_path(old['id']).unlink(missing_ok=True)
                 (self.path / (old['id'] + '.job.json')).unlink(missing_ok=True)
@@ -221,6 +234,7 @@ class ComparisonJobs:
 class ComparisonWebUI:
     def __init__(self, plugin, log):
         self.plugin = plugin
+        self.team_actor = ContextVar('battle_report_team_actor', default=None)
         self.jobs = ComparisonJobs(plugin.data_dir / 'report_comparisons', self.load_reports, log=log,
                                    archive=self.archive_cloud)
         self.log = log
@@ -229,11 +243,86 @@ class ComparisonWebUI:
         except ImportError:
             from report_dispatch import QQReportDispatch
         self.dispatch = QQReportDispatch(plugin.data_dir / 'report_dispatches', plugin.context,
-                                         self.resolve_reports, self.admin_ids, log=log)
+                                         self.resolve_reports, self.admin_ids, log=log,authorize=self.authorize_dispatch)
+        self.auth = None
+        try:
+            try:from .web_accounts import WebAccounts
+            except ImportError:from web_accounts import WebAccounts
+            self.auth = WebAccounts(plugin.data_dir/'web_accounts.json',self.admin_teams)
+        except Exception:
+            self.log.exception('战队管理员登录初始化失败，原后台登录继续可用')
+
+    @contextmanager
+    def bind_team(self, actor):
+        token=self.team_actor.set(actor)
+        try:yield
+        finally:self.team_actor.reset(token)
+
+    async def admin_teams(self, qq):
+        if not self.plugin.db_ready or not self.plugin.db:
+            try:from .web_accounts import WebAuthError
+            except ImportError:from web_accounts import WebAuthError
+            raise WebAuthError('插件数据库尚未连接。',503)
+        return await self.plugin.db.get_admin_teams(qq)
+
+    async def scope(self):
+        actor=self.team_actor.get()
+        if actor is None:return None
+        teams=await self.admin_teams(actor['qq'])
+        if not teams:raise PermissionDenied('当前QQ没有战队管理员权限。')
+        return {team_key(t) for t in teams}
+
+    async def require_team(self, team):
+        teams=await self.scope()
+        if teams is not None and team_key(team) not in teams:
+            raise PermissionDenied('没有该战队的访问权限。')
+
+    async def require_query(self, query):
+        teams=await self.scope()
+        if teams is not None and not {team_key(query.team),team_key(query.site_team)}.issubset(teams):
+            raise PermissionDenied('没有该战队的访问权限。')
+
+    async def require_job(self, job_id):
+        self.jobs.result_path(job_id)
+        job=self.jobs.jobs[job_id]
+        query=ComparisonQuery.from_payload(job['query'])
+        await self.require_query(query)
+        return job
+
+    @staticmethod
+    def related_teams(row):
+        return {team_key(row.get(k)) for k in ('home_team','team_a','team_b','winner_site','loser_site','query_team')
+                if row.get(k)}
+
+    async def authorize_dispatch(self, plan):
+        qq=plan.get('team_qq')
+        if not qq:return
+        teams={team_key(t) for t in await self.admin_teams(qq)}
+        if not teams:raise PermissionDenied('当前QQ没有战队管理员权限。')
+        for report in plan['reports']:
+            allowed=({team_key(report.get('home_team'))} if report['source']=='local'
+                     else {team_key(t) for t in report.get('access_teams',[])})
+            if not allowed.intersection(teams):raise PermissionDenied('该批次包含无权访问的战报。')
+        if plan['target_mode']=='admins' and team_key(plan.get('admin_team')) not in teams:
+            raise PermissionDenied('没有该战队管理员名单的访问权限。')
+
+    async def require_plan(self, plan):
+        actor=self.team_actor.get()
+        if actor is not None:
+            if plan.get('team_qq')!=actor['qq']:raise PermissionDenied('没有该批次的访问权限。')
+            await self.authorize_dispatch(plan)
+
+    def require_master(self):
+        if self.team_actor.get() is not None:raise PermissionDenied('此操作需要 AstrBot 后台管理员登录。')
+
+    def require_auth(self):
+        if self.auth is None:raise ComparisonError('战队管理员登录暂不可用，请查看日志。')
+        return self.auth
 
     async def load_reports(self, query):
         if not self.plugin.db_ready or not self.plugin.db:
             raise ComparisonError('插件数据库尚未连接。')
+        await self.require_query(query)
         return await self.plugin.db.get_comparison_reports(query.team, query.start, query.end)
 
     def require_db(self):
@@ -242,10 +331,12 @@ class ComparisonWebUI:
 
     async def archive_cloud(self, records, query):
         self.require_db()
+        await self.require_query(query)
         return await self.plugin.db.archive_cloud_reports(records, query.site_team, query.url())
 
     async def admin_ids(self, team):
         self.require_db()
+        await self.require_team(team)
         return await self.plugin.db.get_team_admins(team)
 
     @staticmethod
@@ -275,6 +366,7 @@ class ComparisonWebUI:
 
     async def resolve_reports(self, refs):
         self.require_db()
+        teams=await self.scope()
         keys = []
         local_groups = {}
         clouds = []
@@ -289,6 +381,8 @@ class ComparisonWebUI:
             team = str(ref.get('home_team') or '').strip() if source == 'local' else ''
             if source == 'local' and (not team or len(team) > 64):
                 raise ComparisonError('本地战报缺少所属战队。')
+            if source=='local' and teams is not None and team_key(team) not in teams:
+                raise PermissionDenied('没有该战队的访问权限。')
             key = (source, rid, team)
             if key in keys:
                 continue
@@ -302,24 +396,34 @@ class ComparisonWebUI:
             for row in await self.plugin.db.get_webui_local_reports_by_ids(team, ids):
                 found[('local', int(row['match_id']), team)] = self.local_record(row)
         for row in await self.plugin.db.get_cloud_reports_by_ids(clouds):
-            found[('cloud', int(row['cloud_id']), '')] = self.cloud_record(row)
+            allowed=self.related_teams(row)
+            if teams is not None and not allowed.intersection(teams):
+                raise PermissionDenied('所选云端战报不属于当前授权战队。')
+            record=self.cloud_record(row)
+            if teams is not None:record['access_teams']=sorted(allowed.intersection(teams))
+            found[('cloud', int(row['cloud_id']), '')] = record
         if any(key not in found for key in keys):
             raise ComparisonError('部分战报已不存在，或云端记录尚未归档；请刷新列表／重新拉取后再选。')
         return [found[key] for key in keys]
 
-    def register(self):
-        endpoints = [('options', self.options, ['GET']), ('jobs', self.start, ['POST']),
+    def endpoints(self):
+        return [('options', self.options, ['GET']), ('jobs', self.start, ['POST']),
                      ('jobs/<job_id>', self.get, ['GET']), ('jobs/<job_id>/cancel', self.cancel, ['POST']),
                      ('jobs/<job_id>/download', self.download, ['GET']),
                      ('local-reports', self.local_reports, ['GET']), ('cloud-reports', self.cloud_reports, ['GET']),
                      ('dispatch/options', self.dispatch_options, ['GET']), ('dispatch/admins', self.dispatch_admins, ['GET']),
                      ('dispatch/prepare', self.dispatch_prepare, ['POST']), ('dispatch/<batch_id>', self.dispatch_get, ['GET']),
                      ('dispatch/<batch_id>/send', self.dispatch_send, ['POST']),
-                     ('dispatch/<batch_id>/cancel', self.dispatch_cancel, ['POST'])]
-        for suffix, handler, methods in endpoints:
+                     ('dispatch/<batch_id>/cancel', self.dispatch_cancel, ['POST']),
+                     ('accounts',self.accounts,['GET']),('accounts',self.account_create,['POST']),
+                     ('accounts/<account_id>',self.account_update,['POST'])]
+
+    def register(self):
+        for suffix, handler, methods in self.endpoints():
             self.plugin.context.register_web_api(f'/{PLUGIN_NAME}/comparison/{suffix}', handler, methods, '战报核对、归档与QQ发送')
 
     async def close(self):
+        if self.auth:self.auth.close()
         try:
             await self.dispatch.close()
         finally:
@@ -336,6 +440,10 @@ class ComparisonWebUI:
             return error_response('请先登录 AstrBot 后台。', status_code=401)
         try:
             return json_response(await handler(request))
+        except PermissionDenied as exc:
+            return error_response(str(exc),status_code=403)
+        except WebAuthError as exc:
+            return error_response(str(exc),status_code=exc.status)
         except ComparisonError as exc:
             return error_response(str(exc), status_code=400)
         except Exception:
@@ -348,23 +456,36 @@ class ComparisonWebUI:
             teams = []
             if ready:
                 try:
-                    teams = await self.plugin.db.get_all_teams()
+                    actor=self.team_actor.get()
+                    teams = await self.admin_teams(actor['qq']) if actor else await self.plugin.db.get_all_teams()
                 except Exception:
                     self.log.exception('战报对比无法读取战队列表，保留历史结果入口')
                     ready = False
+            allowed={team_key(t) for t in teams}
+            history=[]
+            for job in self.jobs.history_all():
+                query=ComparisonQuery.from_payload(job['query'])
+                if not self.team_actor.get() or (team_key(query.team) in allowed and team_key(query.site_team) in allowed):
+                    history.append(job)
+                if len(history)==20:break
             return dict(teams=teams, month=previous_month(), ready=ready,
-                        source='https://rep.ygobbs2.com/', history=self.jobs.history())
+                        source='https://rep.ygobbs2.com/', history=history,
+                        role='team' if self.team_actor.get() else 'master')
         return await self.respond(handle)
 
     async def start(self):
         async def handle(request):
             if not self.plugin.db_ready:
                 raise ComparisonError('插件数据库尚未连接。')
-            return await self.jobs.start(await request.json(default={}))
+            payload=await request.json(default={})
+            await self.require_query(ComparisonQuery.from_payload(payload))
+            actor=self.team_actor.get()
+            return await self.jobs.start(payload,owner=actor['owner'] if actor else None)
         return await self.respond(handle)
 
     async def get(self, job_id):
         async def handle(request):
+            await self.require_job(job_id)
             try:
                 offset, limit = int(request.query.get('offset', '0')), int(request.query.get('limit', '30'))
             except (TypeError, ValueError) as exc:
@@ -376,17 +497,25 @@ class ComparisonWebUI:
         return await self.respond(handle)
 
     async def cancel(self, job_id):
-        return await self.respond(lambda request: self.jobs.cancel(job_id))
+        async def handle(request):
+            await self.require_job(job_id)
+            return await self.jobs.cancel(job_id)
+        return await self.respond(handle)
 
     async def download(self, job_id):
         from astrbot.api.web import request, file_response, error_response
         if not request.username:
             return error_response('请先登录 AstrBot 后台。', status_code=401)
         try:
+            await self.require_job(job_id)
             path = self.jobs.result_path(job_id)
             if self.jobs.jobs[job_id]['status'] != 'completed' or not path.is_file():
                 raise ComparisonError('这次对比尚无可下载结果。')
             return file_response(path, filename=f'battle-report-comparison-{job_id}.json', content_type='application/json')
+        except PermissionDenied as exc:
+            return error_response(str(exc),status_code=403)
+        except WebAuthError as exc:
+            return error_response(str(exc),status_code=exc.status)
         except ComparisonError as exc:
             return error_response(str(exc), status_code=400)
 
@@ -406,6 +535,7 @@ class ComparisonWebUI:
         async def handle(request):
             self.require_db()
             query, offset, limit = self.page_params(request)
+            await self.require_query(query)
             kind = request.query.get('kind', 'all')
             if kind not in ('all', 'friendly', 'raid'):
                 raise ComparisonError('战报类型无效。')
@@ -419,6 +549,7 @@ class ComparisonWebUI:
         async def handle(request):
             self.require_db()
             query, offset, limit = self.page_params(request)
+            await self.require_query(query)
             outcome = validate_outcome(request.query.get('outcome', 'all'))
             result = await self.plugin.db.get_cloud_reports(query.start, query.end, query.site_team, offset, limit, outcome=outcome)
             return dict(total=result['total'], records=[self.cloud_record(r) for r in result['records']],
@@ -427,9 +558,17 @@ class ComparisonWebUI:
 
     async def dispatch_options(self):
         async def handle(request):
-            teams = await self.plugin.db.get_dispatch_admin_teams() if self.plugin.db_ready and self.plugin.db else []
+            actor=self.team_actor.get()
+            teams = (await self.admin_teams(actor['qq']) if actor else await self.plugin.db.get_dispatch_admin_teams()) if self.plugin.db_ready and self.plugin.db else []
+            plans=[p for p in self.dispatch.plans.values() if p['owner']==request.username]
+            visible=[]
+            for plan in sorted(plans,key=lambda p:p['created_at'],reverse=True):
+                try:await self.require_plan(plan)
+                except PermissionDenied:continue
+                visible.append(self.dispatch.public(plan))
+                if len(visible)==20:break
             return dict(connections=self.dispatch.connections(), admin_teams=teams,
-                        history=self.dispatch.history(request.username))
+                        history=visible)
         return await self.respond(handle)
 
     async def dispatch_admins(self):
@@ -442,17 +581,20 @@ class ComparisonWebUI:
 
     async def dispatch_prepare(self):
         async def handle(request):
-            return await self.dispatch.prepare(await request.json(default={}), request.username)
+            actor=self.team_actor.get()
+            return await self.dispatch.prepare(await request.json(default={}), request.username,team_qq=actor['qq'] if actor else None)
         return await self.respond(handle)
 
     async def dispatch_get(self, batch_id):
         async def handle(request):
             plan = self.dispatch.get(batch_id, request.username)
+            await self.require_plan(plan)
             return self.dispatch.public(plan, bodies=plan['status'] == 'prepared' or request.query.get('preview') == '1')
         return await self.respond(handle)
 
     async def dispatch_send(self, batch_id):
         async def handle(request):
+            await self.require_plan(self.dispatch.get(batch_id,request.username))
             payload = await request.json(default={})
             if not isinstance(payload, dict) or type(payload.get('retry', False)) is not bool:
                 raise ComparisonError('发送参数无效。')
@@ -460,4 +602,30 @@ class ComparisonWebUI:
         return await self.respond(handle)
 
     async def dispatch_cancel(self, batch_id):
-        return await self.respond(lambda request: self.dispatch.cancel(batch_id, request.username))
+        async def handle(request):
+            await self.require_plan(self.dispatch.get(batch_id,request.username))
+            return await self.dispatch.cancel(batch_id,request.username)
+        return await self.respond(handle)
+
+    async def accounts(self):
+        async def handle(request):
+            self.require_master()
+            return dict(accounts=self.require_auth().list_accounts())
+        return await self.respond(handle)
+
+    async def account_create(self):
+        async def handle(request):
+            self.require_master()
+            payload=await request.json(default={})
+            if not isinstance(payload,dict):raise ComparisonError('账号参数无效。')
+            return await self.require_auth().create(payload.get('username'),payload.get('password'),payload.get('qq'))
+        return await self.respond(handle)
+
+    async def account_update(self,account_id):
+        async def handle(request):
+            self.require_master()
+            payload=await request.json(default={})
+            if not isinstance(payload,dict):raise ComparisonError('账号参数无效。')
+            await self.require_auth().update(account_id,payload)
+            return dict(updated=True)
+        return await self.respond(handle)

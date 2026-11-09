@@ -324,3 +324,12 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - 默认在原后台端口/battle-report/自动挂载，构造期热安装、on_astrbot_loaded冷启动；APP._app与core_lifecycle.star_context必须匹配当前context，不挂错旧core。无新监听端口，不写核心／Nginx／Docker配置。
 - SPA兜底前插入精确前缀，只替换本插件标记旧路由，关闭按对象身份移除本实例，不能删新实例或其他插件路由；兼容失败保留Pages，卸载失败仍清任务／DB。只公开六个静态文件，不修改API鉴权或后台中间件。
 - build_assets为自动挂载和手动导出唯一静态构建路径。内置HTML标记沿用后台HTTP／HTTPS；覆盖v1.30.0的内置登录协议限制，手动独立静态站仍要求HTTPS／回环。JWT及401不自动重放规则不变。
+
+
+## v1.31.0 超时补发与战队网页登录
+
+- 官方队列JSONv2可选late_cars：曾满3人的车超时保存当时members和eligible；只在原scope、发起人未加入新车时允许补发一次，原子消耗整辆快照后走原outbox+数字after。实际加入新车同事务清旧eligible，离队不恢复；未满员／人工解散／已发车无补发，不复活活动车或延长计时。
+- WebAccounts独立密码／QQ一次性码，仅由原OneBot私聊QQ及当前team_admins证明身份。密码账号后台管理，不把网页密码给LLM，不在配置或日志写明文。PBKDF2／0600／原子回滚，码／会话只存内存哈希，revision／TTL／注销／停用／重启和关闭期间的在途哈希工作都需守卫。
+- 默认入口新增4条路由含auth与team API，核心API仍要求原JWT；插件会话不得签发核心JWT或调用后台。团队请求绑定ContextVar，QQ与角色来自服务器；查询本地home_team／云端服务端归属、核对历史／取消／JSON下载、目录、冻结发送／重试与每包都检查当前授权。不能只在前端隐藏战队。密码账号停用不等于撤销QQ授权，需在文档和按钮明确。
+- 发送plan.team_qq和cloud access_teams只由服务端生成；QQ两方式同owner共享发送历史，跨用户拒绝；按QQ／创建者分别保留20次，原后台核对共享原上限。撤权／DB异常停止未发包，已发或unknown不重放。
+- Cookie限定/battle-report且HttpOnly／Strict；HTTPS或转发HTTPS加Secure，内置HTTP仍沿用后台。身份变化清正文／选择／凭据并拒绝旧generation响应，401重新登录不得自动重发操作。原Pages原后台可管理密码账号，静态导出／Nginx模板同步新前缀。新命令同步catalog／schema options和labels／帮助及指南。

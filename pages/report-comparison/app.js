@@ -72,6 +72,7 @@ $('apply-url').addEventListener('click', () => { try { readUrl(); } catch(e) { n
 async function options(initial = false) {
   const data = await bridge.apiGet('comparison/options');
   dbReady = data.ready;
+  $('accounts-open').hidden=data.role==='team';
   if (initial) {
     $('month').value = data.month; monthDates();
     $('teams').replaceChildren(...data.teams.map(t => {const e = node('option'); e.value = t; return e;}));
@@ -444,16 +445,68 @@ async function confirmDispatch(retry=false){
 $('dispatch-confirm').addEventListener('click',()=>confirmDispatch());$('dispatch-retry').addEventListener('click',()=>confirmDispatch(true));
 $('dispatch-stop').addEventListener('click',async()=>{try{renderDispatch(await bridge.apiPost(`comparison/dispatch/${dispatchId}/cancel`,{}));clearTimeout(dispatchTimer);}catch(e){dispatchNotice(e.message);}});
 
+let resetAccountId='';
+function accountsNotice(text=''){$('accounts-notice').textContent=text;$('accounts-notice').hidden=!text;}
+async function loadAccounts(){
+  const data=await bridge.apiGet('comparison/accounts');
+  $('accounts-list').replaceChildren(...data.accounts.map(account=>{
+    const row=node('article',null,'account-row'),identity=node('div');
+    identity.append(node('strong',account.username),node('span',`QQ ${account.qq} · ${account.enabled?'密码登录已启用':'密码登录已停用'}`,'hint'));
+    const buttons=node('div',null,'account-actions');
+    for(const [action,label] of [['reset','重置密码'],[account.enabled?'disable':'enable',account.enabled?'停用密码':'启用密码'],['delete','删除']]){
+      const button=node('button',label,'secondary');button.type='button';
+      button.addEventListener('click',async()=>{
+        if(action==='reset'){resetAccountId=account.id;$('account-reset-title').textContent=`重置 ${account.username} 的密码`;$('account-reset').hidden=false;$('account-reset-password').focus();return;}
+        if(action==='delete' && button.dataset.confirm!=='yes'){button.dataset.confirm='yes';button.textContent='确认删除';return;}
+        button.disabled=true;accountsNotice();
+        try{await bridge.apiPost(`comparison/accounts/${account.id}`,{action});await loadAccounts();}
+        catch(error){accountsNotice(error.message);button.disabled=false;}
+      });buttons.append(button);
+    }
+    row.append(identity,buttons);return row;
+  }));
+}
+$('accounts-open').addEventListener('click',async()=>{
+  $('accounts-dialog').showModal();accountsNotice();
+  try{await loadAccounts();}catch(error){accountsNotice(error.message);}
+});
+$('accounts-close').addEventListener('click',()=>{$('accounts-dialog').close();$('account-password').value='';$('account-reset-password').value='';});
+$('accounts-dialog').addEventListener('close',()=>{$('account-password').value='';$('account-reset-password').value='';});
+$('account-create').addEventListener('submit',async event=>{
+  event.preventDefault();const button=event.submitter;button.disabled=true;accountsNotice();
+  try{await bridge.apiPost('comparison/accounts',{username:$('account-username').value.trim(),qq:$('account-qq').value.trim(),password:$('account-password').value});$('account-password').value='';await loadAccounts();accountsNotice('密码账号已创建。');}
+  catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
+});
+$('account-reset').addEventListener('submit',async event=>{
+  event.preventDefault();const button=event.submitter;button.disabled=true;accountsNotice();
+  try{await bridge.apiPost(`comparison/accounts/${resetAccountId}`,{action:'reset',password:$('account-reset-password').value});$('account-reset-password').value='';$('account-reset').hidden=true;accountsNotice('密码已重置，原密码会话已失效。');}
+  catch(error){accountsNotice(error.message);}finally{button.disabled=false;}
+});
+function clearSession(){
+  clearTimeout(timer);clearTimeout(dispatchTimer);sequence++;librarySequence++;dispatchSequence++;
+  jobId='';lastResult=undefined;libraryData=undefined;libraryOffset=0;offset=0;dispatchId='';
+  running=false;comparisonLoading=false;dispatchRunning=false;dbReady=false;selection.clear();
+  for(const id of ['library-records','records','site-detail','local-detail','dispatch-preview','dispatch-results','accounts-list'])$(id).replaceChildren();
+  for(const id of ['detail','dispatch-dialog','accounts-dialog'])if($(id).open)$(id).close();
+  for(const id of ['account-username','account-qq','account-password','account-reset-password','team','site-team'])$(id).value='';
+  $('accounts-open').hidden=true;$('download').disabled=true;selectionChanged();setRunning(false);syncSidePaging();
+}
+async function initializePage(){
+  const data=await options(true);
+  $('run-message').textContent=dbReady?'选择范围，开始一次核对。':'插件数据库尚未连接。';
+  const active=data.history.find(j=>['pending','running'].includes(j.status));
+  if(active){jobId=active.id;setRunning(true);await refresh();}
+  else if(data.history.length)jobId=data.history[0].id;
+  activateView('local');
+}
+window.addEventListener('battle-report-session-expired',clearSession);
+window.addEventListener('battle-report-session-changed',()=>{clearSession();initializePage().catch(error=>notice(error.message));});
+
 if (!bridge) {
   notice('请从 AstrBot 后台的插件详情页打开“战报核对”。'); $('run-message').textContent = '未连接 AstrBot 后台';
 } else {
   try {
     await bridge.ready();
-    const data = await options(true);
-    $('run-message').textContent = dbReady ? '选择范围，开始一次核对。' : '插件数据库尚未连接。';
-    const active = data.history.find(j => ['pending','running'].includes(j.status));
-    if (active) {jobId = active.id; setRunning(true); await refresh();}
-    else if (data.history.length) jobId = data.history[0].id;
-    activateView('local');
+    await initializePage();
   } catch(e) {notice(e.message); $('run-message').textContent = '无法读取后台状态';}
 }

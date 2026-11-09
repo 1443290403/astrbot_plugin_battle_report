@@ -11,3 +11,5 @@ html{overflow-y:scroll;scrollbar-gutter:stable}body{padding-left:60px;padding-ri
 .report-layout{min-height:calc(100vh - 24px)}#library-view{min-height:calc(100vh - 24px)}#library-records[aria-busy=true]{opacity:.55;transition:opacity .1s}.library-report{overflow-anchor:none}
 
 .page-rail-next .rail-controls{display:grid;grid-template-columns:40px 42px;column-gap:8px}#page-numbers{grid-column:1;grid-row:1}#side-next{grid-column:2;grid-row:1;align-self:start}@media(max-width:780px){.page-rail-next .rail-controls{grid-template-columns:28px 32px;column-gap:6px}}
+
+#accounts-dialog form{border-bottom:1px solid var(--line);padding:16px 0}#accounts-dialog form button{margin-top:12px}.account-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--line)}.account-row .hint{display:block;margin-top:5px}.account-actions{display:flex;gap:8px;flex-wrap:wrap}#accounts-list{max-height:400px;overflow-y:auto;margin-top:16px}@media(max-width:780px){.account-row{align-items:flex-start;flex-direction:column}}

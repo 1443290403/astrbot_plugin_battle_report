@@ -41,10 +41,11 @@ class DefiniteSendFailure(ComparisonError):
 
 
 class QQReportDispatch:
-    def __init__(self, path, context, load_reports, get_admins, *, log=None, delay=0.5, clock=time.time):
+    def __init__(self, path, context, load_reports, get_admins, *, log=None, delay=0.5, clock=time.time, authorize=None):
         self.path = Path(path)
         self.context, self.load_reports, self.get_admins = context, load_reports, get_admins
         self.log, self.delay, self.clock = log, delay, clock
+        self.authorize=authorize
         self.plans = {}
         self.lock = asyncio.Lock()
         self.task = None
@@ -129,7 +130,7 @@ class QQReportDispatch:
         plans = sorted((p for p in self.plans.values() if p['owner'] == owner), key=lambda p: p['created_at'], reverse=True)
         return [self.public(p) for p in plans[:20]]
 
-    async def prepare(self, payload, owner):
+    async def prepare(self, payload, owner, *, team_qq=None):
         if not isinstance(payload, dict):
             raise ComparisonError('发送参数格式不正确。')
         async with self.lock:
@@ -164,12 +165,14 @@ class QQReportDispatch:
             plan = dict(id=uuid4().hex, owner=owner, status='prepared', created_at=self.clock(),
                         platform_id=platform_id, self_id=self_id, target_mode=mode, admin_team=team,
                         recipients=recipients, reports=reports, entries=[])
+            if team_qq:plan['team_qq']=team_qq
+            if self.authorize:await self.authorize(plan)
             for recipient in recipients:
                 for index in range(0, len(reports), 50):
                     plan['entries'].append(dict(qq=recipient, start=index, count=len(reports[index:index+50]), status='pending'))
             self.save(plan)
             self.plans[plan['id']] = plan
-            previous = sorted((p for p in self.plans.values() if p['id'] != plan['id']),
+            previous = sorted((p for p in self.plans.values() if p['id'] != plan['id'] and p['owner']==owner),
                               key=lambda p: p['created_at'], reverse=True)
             for old in previous[19:]:
                 if old['id'] == self.active_id:
@@ -183,6 +186,7 @@ class QQReportDispatch:
             if self.closed:
                 raise ComparisonError('插件正在停止。')
             plan = self.get(plan_id, owner)
+            if self.authorize:await self.authorize(plan)
             if plan['status'] == 'running':
                 return self.public(plan)
             if self.task and not self.task.done():
@@ -220,6 +224,14 @@ class QQReportDispatch:
                 for entry in plan['entries']:
                     if entry['status'] != 'pending':
                         continue
+                    if self.authorize:
+                        try:await self.authorize(plan)
+                        except Exception:
+                            for remaining in plan['entries']:
+                                if remaining['status']=='pending':
+                                    remaining.update(status='cancelled',error='权限核验未通过，已停止未发部分。')
+                            plan['status']='interrupted'
+                            return
                     entry['status'] = 'sending'
                     self.save(plan)
                     try:
