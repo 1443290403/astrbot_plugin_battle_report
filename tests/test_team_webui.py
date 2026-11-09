@@ -103,6 +103,79 @@ async def team_login(site,client,qq='20000001'):
     return response.json()['data']['token']
 
 
+def test_friendly_audit_summary_and_details_stay_in_authorized_team_scope(site):
+    site.db.get_daily_friendly_counts=AsyncMock(return_value=[
+        dict(match_time='2026-11-01',team_a='a队',team_b='b队',winner='a队',match_count=4),
+        dict(match_time='2026-11-01',team_a='b队',team_b='a队',winner='b队',match_count=3),
+    ])
+    site.db.get_daily_friendly_reports=AsyncMock(return_value=dict(total=7,records=[sample.report()]))
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
+            token=await team_login(site,client);headers={'Authorization':'Bearer '+token}
+            base='/battle-report/api/comparison/'
+            params=dict(team='a队',month='2026-11')
+            data=(await client.get(base+'friendly-limits',headers=headers,params=params)).json()
+            assert data['summary']['reports']==7 and data['summary']['excess_wins']==1
+            assert data['total']==1 and data['records'][0]['wins']==4 and data['records'][0]['opponent_wins']==3
+            site.db.get_daily_friendly_counts.assert_awaited_once_with('a队','2026-11-01','2026-11-30')
+            detail=await client.get(base+'friendly-limits/reports',headers=headers,params={**params,'day':'2026-11-01','opponent':'b队'})
+            assert detail.status_code==200 and detail.json()['records'][0]['body']==sample.BODY
+            site.db.get_daily_friendly_reports.assert_awaited_once_with('a队','2026-11-01','b队',0,30)
+            before=site.db.get_daily_friendly_counts.await_count
+            assert (await client.get(base+'friendly-limits',headers=headers,params={**params,'team':'c队'})).status_code==403
+            assert site.db.get_daily_friendly_counts.await_count==before
+            before=site.db.get_daily_friendly_reports.await_count
+            assert (await client.get(base+'friendly-limits/reports',headers=headers,params={**params,'team':'c队','day':'2026-11-01','opponent':'d队'})).status_code==403
+            assert site.db.get_daily_friendly_reports.await_count==before
+            assert (await client.get('/api/plug/astrbot_plugin_battle_report/comparison/friendly-limits',headers=headers,params=params)).status_code==401
+            site.roles['20000001']=[]
+            assert (await client.get(base+'friendly-limits',headers=headers,params=params)).status_code==401
+        await site.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('changes',[
+    dict(month='2026-13'),dict(offset='-1'),dict(limit='101'),dict(only_exceeded='true'),
+])
+def test_friendly_audit_rejects_invalid_summary_queries_before_reading_db(site,changes):
+    site.db.get_daily_friendly_counts=AsyncMock()
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
+            token=await team_login(site,client)
+            response=await client.get('/battle-report/api/comparison/friendly-limits',headers={'Authorization':'Bearer '+token},params={**dict(team='a队',month='2026-11'),**changes})
+            assert response.status_code==400
+            site.db.get_daily_friendly_counts.assert_not_awaited()
+        await site.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('changes',[
+    dict(day='2026-10-31'),dict(day='2026-11-31'),dict(day='2026-11-1'),
+    dict(opponent='a队'),dict(opponent='x'*65),dict(opponent='b\n队'),
+])
+def test_friendly_audit_rejects_invalid_detail_queries_before_reading_db(site,changes):
+    site.db.get_daily_friendly_reports=AsyncMock()
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
+            token=await team_login(site,client)
+            response=await client.get('/battle-report/api/comparison/friendly-limits/reports',headers={'Authorization':'Bearer '+token},params={**dict(team='a队',month='2026-11',day='2026-11-01',opponent='b队'),**changes})
+            assert response.status_code==400
+            site.db.get_daily_friendly_reports.assert_not_awaited()
+        await site.close()
+    asyncio.run(run())
+
+
+def test_friendly_audit_database_failure_is_not_reported_as_no_violations(site):
+    site.db.get_daily_friendly_counts=AsyncMock(side_effect=RuntimeError('isolated read failure'))
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=site.app),base_url='https://test') as client:
+            token=await team_login(site,client)
+            response=await client.get('/battle-report/api/comparison/friendly-limits',headers={'Authorization':'Bearer '+token},params=dict(team='a队',month='2026-11'))
+            assert response.status_code==500 and 'summary' not in response.json()
+        await site.close()
+    asyncio.run(run())
+
+
 def test_short_login_code_api_accepts_lowercase_and_rejects_invalid_inputs_without_consuming(site):
     async def run():
         code=await site.ui.auth.issue_code('20000001')

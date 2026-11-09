@@ -46,6 +46,53 @@ def test_archive_upsert_and_migration_replay_leave_local_tables_untouched():
     run_db(check)
 
 
+def test_daily_friendly_limits_count_whole_matches_across_groups_and_scope_month_and_home():
+    from friendly_audit import daily_friendly_limits
+    async def check(db):
+        fixtures=[]
+        fixtures += [('2026-11-01','a队','b队','A队','a队','friendly',bool(i%2)) for i in range(4)]
+        fixtures += [('2026-11-01','a队','b队','B队','a队','friendly',False) for _ in range(3)]
+        fixtures += [('2026-11-02','a队','b队',winner,'a队','friendly',False) for winner in ['A队']*3+['B队']*3]
+        fixtures += [('2026-11-30','a队','c队','A队','a队','friendly',False) for _ in range(4)]
+        fixtures += [('2026-11-01','a队','b队',winner,'a队','friendly',False) for winner in ['', '无关队']]
+        fixtures += [('2026-11-01','c队','d队','C队','a队','friendly',False),
+                     ('2026-11-01','a队','a队','A队','a队','friendly',False),
+                     ('2026-11-01','a队','b队','A队','b队','friendly',False),
+                     ('2026-11-01','a队','b队','A队','a队','raid',False),
+                     ('2026-10-31','a队','b队','A队','a队','friendly',False),
+                     ('2026-12-01','a队','b队','A队','a队','friendly',False)]
+        for i,(day,a,b,winner,home,kind,reverse) in enumerate(fixtures):
+            if reverse:a,b=b,a
+            score='2:0' if winner.upper()==a.upper() else '0:2'
+            header_b='b队' if a==b else b
+            body=f'战队: {a} VS {header_b}\n时间: {day.replace("-", ".")}\n规则: 2/3【KOF】\n地点: 123456789\n------第一轮------\n玩家{i}  {score}  萌新{i}\n遗老{i}  {score}  对手{i}'
+            parsed=parse_battle_report(body).report;parsed.group_id=f'group-{i%2}'
+            mid=await db.insert_report(parsed,winner,home,body)
+            if a==b:await db._execute('UPDATE matches SET team_b=%s WHERE id=%s',(b,mid))
+            if kind=='raid':await db._execute('UPDATE matches SET kind=%s WHERE id=%s',(kind,mid))
+        await db.archive_cloud_reports([cloud()],'a队','https://rep.ygobbs2.com/')
+        before=await db._query('SELECT * FROM matches ORDER BY id')
+        counts=await db.get_daily_friendly_counts('a队','2026-11-01','2026-11-30')
+        data=daily_friendly_limits(counts,'a队',limit=1)
+        assert data['summary']==dict(reports=17,skipped_reports=4,days=3,pair_days=3,
+                                     exceeded_days=2,exceeded_pairs=2,excess_wins=2)
+        assert data['total']==2 and data['records'][0]['date']=='2026-11-30'
+        second=daily_friendly_limits(counts,'a队',offset=1,limit=1)
+        assert second['summary']==data['summary'] and second['records'][0]['wins']==4
+        assert second['records'][0]['opponent_wins']==3
+        assert daily_friendly_limits(counts,'a队',only_exceeded=False)['total']==3
+        details=await db.get_daily_friendly_reports('a队','2026-11-01','b队',0,2)
+        assert details['total']==7 and len(details['records'])==2
+        assert all(len(r['duels'])==2 for r in details['records'])
+        next_page=await db.get_daily_friendly_reports('a队','2026-11-01','B队',2,2)
+        assert not {r['match_id'] for r in details['records']} & {r['match_id'] for r in next_page['records']}
+        assert (await db.get_daily_friendly_reports('a队','2026-11-01','c队',0,30))['total']==0
+        assert not await db.get_daily_friendly_counts('c队','2026-11-01','2026-11-30')
+        assert await db._query('SELECT * FROM matches ORDER BY id')==before
+        assert (await db._query('SELECT MAX(version) AS v FROM schema_version'))[0]['v']==21
+    run_db(check)
+
+
 def test_archive_batch_is_atomic_on_sql_failure():
     async def check(db):
         await db._execute("""CREATE TRIGGER reject_cloud BEFORE INSERT ON cloud_battle_reports FOR EACH ROW

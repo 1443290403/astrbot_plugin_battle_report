@@ -7,6 +7,8 @@ let adminTarget=null,memberTarget=null,playerTarget=null,playerOffset=0,playerSe
 const adminSelected=new Map();
 let adminMemberSequence=0,adminMemberOffset=0,adminMemberTotal=0,adminMemberTimer,adminExpectedKnown=false,adminTeam='',adminReady=false,adminSaving=false;
 let view = 'local', libraryOffset = 0, libraryData, librarySequence = 0;
+let auditOffset=0,auditData,auditSequence=0,auditLoading=false;
+let auditDetailTarget=null,auditDetailOffset=0,auditDetailSequence=0,auditDetailLoading=false;
 const selection = new Map();
 let dispatchId = '', dispatchTimer, dispatchSequence = 0, dispatchRunning = false;
 const dispatchLabels={prepared:'待确认',running:'发送中',completed:'全部发送成功',partial:'部分未完成',interrupted:'已中断'};
@@ -83,9 +85,12 @@ async function options(initial = false) {
   if(initial)$('management-teams').replaceChildren(...data.teams.map(t=>{const e=node('option');e.value=t;return e;}));
   if (initial) {
     $('month').value = data.month; monthDates();
+    $('audit-month').value=data.current_month || new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date());
     $('teams').replaceChildren(...data.teams.map(t => {const e = node('option'); e.value = t; return e;}));
     if (data.teams.length === 1) $('team').value = data.teams[0];
+    $('audit-team').value=$('team').value;
   }
+  $('audit-start').disabled=!dbReady;
   const recent = node('option','最近的核对'); recent.value = '';
   $('history').replaceChildren(recent, ...data.history.map(j => {
     const e = node('option', `${j.query.team} · ${j.query.start.slice(0,7)} · ${formatTime(j.created_at)} · ${labels[j.status] || j.status}`);
@@ -153,8 +158,8 @@ function drawRows(data) {
   $('prev').disabled = !offset; $('next').disabled = offset + data.limit >= data.total;
 }
 function pagingState() {
-  const comparison = view === 'comparison', data = comparison ? lastResult : libraryData;
-  const ready = comparison ? !comparisonLoading && data?.job.status === 'completed' : !!data;
+  const comparison = view === 'comparison', data = comparison ? lastResult : view==='audit'?auditData:libraryData;
+  const ready = comparison ? !comparisonLoading && data?.job.status === 'completed' : view==='audit'?!!data && !auditLoading:!!data;
   const limit = data?.limit || 30, pages = Math.ceil((data?.total || 0) / limit);
   return {comparison, data, ready, limit, pages, current:Math.floor((data?.offset || 0) / limit) + 1};
 }
@@ -162,6 +167,7 @@ function jumpToPage(page) {
   const state = pagingState();
   if (!state.ready || page < 1 || page > state.pages || page === state.current) return;
   if (state.comparison) {offset = (page-1)*state.limit; refresh();}
+  else if(view==='audit'){auditOffset=(page-1)*state.limit;loadAudit();}
   else {libraryOffset = (page-1)*state.limit; loadLibrary();}
 }
 function syncPageNumbers(state) {
@@ -169,7 +175,7 @@ function syncPageNumbers(state) {
   panel.setAttribute('aria-busy', String(!state.ready));
   if (!state.ready) {for (const button of panel.children) button.disabled=true; return;}
   panel.hidden = !state.pages;
-  const scope = state.comparison ? `${view}:${jobId}:${category}:${$('report-outcome').value}` : `${view}:${JSON.stringify(state.data.query)}:${$('local-kind').value}:${$('report-outcome').value}`;
+  const scope = state.comparison ? `${view}:${jobId}:${category}:${$('report-outcome').value}` : view==='audit'?`${view}:${JSON.stringify(state.data.query)}:${state.data.only_exceeded}`:`${view}:${JSON.stringify(state.data.query)}:${$('local-kind').value}:${$('report-outcome').value}`;
   if (panel.dataset.scope !== scope || panel.children.length !== state.pages) {
     panel.dataset.scope = scope; panel.dataset.current = ''; panel.scrollTop=0;
     const buttons=[];
@@ -182,7 +188,7 @@ function syncPageNumbers(state) {
   }
   for (const button of panel.children) {
     button.disabled=false;
-    button.setAttribute('aria-controls',state.comparison?'records':'library-records');
+    button.setAttribute('aria-controls',state.comparison?'records':view==='audit'?'audit-records':'library-records');
     if(Number(button.textContent)===state.current)button.setAttribute('aria-current','page');
     else button.removeAttribute('aria-current');
   }
@@ -199,17 +205,17 @@ function syncPageNumbers(state) {
 }
 function syncSidePaging() {
   if(['teams','members'].includes(view)){$('side-prev').disabled=true;$('side-next').disabled=true;$('page-numbers').hidden=true;return;}
-  const state=pagingState(), {comparison,ready}=state, prefix = comparison ? '' : 'library-';
+  const state=pagingState(), {comparison,ready}=state, prefix = comparison ? '' : view==='audit'?'audit-':'library-';
   for (const direction of ['prev','next']) {
     const button = $(`side-${direction}`);
     button.disabled = !ready || $(`${prefix}pagination`).hidden || $(`${prefix}${direction}`).disabled;
-    button.setAttribute('aria-controls', comparison ? 'records' : 'library-records');
+    button.setAttribute('aria-controls', comparison ? 'records' : view==='audit'?'audit-records':'library-records');
   }
   syncPageNumbers(state);
 }
 for (const direction of ['prev','next']) $('side-'+direction).addEventListener('click',()=>{
   // Reuse the current tab's existing pagination action and boundaries.
-  $(`${view === 'comparison' ? '' : 'library-'}${direction}`).click();
+  $(`${view === 'comparison' ? '' : view==='audit'?'audit-':'library-'}${direction}`).click();
 });
 async function refresh() {
   clearTimeout(timer); if (!jobId) return;
@@ -303,15 +309,103 @@ function selectComparisonPage(source) {
 $('select-site-page').addEventListener('click',()=>selectComparisonPage('cloud'));
 $('select-local-page').addEventListener('click',()=>selectComparisonPage('local'));
 $('clear-selection').addEventListener('click',()=>{selection.clear();selectionChanged();});
+function clearAuditSummary(){
+  for(const id of ['audit-report-count','audit-day-count','audit-pair-count','audit-excess-count'])$(id).textContent='—';
+  $('audit-scope').textContent='';$('audit-skipped').hidden=true;$('audit-skipped').textContent='';
+}
+async function loadAudit(){
+  if(view!=='audit' || !dbReady)return;
+  const version=++auditSequence;
+  const params={team:$('audit-team').value.trim(),month:$('audit-month').value,
+    only_exceeded:$('audit-only').checked?'1':'0',offset:auditOffset,limit:30};
+  auditLoading=true;auditData=null;clearAuditSummary();notice();
+  $('audit-start').disabled=true;$('audit-records').inert=true;$('audit-records').setAttribute('aria-busy','true');
+  $('audit-prev').disabled=true;$('audit-next').disabled=true;syncSidePaging();
+  $('audit-empty').hidden=$('audit-records').children.length>0;
+  $('audit-empty').querySelector('h3').textContent='正在检查';$('audit-empty').querySelector('p').textContent='';
+  try{
+    const data=await bridge.apiGet('comparison/friendly-limits',params);
+    if(version!==auditSequence || view!=='audit')return;
+    auditData=data;
+    for(const [id,key] of [['audit-report-count','reports'],['audit-day-count','days'],['audit-pair-count','exceeded_pairs'],['audit-excess-count','excess_wins']])$(id).textContent=data.summary[key];
+    $('audit-scope').textContent=`${data.query.team} · ${data.query.start} 至 ${data.query.end}`;
+    $('audit-skipped').hidden=!data.summary.skipped_reports;
+    $('audit-skipped').textContent=data.summary.skipped_reports?`另有 ${data.summary.skipped_reports} 份胜负不明或战队不符的记录未计入，请核对原文。`:'';
+    $('audit-records').replaceChildren(...data.records.map(row=>{
+      const card=node('article',null,`audit-card${row.exceeded?' exceeded':''}`);
+      card.append(node('span',row.date,'hint'),node('h3',`${row.team} VS ${row.opponent}`));
+      const scores=node('div',null,'audit-scores');
+      for(const [team,wins,excess] of [[row.team,row.wins,row.excess_wins],[row.opponent,row.opponent_wins,row.opponent_excess_wins]]){
+        const score=node('div',null,`audit-score${excess?' over':''}`);
+        score.append(node('span',team),node('strong',`${wins} 胜`),node('small',excess?`超出 ${excess} 胜`:`上限 ${data.daily_limit} 胜`));scores.append(score);
+      }
+      const footer=node('div',null,'audit-card-footer'),button=node('button','查看战报','secondary');button.type='button';
+      button.addEventListener('click',()=>showAuditReports(row,data.query));
+      footer.append(node('span',`${row.total} 场友谊 · ${row.exceeded?'存在超限':'未超限'}`,'hint'),button);card.append(scores,footer);return card;
+    }));
+    $('audit-empty').hidden=data.records.length>0;
+    $('audit-empty').querySelector('h3').textContent=data.total?'此页没有记录':data.summary.reports?(data.only_exceeded?'未发现超限友谊':'暂无记录'):'没有可判定胜负的友谊记录';
+    $('audit-empty').querySelector('p').textContent=data.summary.reports?`已检查 ${data.summary.pair_days} 个日期与对手组合。`:'可调整战队或比赛月份后重新检查。';
+    $('audit-pagination').hidden=!data.total;
+    $('audit-page-label').textContent=`共 ${data.total} 组 · 第 ${Math.floor(data.offset/data.limit)+1} / ${Math.max(1,Math.ceil(data.total/data.limit))} 页`;
+    $('audit-prev').disabled=!data.offset;$('audit-next').disabled=data.offset+data.limit>=data.total;
+  }catch(error){
+    if(version!==auditSequence || view!=='audit')return;
+    $('audit-records').replaceChildren();$('audit-empty').hidden=false;$('audit-pagination').hidden=true;
+    $('audit-empty').querySelector('h3').textContent='检查未完成';$('audit-empty').querySelector('p').textContent=error.message;
+  }finally{
+    if(version===auditSequence){auditLoading=false;$('audit-start').disabled=!dbReady;$('audit-records').inert=false;$('audit-records').removeAttribute('aria-busy');syncSidePaging();}
+  }
+}
+$('audit-form').addEventListener('submit',event=>{event.preventDefault();auditOffset=0;loadAudit();});
+$('audit-only').addEventListener('change',()=>{auditOffset=0;loadAudit();});
+$('audit-prev').addEventListener('click',()=>{if(!auditLoading && auditOffset){auditOffset=Math.max(0,auditOffset-30);loadAudit();}});
+$('audit-next').addEventListener('click',()=>{if(!auditLoading && auditData && auditOffset+30<auditData.total){auditOffset+=30;loadAudit();}});
+function showAuditReports(row,query){
+  auditDetailTarget={row,query,total:0};auditDetailOffset=0;
+  $('audit-detail-title').textContent=`${row.date} · ${row.team} VS ${row.opponent}`;
+  $('audit-detail-records').replaceChildren();$('audit-detail').showModal();loadAuditReports();
+}
+async function loadAuditReports(){
+  const target=auditDetailTarget,version=++auditDetailSequence;
+  if(!target || !$('audit-detail').open)return;
+  auditDetailLoading=true;$('audit-detail-records').inert=true;
+  $('audit-detail-notice').hidden=false;$('audit-detail-notice').textContent='正在读取战报';
+  $('audit-detail-prev').disabled=true;$('audit-detail-next').disabled=true;$('audit-detail-page-label').textContent='';
+  try{
+    const data=await bridge.apiGet('comparison/friendly-limits/reports',{team:target.query.team,month:target.query.start.slice(0,7),
+      day:target.row.date,opponent:target.row.opponent,offset:auditDetailOffset,limit:30});
+    if(version!==auditDetailSequence || target!==auditDetailTarget || !$('audit-detail').open || view!=='audit')return;
+    target.total=data.total;
+    $('audit-detail-records').replaceChildren(...data.records.map(report=>{
+      const card=node('article',null,'library-report'),top=node('div',null,'report-identity');
+      top.append(node('strong',`#${report.id} · 胜方 ${report.winner}`),copyButton(report.body));
+      card.append(top,node('p',`${report.team_a} VS ${report.team_b} · ${report.match_time}`,'audit-detail-meta'),node('pre',report.body));return card;
+    }));
+    $('audit-detail-notice').hidden=data.records.length>0;
+    $('audit-detail-notice').textContent=data.total?'此页没有战报，请切换页码。':'对应战报已不存在，请关闭后重新检查。';
+    $('audit-detail-page-label').textContent=`共 ${data.total} 份 · 第 ${Math.floor(data.offset/data.limit)+1} / ${Math.max(1,Math.ceil(data.total/data.limit))} 页`;
+    $('audit-detail-prev').disabled=!data.offset;$('audit-detail-next').disabled=data.offset+data.limit>=data.total;
+  }catch(error){
+    if(version!==auditDetailSequence || target!==auditDetailTarget || !$('audit-detail').open)return;
+    $('audit-detail-records').replaceChildren();$('audit-detail-notice').hidden=false;$('audit-detail-notice').textContent=error.message;
+  }finally{if(version===auditDetailSequence){auditDetailLoading=false;$('audit-detail-records').inert=false;}}
+}
+$('audit-detail-close').addEventListener('click',()=>$('audit-detail').close());
+$('audit-detail').addEventListener('close',()=>{auditDetailSequence++;auditDetailTarget=null;auditDetailLoading=false;$('audit-detail-records').replaceChildren();$('audit-detail-title').textContent='对应战报';$('audit-detail-notice').textContent='';$('audit-detail-page-label').textContent='';});
+$('audit-detail-prev').addEventListener('click',()=>{if(!auditDetailLoading && auditDetailOffset){auditDetailOffset-=30;loadAuditReports();}});
+$('audit-detail-next').addEventListener('click',()=>{if(!auditDetailLoading && auditDetailTarget && auditDetailOffset+30<auditDetailTarget.total){auditDetailOffset+=30;loadAuditReports();}});
 function activateView(next) {
   const management=['teams','members'].includes(next);
   if(management && pageRole!=='master')return;
-  view=next;managementSequence++;managementOffset=0;
+  view=next;managementSequence++;managementOffset=0;auditSequence++;auditLoading=false;
+  if($('audit-detail').open)$('audit-detail').close();
   $('management-view').hidden=!management;
-  document.querySelector('.query-card').hidden=management;
-  document.querySelector('.selection-bar').hidden=management;
+  document.querySelector('.query-card').hidden=management || view==='audit';
+  $('audit-query').hidden=view!=='audit';$('audit-view').hidden=view!=='audit';
+  document.querySelector('.selection-bar').hidden=management || view==='audit';
   document.querySelector('.report-layout').hidden=management;
-  document.querySelector('.footnote').hidden=management;
+  document.querySelector('.footnote').hidden=management || view==='audit';
   if(management){
     document.querySelectorAll('#view-tabs button').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',String(b.dataset.view===view));});
     librarySequence++;$('management-keyword').value='';
@@ -325,7 +419,13 @@ function activateView(next) {
   }
  libraryOffset=0; librarySequence++;
   document.querySelectorAll('#view-tabs button').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',String(b.dataset.view===view));});
-  $('comparison-view').hidden=view!=='comparison'; $('library-view').hidden=view==='comparison';
+  $('comparison-view').hidden=view!=='comparison'; $('library-view').hidden=!['local','cloud'].includes(view);
+  if(view==='audit'){
+    if(!$('audit-team').value)$('audit-team').value=$('team').value;
+    if(dbReady && $('audit-team').value && $('audit-month').value){auditOffset=0;loadAudit();}
+    else $('audit-start').disabled=!dbReady;
+    syncSidePaging();return;
+  }
   document.querySelector('.advanced').hidden=view!=='comparison'; $('site-team').parentElement.hidden=view==='local';
   $('source-url').disabled=view!=='comparison';$('publish-start').disabled=view!=='comparison';$('publish-end').disabled=view!=='comparison';$('site-team').disabled=view==='local';
   $('query-title').textContent=view==='comparison'?'选择核对范围':view==='local'?'筛选本地上传战报':'筛选云端归档战报';
@@ -754,12 +854,14 @@ function clearSession(){
   credentialTransport=false;
   clearManagement();
   clearTimeout(timer);clearTimeout(dispatchTimer);sequence++;librarySequence++;dispatchSequence++;
+  auditSequence++;auditDetailSequence++;auditData=undefined;auditOffset=0;auditLoading=false;auditDetailTarget=null;auditDetailLoading=false;clearAuditSummary();
   jobId='';lastResult=undefined;libraryData=undefined;libraryOffset=0;offset=0;dispatchId='';
   running=false;comparisonLoading=false;dispatchRunning=false;dbReady=false;selection.clear();
-  for(const id of ['library-records','records','site-detail','local-detail','dispatch-preview','dispatch-results','accounts-list'])$(id).replaceChildren();
-  for(const id of ['detail','dispatch-dialog','accounts-dialog'])if($(id).open)$(id).close();
+  for(const id of ['library-records','records','site-detail','local-detail','dispatch-preview','dispatch-results','accounts-list','audit-records','audit-detail-records'])$(id).replaceChildren();
+  for(const id of ['detail','dispatch-dialog','accounts-dialog','audit-detail'])if($(id).open)$(id).close();
   clearAccountSecrets();
-  for(const id of ['team','site-team'])$(id).value='';
+  for(const id of ['team','site-team','audit-team'])$(id).value='';
+  $('audit-empty').hidden=false;$('audit-empty').querySelector('h3').textContent='等待检查';$('audit-empty').querySelector('p').textContent='选择战队与月份后开始检查。';$('audit-pagination').hidden=true;$('audit-only').checked=true;$('audit-start').disabled=true;
   $('accounts-open').hidden=true;$('download').disabled=true;selectionChanged();setRunning(false);syncSidePaging();
 }
 async function initializePage(){

@@ -3,7 +3,7 @@ import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -15,10 +15,12 @@ try:
     from .report_site import ComparisonError, ComparisonQuery, SiteClient, previous_month
     from .report_comparison import build_comparison
     from .web_accounts import WebAuthError
+    from .friendly_audit import daily_friendly_limits
 except ImportError:
     from report_site import ComparisonError, ComparisonQuery, SiteClient, previous_month
     from report_comparison import build_comparison
     from web_accounts import WebAuthError
+    from friendly_audit import daily_friendly_limits
 
 PLUGIN_NAME = 'astrbot_plugin_battle_report'
 
@@ -430,6 +432,8 @@ class ComparisonWebUI:
                      ('jobs/<job_id>', self.get, ['GET']), ('jobs/<job_id>/cancel', self.cancel, ['POST']),
                      ('jobs/<job_id>/download', self.download, ['GET']),
                      ('local-reports', self.local_reports, ['GET']), ('cloud-reports', self.cloud_reports, ['GET']),
+                     ('friendly-limits', self.friendly_limits, ['GET']),
+                     ('friendly-limits/reports', self.friendly_limit_reports, ['GET']),
                      ('dispatch/options', self.dispatch_options, ['GET']), ('dispatch/admins', self.dispatch_admins, ['GET']),
                      ('dispatch/prepare', self.dispatch_prepare, ['POST']), ('dispatch/<batch_id>', self.dispatch_get, ['GET']),
                      ('dispatch/<batch_id>/send', self.dispatch_send, ['POST']),
@@ -491,6 +495,7 @@ class ComparisonWebUI:
                     history.append(job)
                 if len(history)==20:break
             return dict(teams=teams, month=previous_month(), ready=ready,
+                        current_month=datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m'),
                         source='https://rep.ygobbs2.com/', history=history,
                         role='team' if self.team_actor.get() else 'master',
                         secure_passwords=self.secure_passwords(request))
@@ -566,6 +571,42 @@ class ComparisonWebUI:
             result = await self.plugin.db.get_webui_local_reports(query.team, query.start, query.end, kind, offset, limit, outcome=outcome)
             return dict(total=result['total'], records=[self.local_record(r) for r in result['records']],
                         offset=offset, limit=limit, query=asdict(query))
+        return await self.respond(handle)
+
+    async def friendly_limits(self):
+        async def handle(request):
+            self.require_db()
+            query, offset, limit = self.page_params(request)
+            await self.require_query(query)
+            only = request.query.get('only_exceeded', '1')
+            if only not in ('0', '1'):
+                raise ComparisonError('超限筛选无效。')
+            rows = await self.plugin.db.get_daily_friendly_counts(query.team, query.start, query.end)
+            result = daily_friendly_limits(rows, query.team, only_exceeded=only == '1', offset=offset, limit=limit)
+            return dict(**result, query=asdict(query))
+        return await self.respond(handle)
+
+    async def friendly_limit_reports(self):
+        async def handle(request):
+            self.require_db()
+            query, offset, limit = self.page_params(request)
+            await self.require_query(query)
+            day = request.query.get('day', '')
+            opponent = str(request.query.get('opponent') or '').strip()
+            try:
+                if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+                    raise ValueError
+                date.fromisoformat(day)
+                if not query.start <= day <= query.end:
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise ComparisonError('比赛日期无效或不在所选月份内。')
+            if (not opponent or len(opponent) > 64 or team_key(opponent) == team_key(query.team)
+                    or any(ord(c) < 32 for c in opponent)):
+                raise ComparisonError('对手战队无效。')
+            result = await self.plugin.db.get_daily_friendly_reports(query.team, day, opponent, offset, limit)
+            return dict(total=result['total'], records=[self.local_record(r) for r in result['records']],
+                        offset=offset, limit=limit, query=asdict(query), day=day, opponent=opponent)
         return await self.respond(handle)
 
     async def cloud_reports(self):

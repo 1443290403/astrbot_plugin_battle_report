@@ -2235,6 +2235,29 @@ class Database:
         reports = await self.get_webui_local_reports_by_ids(home_team, [int(r['id']) for r in ids])
         return dict(total=int(count[0]['n']), records=sorted(reports, key=lambda r: r['match_id'], reverse=True))
 
+    async def get_daily_friendly_counts(self, home_team: str, start: str, end: str) -> list[dict]:
+        """Count whole matches across groups; return monthly counts without paging."""
+        return await self._query(
+            """SELECT match_time, team_a, team_b, winner, COUNT(*) AS match_count
+               FROM matches WHERE home_team = %s AND kind = 'friendly'
+                 AND match_time BETWEEN %s AND %s
+               GROUP BY match_time, team_a, team_b, winner""", (home_team, start, end))
+
+    async def get_daily_friendly_reports(self, home_team: str, day: str, opponent: str,
+                                         offset: int, limit: int) -> dict:
+        """Only counted friendly matches for the requested day and opponent."""
+        a, b, winner = (f'UPPER(TRIM({column})) COLLATE utf8mb4_bin' for column in ('team_a', 'team_b', 'winner'))
+        where = f"""home_team = %s AND kind = 'friendly' AND match_time = %s
+                    AND {a} <> {b} AND {winner} IN ({a}, {b})
+                    AND (({a} = %s AND {b} = %s) OR ({b} = %s AND {a} = %s))"""
+        home_key, opponent_key = home_team.strip().upper(), opponent.strip().upper()
+        params = (home_team, day, home_key, opponent_key, home_key, opponent_key)
+        count = await self._query('SELECT COUNT(*) AS n FROM matches WHERE ' + where, params)
+        ids = await self._query('SELECT id FROM matches WHERE ' + where + ' ORDER BY id DESC LIMIT %s OFFSET %s',
+                                params + (limit, offset))
+        reports = await self.get_webui_local_reports_by_ids(home_team, [int(r['id']) for r in ids])
+        return dict(total=int(count[0]['n']), records=sorted(reports, key=lambda r: r['match_id'], reverse=True))
+
     async def get_webui_local_reports_by_ids(self, home_team: str, ids: list[int]) -> list[dict]:
         return await self.get_reports_for_export(home_team, match_ids=ids, include_upload_info=True)
 

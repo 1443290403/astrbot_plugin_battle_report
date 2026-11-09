@@ -1,6 +1,6 @@
 # 战队对战战报插件 —— 需求文档（REQUIREMENTS.md）
 
-> 对应版本：`1.33.2`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-09
+> 对应版本：`1.34.0`｜数据库 `SCHEMA_VERSION = 21`｜最后核对：2026-11-10
 > 代码基准：本目录（`battle-report/`）当前工作区
 
 ---
@@ -855,6 +855,7 @@ year = now.year - 1 if month > now.month else now.year
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 移除顶部介绍标题区并直接呈现功能Tab；本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 | **F-47** | 自动独立战报管理入口 | standalone_web / scripts/export_report_webui.py / webui_standalone | 现有后台端口自动挂载/battle-report/，冷启／热安装／停用清理；原账号及2FA、401不重放；可选静态导出／Nginx | M-09、F-44、F-45、F-46 | 不新增端口／配置／账号；只公开6个静态资源 |
+| **F-51** | 每日友谊胜场检查 | friendly_audit / get_daily_friendly_counts / get_daily_friendly_reports / ComparisonWebUI | 默认北京时间本月，按比赛日期与对手双向各最多3胜；先全月统计再筛选分页，正常3:3不超限，缺失胜者／不符战队跳过提示，战报明细分页与复制 | M-02、M-07、M-09、F-47、F-48 | 本地matches/duels只读，kind=friendly；无schema变化 |
 | **F-50** | 一周会话与HTTPS访问 | WebAccounts / StandaloneFrontend / setup_report_https | 战队7天摘要会话跨重启恢复／持久撤销、管理员原Cookie及登录类型恢复、公网TLS保护、仅IP证书／代理配置生成 | M-10、F-47、F-48 | 原子JSON会话摘要；可选主机证书与Nginx配置，无schema变更 |
 | **F-49** | WebUI队伍／队员管理 | WebManagement / ComparisonWebUI / get_webui_teams / get_webui_members / get_webui_players | 仅核心后台身份，战队／管理员及群概览、管理员成员候选／可移除标签／单QQ手动兜底、角色资料／QQ与已有参赛ID绑定管理、搜索分页及并发修改检查 | M-02、M-03、M-10、F-48 | 复用team_admins/users/player_ids及原身份锁；无schema迁移 |
 | **F-48** | 战队管理员密码／QQ登录码 | WebAccounts / StandaloneFrontend / ComparisonWebUI / report_web_login | 管理员授权自动建号／旧名单补齐、本人私聊获取独立初始密码及8位一次性码、当前QQ授权战队全服务端检查、私有会话不兼容核心JWT、撤权及发送分包复核 | M-01、M-02、M-09、M-10、F-47 | web_accounts.json 凭据哈希／初始密钥及7天会话摘要；码仅内存；原team_admins只读，无schema迁移 |
@@ -1062,6 +1063,7 @@ year = now.year - 1 if month > now.month else now.year
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
 | **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改每日友谊胜场检查** | ① home_team跨群、比赛日期／整场matches、kind=friendly、有效双方和winner ② SQL全月聚合后统一双向阈值与完整汇总、筛选分页和未计入提示 ③ 汇总／明细两GET均先验证当前战队权限与月份、明细仅本队当天对手 ④ 新Tab、本月独立月份、两侧分页、原文复制、异步旧响应／关闭／切身份清除 ⑤ 纯逻辑／API鉴权／隔离MySQL／实际SDK及独立入口浏览器，README和指南 | 各3胜而非合计3场；不按个人duel计数，不更改历史战报／积分，不混入踢馆或云端归档，不把读取失败显示为未超限 |
 | **改网页队伍／队员管理** | ① require_master先于参数与DB、两种战队会话／匿名拒绝 ② 角色／ID本队范围与原身份锁、冲突／旧值核验／原子回滚、QQ变更撤销角色官方关联 ③ 名单自动建号与部分成功 ④ 管理Tab显隐、分页搜索／空状态／移动端／切身份清数据、Pages与独立入口 ⑤ 隔离MySQL、API与实际SDK浏览器、README／指南 | 不将前端hidden当授权，不新增跨队认领或改历史战报；不自动建造参赛ID |
 | **改战队网页登录** | ① 授权后自动建号／启动补齐／幂等不重置、初始密码恢复密钥及私聊提供／改密失效、加盐密码文件0600／原子落盘回滚、7天会话摘要及原子注销／改密撤销与重启恢复、独立高熵会话与一次性码、限流／过期／注销／重启／并发改密／卸载 ② OneBot私聊QQ证明与platform_policy/schema选项标签／帮助 ③ 当前team_admins授权、本地home_team／云端服务端归属、核对查询及历史／取消／下载、管理员目录、服务端重读／批次身份／每包复核 ④ ContextVar身份、核心JWT与战队会话隔离、账号管理仅原后台 ⑤ 公网TLS两端拒绝／IP证书及代理导出、三登录方式／Cookie／失效清数据／异步旧响应丢弃／不重放、实际SDK浏览器和隔离MySQL、文档 | 不信客户端角色／QQ／正文／scope，不将队名筛选当授权，不把密码账号停用当QQ授权撤销，不记录口令或原始码／会话 |
 | **改独立WebUI入口** | ① 自动挂载的冷启动／热安装／重载／卸载与兼容回退、静态白名单、SPA前路由顺序、原Pages保留 ② 同源固定插件API、AstrBot原账号及可选2FA、401不重放POST、退出清UI ③ 内存JWT/可选HttpOnly Cookie、内置沿用后台协议／导出站公开HTTP拒绝 ④ Nginx登录/退出/插件前缀白名单、SSH与HTTPS两模板 ⑤ 导出防覆盖/目录权限、真实Nginx浏览器验证、README/部署指南 | 不关闭插件鉴权、不导出凭据、不把筛选当战队授权、不自开插件服务端口 |
@@ -1385,6 +1387,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | 测试文件 | 覆盖 |
 |---|---|
 | `test_report_dispatch.py` | 模拟 OneBot：准备不发送、确认幂等、typed text/双空格、分包/多收件人、跳过成功/unknown、管理员复核、官方连接拒绝、账号校验、深拷贝/过期、重启不重放、取消和落盘失败 |
+| `test_friendly_audit.py` | 每日双方各3胜、3:3正常、反向对阵／大小写／跨群合并、日期和对手独立、全月汇总后分页、未知／不符记录提示和空月份 |
 | `test_report_archive_mysql.py` | 可选隔离 MySQL：同 ID 更新、旧库升级/重放、并发去重、整批失败回滚、不污染本地、本地场次分页/类型/战队 ID 范围；胜负SQL的COUNT/页码/类型组合、未知/无关队排除和网站胜负列 |
 | `test_web_accounts.py` | PBKDF2／0600／无明文、大小写／唯一QQ、一次性／过期／换码／重启、密码修改及停用／删除／授权撤销、Cookie会话边界、限流、存储失败回滚、并发管理员改密和卸载阻止旧写入 |
 | `test_team_webui.py` | 实际路由+SDK边界桩：跨队参数／源地址／战报ID／核对ID／下载／取消／名单／批次／后台账号管理拒绝、原JWT与战队会话隔离、撤权后停止未发送分包、双用户并发ContextVar、HTTPS代理Cookie、重复码／logout／payload限额 |
@@ -1614,3 +1617,8 @@ v1.33.1 页面精简：移除共用HTML的顶部header及专属样式（英文�
 v1.33.2 短登录码：QQ私聊取码由brc_长令牌改为8位字母数字（约40位随机空间），secrets.choice生成，排除0/1/I/O且同时含字母和数字。登录大小写归一，服务端先严格校验ASCII格式再查摘要，仍仅内存SHA256、5分钟有效、限用一次、30秒取码间隔／新码废旧、现有限流及QQ当前授权复查；原brs_会话和7天持久化不变。生成时检查全部已发码，包括当前QQ的旧码，防跨QQ碰撞及旧码复用；32次失败明确拒绝，保留仍有效旧码且不新增取码冷却。前端支持手输与整条机器人回复提取，不能截取长密码／长令牌中的8位子串；自动与导出资源共用。数据库schema21、原账号密码／核心JWT／HTTPS边界不变。
 
 验证：43项账号／战队API／独立入口／静态导出检查及9项OneBot取码／自动配置入口检查通过，包含码格式和大小写、混合字符、碰撞／换码及失败保留、失效／单次／限流和跨队权限。真实浏览器配合AstrBot v4.27.3 SDK与独立入口，验证8位手输、大小写、单行输入框自动去掉换行后的整条取码回复提取、带有效期标题的回复、长密码／长令牌不误截取及390px布局。仅使用隔离样本，未向真实QQ发码或使用生产数据库。
+
+
+v1.34.0 每日友谊检查：F-51，固定上限双方每天各3胜，不新增指令或配置。get_daily_friendly_counts按本地home_team／kind=friendly／match_time整月SQL预聚合，再由friendly_audit统一合并A/B颠倒和大小写，按日期／对手计算双方胜场及超出值；所有页共用全月汇总，胜者缺失／不符、非本队参赛或同队对阵不计并提示数量。默认只看超限，可看全部，3:3不超限。日期使用比赛DATE，独立本月默认以北京时间计算，不重置旧Tab月份。两个新GET使核心插件路由由22增至24，原四条独立挂载不变；汇总和详情都先按当前team_admins授权，详情参数化限定home_team／月份内day／对手／friendly／有效winner。原文仍走local_record和copyButton；检查无写库、不改指纹、历史胜者或积分，不将云端当本地统计。前端完整页先聚合后分页、两侧轨道复用；加载中保留旧节点但inert，失败明确未完成，关闭／切Tab／过期／切身份丢弃旧响应及清除正文。schema21不变。
+
+验证：1459项默认回归通过、12项跳过；11项隔离MySQL归档／本地列表检查通过，包含新增整场而非duel计数、跨群和反向对阵、月份边界、home_team及kind隔离、未知胜者跳过、全月汇总／分页和查询前后原表逐行不变。实际AstrBot v4.27.3 SDK／opaque iframe与独立入口战队登录浏览器验证双方阈值、默认本月、汇总／提示、侧栏翻页、明细36份分页、弹窗内复制后实际粘贴逐字相等、空结果／数据库错误区分、关闭明细及会话失效拒绝迟到响应，覆盖1440px与390px；原三Tab切换及无标题布局继续通过。未连接生产数据库、网站或发送真实QQ消息。
