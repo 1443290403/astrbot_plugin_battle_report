@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.34.0
+最新版本：v1.34.1
 
-- 文件：astrbot_plugin_battle_report-1.34.0.zip
-- 源码提交：833e46d19dc98f4c64b5c20c9953b42f66f58c32
+- 文件：astrbot_plugin_battle_report-1.34.1.zip
+- 源码提交：d50d3b07fbfe2b3a450a96681a66e8e224ff076d
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：8965d1982e073a5a045c745e36619e10a45b23241255b6145063badb8fa2d2cb
+- SHA256：e95456f712d3867031ac2e7d69306a539add73e829a02b55ea6372e19f64f6fb
 
 旧版本安装包保留，按文件名选择。
 
@@ -287,3 +287,12 @@ WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日
 - [战报与友谊检查使用指南](REPORT_COMPARISON_GUIDE-1.34.0.md)
 - [网页登录指南](TEAM_WEB_LOGIN_GUIDE-1.34.0.md)
 - [部署指南](STANDALONE_WEBUI_GUIDE-1.34.0.md)
+
+## v1.34.1 呼叫全体失败不占冷却
+
+仅在QQ返回有效消息ID、确认发送成功后开始30分钟冷却；平台拒绝、额度超限、错误回执、超时或取消不占冷却，不自动补发，用户可用新消息重新触发。成功后的完整面板继续隐藏按钮，并保留按群／连接／AppID的共享冷却、持久化及事件去重。现场code40034142明确为@全体次数超限，现支持botpy错误文字识别并显示准确原因；插件不修改平台配额。
+
+1489项默认回归及真实qq-botpy1.2.1错误类的4项WS/Webhook／Markdown模板兼容检查通过；未向真实QQ群发送测试消息。JSONv2与数据库schema21不变。
+
+- [友谊等车与呼叫全体说明](OFFICIAL_QUEUE_GUIDE-1.34.1.md)
+- [可选独立站静态资源](battle-report-web-1.34.1.zip)（不能当AstrBot插件安装）
