@@ -31,6 +31,7 @@ from astrbot.api.star import Star, StarTools, register
 from . import chart, help_guide, lineup, stats
 from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
 from .official_queue import group_nickname as queue_group_nickname
+from .official_queue import require_receipt as require_queue_receipt
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .command_guard import command_candidates, is_command_message, message_text as command_message_text
 from . import platform_policy
@@ -245,7 +246,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.34.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.34.1")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -483,9 +484,7 @@ class BattleReportPlugin(Star):
                 params["keyboard"] = keyboard
         result = await asyncio.wait_for(platform.client.api.post_group_message(
             group_openid=group_id, **params), timeout=20)
-        if not isinstance(result, dict) or not result.get("id"):
-            raise RuntimeError("QQ 官方消息发送未确认")
-        return result
+        return require_queue_receipt(result)
 
     async def _bind_waiting_id(self, scope, uid, query):
         home = await self.db.get_group_home(scope[2])

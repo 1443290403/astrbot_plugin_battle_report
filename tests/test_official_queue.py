@@ -573,13 +573,22 @@ def test_concurrent_call_all_and_redelivery_send_only_once(setup_queue):
     asyncio.run(scenario())
 
 
-def test_call_all_failure_is_not_retried_by_interaction_tick_or_restart(setup_queue):
+@pytest.mark.parametrize('failure',[
+    TimeoutError('unknown delivery'),OSError('offline'),None,False,{},
+    {'id':''},{'id':123},{'id':'bad','status':'failed'},
+    {'id':'bad','code':40034142,'message':'消息发送失败，@全体成员次数超限'},
+    {'retcode':100,'message':'rejected'},
+    RuntimeError('消息发送失败，@全体成员次数超限'),
+])
+def test_call_all_failure_has_no_cooldown_or_automatic_retry_but_new_request_can_retry(setup_queue,failure):
     service, clock, send, act = setup_queue
     async def scenario():
-        send.side_effect = [TimeoutError('unknown delivery'), {'id': 'failure-notice'}]
-        await act('呼叫全体')
-        assert '发送未确认' in texts(send)[-1]
-        assert service.room(SCOPE)['call_all_until'] == 1800
+        send.side_effect = [failure, {'id': 'failure-notice'}]
+        await act('呼叫全体',msg='failed-call')
+        assert '未进入冷却' in texts(send)[-1]
+        assert not service.room(SCOPE).get('call_all_until')
+        saved=json.loads(service.path.read_text())
+        assert not next(iter(saved['rooms'].values())).get('call_all_until')
         assert not service.room(SCOPE)['outbox']
         send.side_effect = None
         clock[0] = 240
@@ -587,18 +596,21 @@ def test_call_all_failure_is_not_retried_by_interaction_tick_or_restart(setup_qu
         await act('等车帮助')
         assert len(texts(send, '<qqbot-at-everyone />')) == 1
         restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
-        await restored.execute(SCOPE, '呼叫全体', '', 'u2', '萌新', 'retry')
+        await restored.execute(SCOPE, '呼叫全体', '', 'u2', '萌新', 'failed-call')
         assert len(texts(send, '<qqbot-at-everyone />')) == 1
+        await restored.execute(SCOPE, '呼叫全体', '', 'u2', '萌新', 'retry')
+        assert len(texts(send, '<qqbot-at-everyone />')) == 2
+        assert restored.room(SCOPE)['call_all_until']==2040
     asyncio.run(scenario())
 
 
-def test_cancelled_call_all_keeps_persisted_cooldown_without_retry(setup_queue):
+def test_cancelled_call_all_does_not_start_cooldown_or_queue_automatic_retry(setup_queue):
     service, _, send, act = setup_queue
     send.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(act('呼叫全体'))
     restored = queue.WaitingQueues(service.path, None, None, None)
-    assert restored.room(SCOPE)['call_all_until'] == 1800
+    assert not restored.room(SCOPE).get('call_all_until')
     assert not restored.room(SCOPE)['outbox']
 
 
@@ -610,20 +622,66 @@ def test_invalid_call_all_arguments_do_not_consume_cooldown(setup_queue):
     assert not texts(send, '<qqbot-at-everyone />')
 
 
-def test_call_all_persistence_failure_never_sends_mass_mention(setup_queue, monkeypatch):
+def test_call_all_event_persistence_failure_never_sends_mass_mention(setup_queue, monkeypatch):
     service, _, send, act = setup_queue
     asyncio.run(act())
     send.reset_mock()
-    original = queue.os.replace
-    def fail_reservation(*args):
-        if service.room(SCOPE).get('call_all_until'):
-            raise OSError('disk full')
-        return original(*args)
+    def fail_reservation(*args):raise OSError('disk full')
     monkeypatch.setattr(queue.os, 'replace', fail_reservation)
     with pytest.raises(OSError, match='disk full'):
         asyncio.run(act('呼叫全体'))
     assert not service.room(SCOPE).get('call_all_until')
     send.assert_not_awaited()
+
+
+def test_confirmed_call_all_starts_cooldown_at_receipt_time(setup_queue):
+    service,clock,send,act=setup_queue
+    async def delivered(*args):
+        assert not service.room(SCOPE).get('call_all_until')
+        clock[0]=17
+        return {'id':'confirmed'}
+    send.side_effect=delivered
+    asyncio.run(act('呼叫全体'))
+    assert service.room(SCOPE)['call_all_until']==1817
+    restored=queue.WaitingQueues(service.path,None,None,None)
+    assert restored.room(SCOPE)['call_all_until']==1817
+    assert all(b['action']['data']!='/呼叫全体' for r in send.await_args.args[2]['content']['rows'] for b in r['buttons'])
+
+
+def test_confirmed_call_all_keeps_runtime_cooldown_if_saving_receipt_fails(setup_queue,monkeypatch):
+    service,_,send,act=setup_queue
+    original=queue.os.replace
+    def fail_after_delivery(*args):
+        if service.room(SCOPE).get('call_all_until'):raise OSError('disk full')
+        return original(*args)
+    monkeypatch.setattr(queue.os,'replace',fail_after_delivery)
+    asyncio.run(act('呼叫全体'))
+    assert len(texts(send,'<qqbot-at-everyone />'))==1
+    assert service.room(SCOPE)['call_all_until']==1800
+    assert not next(iter(json.loads(service.path.read_text())['rooms'].values())).get('call_all_until')
+    monkeypatch.setattr(queue.os,'replace',original)
+    asyncio.run(act('呼叫全体',uid='u2'))
+    assert len(texts(send,'<qqbot-at-everyone />'))==1
+    restored=queue.WaitingQueues(service.path,None,None,None)
+    assert restored.room(SCOPE)['call_all_until']==1800
+
+
+@pytest.mark.parametrize('error',[
+    RuntimeError('消息发送失败，@全体成员次数超限'),
+    queue.QueueSendError({'code':40034142,'message':'quota exceeded'}),
+])
+def test_call_all_quota_failure_reports_actual_reason_and_keeps_button_available(setup_queue,error):
+    service,_,send,act=setup_queue
+    async def run():
+        send.side_effect=[error,{'id':'notice'}]
+        await act('呼叫全体')
+        assert '次数已达上限' in texts(send)[-1] and '未进入冷却' in texts(send)[-1]
+        assert '权限' not in texts(send)[-1]
+        send.side_effect=None
+        await act('等车')
+        assert any(b['action']['data']=='/呼叫全体' for r in send.await_args.args[2]['content']['rows'] for b in r['buttons'])
+        assert not service.room(SCOPE).get('call_all_until')
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('value', ['bad', True, -1, float('nan'), float('inf')])

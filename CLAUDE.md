@@ -236,7 +236,7 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 ## v1.27.1 呼叫全体
 
 - 等车共享键盘新增第三行“呼叫全体”与同名命令，原生 qqbot-at-everyone 摇人友谊；平台目录和schema选项必须同步，OneBot静默。
-- 房间call_all_until可选字段、1800秒冷却；所有用户/车次共用，按连接/AppID/group隔离。发送前持久化，未知结果仍保留冷却，不进outbox、不自动补发。跨日/散队/重启不清零，不改变车次及广播计时。
+- 房间call_all_until可选字段、1800秒冷却；所有用户/车次共用，按连接/AppID/group隔离。v1.34.1起仅有效成功回执后持久化冷却，失败／超时／取消不占冷却，不进outbox、不自动补发，允许用户新消息重试。跨日/散队/重启不清零，不改变车次及广播计时。
 - QQ群管理员和每日全体额度由平台限制，SDK文档注明每群每天1次，不能把插件冷却描述为实际每30分钟均可@全体。旧JSONv2和MySQL schema20保持。
 
 ## v1.27.2 呼叫全体完整面板
@@ -369,3 +369,10 @@ ASTRBOT_TEST_MYSQL_ENABLE=1 ASTRBOT_TEST_MYSQL_PASSWORD=<测试密码> pytest te
 - friendly_audit唯一阈值DAILY_WIN_LIMIT=3；同日同对手双方各3胜，3:3不超限，不按duels计数。get_daily_friendly_counts仅home_team跨群、比赛DATE及friendly，全月预聚合后筛选分页；未知胜者／不参赛／同队记录只提示未计入，不算负场。
 - friendly-limits及friendly-limits/reports先require_query检查当前QQ授权，明细还限定月份内day与opponent、home_team和friendly有效胜者；不得用公开对手名访问对方全部战报。原核心插件24路由、独立入口仍4挂载。原文复用local_record及copyButton，禁止写库／改统计或从云端算本地胜场。
 - 新Tab默认北京时间本月，独立于旧Tab的上月默认；默认仅看超限，可看全部。分页复用容器侧轨道。读取失败不显示无超限，加载保留节点但inert；关闭／切Tab／切身份必须拒绝旧响应，清汇总及明细。纯逻辑、鉴权、真实SQL和实际SDK／独立入口浏览器成套验证。
+
+
+## v1.34.1 呼叫全体成功后冷却
+
+- 用户要求覆盖旧的发送前预留冷却规则。仅require_receipt确认有效字符串消息ID且无错误状态后，房间锁内从确认时刻开始1800秒；错误／超时／取消／缺回执不进入冷却，不自动重试，同一事件仍去重，新消息可手动重试。
+- 同条成功面板hide_call_all渲染参数隐藏按钮，不借提前写状态隐藏。成功后冷却保存失败保留内存冷却并明确日志，不把已确认发送说成失败，不重复@全体；JSONv2／旧已存截止和schema21保持。
+- 现场QQ code40034142是@全体次数超限；botpy1.2.1只保留错误文字时也需识别，不能继续泛称权限不足。插件不增加平台次数。共享回执校验影响普通通知／outbox，队列完整回归、真实SDK错误类及WS/Webhook／Markdown模板边界必须一起检查。

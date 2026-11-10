@@ -2531,6 +2531,39 @@ def test_call_all_uses_native_official_markdown_and_selected_permission(official
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('platform_name',['qq_official','qq_official_webhook'])
+@pytest.mark.parametrize('template',['','approved-template'])
+@pytest.mark.parametrize('failure',[
+    RuntimeError('消息发送失败，@全体成员次数超限'),
+    {'code':40034142,'message':'消息发送失败，@全体成员次数超限'},
+    None,{'id':'misleading-id','code':40034142},
+])
+def test_call_all_official_send_failure_has_no_cooldown_and_explicit_retry_works(official_waiting,platform_name,template,failure):
+    obj,ev,api,platform=official_waiting
+    ev.get_platform_name=lambda:platform_name
+    platform.meta=lambda:SimpleNamespace(name=platform_name)
+    ev.get_message_str=lambda:'/呼叫全体'
+    obj.config['official_queue_markdown_template_id']=template
+    async def run():
+        api.post_group_message.side_effect=[failure,{'id':'notice'}]
+        await obj.official_queue_cmd(ev)
+        service=obj._get_waiting_queues();scope=('platform-A','app-A','group-openid')
+        assert not service.room(scope).get('call_all_until')
+        md=api.post_group_message.await_args.kwargs['markdown']
+        text=md['params'][0]['values'][0] if template else md['content']
+        assert '未进入冷却' in text and '<qqbot-at-everyone' not in text
+        if failure is not None:assert '次数已达上限' in text
+        ev.send.assert_not_awaited()
+        api.post_group_message.side_effect=None
+        ev.message_obj.message_id='explicit-retry'
+        await obj.official_queue_cmd(ev)
+        assert api.post_group_message.await_count==3
+        assert service.room(scope)['call_all_until']>service.clock()
+        rows=api.post_group_message.await_args.kwargs['keyboard']['content']['rows']
+        assert all(b['action']['data']!='/呼叫全体' for r in rows for b in r['buttons'])
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('platform', ['qq_official', 'aiocqhttp'])
 def test_platform_lineup_permission_cannot_be_bypassed_by_llm_tool(official_waiting, platform):
     obj, ev, _, _ = official_waiting

@@ -31,12 +31,48 @@ _LEGACY_GROUP_NUMBER_RE = re.compile(
 HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n/再开一车：新增队伍\n'
         '/进队等车 [车号]：加入\n/离队：退出当前队伍\n'
         '/发送群号 群号：通知同车成员并结束该车\n/解散：解散当前队伍\n'
-        '/呼叫全体：@全体成员摇人友谊，同群冷却30分钟\n'
+        '/呼叫全体：@全体成员摇人友谊，成功后同群冷却30分钟\n'
         '入队后自动定位你的队伍，不用填写车号。\n'
         '/等车ID 角色或参赛ID：关联原账号，首次用原 QQ /确认关联 确认码\n'
         '每4分钟统一广播；建队10分钟清理，首次满3人重新计10分钟并提醒接友谊。\n'
         '之后进出不延时，一人同时只在一队；车次号按北京时间每日重新从1编号喵。\n'
         '满员超时后，未加入新车仍可补发一次群号喵。')
+
+
+class QueueSendError(RuntimeError):
+    def __init__(self, result):
+        self.code = None
+        self.platform_message = ''
+        if isinstance(result, dict):
+            for key in ('code', 'err_code', 'retcode'):
+                value = result.get(key)
+                if type(value) is int and value != 0:
+                    self.code = value
+                    break
+            self.platform_message = str(result.get('message') or result.get('msg') or '')[:500]
+        super().__init__('QQ 官方消息发送未确认' + (f'，错误码 {self.code}' if self.code is not None else ''))
+
+
+def require_receipt(result):
+    if (not isinstance(result, dict) or not isinstance(result.get('id'), str) or not result['id'].strip()
+            or any(result.get(key, 0) != 0 for key in ('code', 'err_code', 'retcode'))
+            or result.get('status') == 'failed'):
+        raise QueueSendError(result)
+    return result
+
+
+def call_all_failure(error):
+    # botpy 1.2.1 ServerError retains only the QQ message, not its numeric code.
+    message = str(getattr(error, 'platform_message', '') or error)
+    if getattr(error, 'code', None) == 40034142 or '@全体成员次数超限' in message:
+        return 'QQ @全体次数已达上限，本次未进入冷却喵。'
+    if isinstance(error, TimeoutError):
+        return '呼叫全体请求超时，发送结果未确认，本次未进入冷却喵。'
+    if getattr(error, 'code', None) is not None:
+        return f'呼叫全体失败，QQ错误码 {error.code}，本次未进入冷却喵。'
+    if isinstance(error, QueueSendError):
+        return '呼叫全体发送结果未确认，本次未进入冷却喵。'
+    return '呼叫全体发送失败，本次未进入冷却喵。'
 
 
 def parse_command(text):
@@ -357,9 +393,7 @@ class WaitingQueues:
         # 不在模块内重试单次接口请求；已持久化提醒失败后留在 outbox。
         result = (await self.send(scope, text, buttons, reply, plain=True) if plain
                   else await self.send(scope, text, buttons, reply))
-        if result is None or (isinstance(result, dict) and (result.get('code', 0) != 0
-                               or result.get('retcode', 0) != 0 or result.get('status') == 'failed')):
-            raise RuntimeError('QQ 官方消息发送未确认')
+        return require_receipt(result)
 
     async def flush(self, scope, room, force=False):
         for notice in list(room['outbox']):
@@ -384,7 +418,7 @@ class WaitingQueues:
                 with self.edit():
                     room['outbox'] = [n for n in room['outbox'] if n['id'] != notice['id']]
 
-    async def panel(self, scope, room, car=None, *, announcement=''):
+    async def panel(self, scope, room, car=None, *, announcement='', hide_call_all=False):
         now = self.clock()
         sections = ([announcement] if announcement else []) + ['**友谊等车**']
         for car in room['cars']:
@@ -402,8 +436,8 @@ class WaitingQueues:
                             + '　'.join(members or ['暂无成员']))
         if not room['cars']:
             sections.append('当前没有队伍喵。')
-        await self.emit(scope, room, '\n\n'.join(sections),
-                        keyboard(show_call_all=now >= room.get('call_all_until', 0)))
+        return await self.emit(scope, room, '\n\n'.join(sections),
+                               keyboard(show_call_all=not hide_call_all and now >= room.get('call_all_until', 0)))
 
     async def execute(self, scope, action, raw, uid, name, msg_id):
         async with self.lock(scope):
@@ -439,17 +473,27 @@ class WaitingQueues:
                     remaining = math.ceil(room.get('call_all_until', 0) - self.clock())
                     if remaining > 0:
                         raise ValueError(f'呼叫全体冷却中，还需{remaining // 60}分{remaining % 60:02}秒喵。')
-                    # 发送前落盘；即使超时、取消或重启，也不自动重试全体提醒。
-                    # 与普通成员 outbox 分开，避免未知送达结果引起重复 @全体。
-                    with self.edit():
-                        room['call_all_until'] = self.clock() + CALL_ALL_COOLDOWN
                     try:
                         await self.panel(scope, room, announcement='<qqbot-at-everyone />\n'
-                                         '来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～')
-                    except Exception:
+                                         '来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～',
+                                         hide_call_all=True)
+                    except Exception as error:
                         if self.log:
-                            self.log.exception('QQ 官方等车呼叫全体发送未确认，保留冷却且不自动重试')
-                        await self.emit(scope, room, '呼叫全体发送未确认，请检查 @全体权限和平台额度喵。')
+                            self.log.exception('QQ 官方等车呼叫全体发送失败，未进入冷却且不自动重试')
+                        await self.emit(scope, room, call_all_failure(error))
+                        return
+                    # The room lock and persisted event IDs prevent concurrent or
+                    # redelivered calls; cooldown starts only after a message receipt.
+                    until = self.clock() + CALL_ALL_COOLDOWN
+                    try:
+                        with self.edit():
+                            room['call_all_until'] = until
+                    except Exception:
+                        # Delivery was confirmed: retain cooldown in this process,
+                        # even when the atomic disk write rolls state back.
+                        room['call_all_until'] = until
+                        if self.log:
+                            self.log.exception('QQ 官方等车呼叫全体已发送，冷却保存失败，当前进程保留冷却')
                     return
                 if action == '等车ID':
                     query = single_name(raw)
