@@ -443,15 +443,21 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 
 核对结果GET在原分类记录上按胜负过滤后再分页，不重抓网站、不重算完整分类统计；任一侧记录命中就保留整组对照。网站侧用winner/loser（新JSON增加loser），旧历史无loser时按已解析双方与展示胜方判断，无法判断则只在全部显示；本地侧按原核对展示胜方。上方统计及JSON下载仍保留完整任务范围，UI标明列表筛选状态。不得因筛选拆散不一致的双方原文，也不得写入本地比赛、指纹或人工发送标记。
 
-**平台指令配置（v1.27.0）：** platform_command_profiles 为命名 template_list，每项包含 platform_ids 精确连接ID列表、mode（仅开放勾选指令/全部开放/全部屏蔽）及 allowed_commands 多选。首个匹配项生效，空目标不匹配，未配置保留原范围；同协议不同实例独立。只按连接ID匹配，不按平台类型、QQ号或群号解析。COMMANDS/HANDLER_COMMANDS/COMMAND_ALIASES 是配置与执行共同目录，别名统一规范；第N轮通过稳定函数名映射，不依赖显示名。
+**平台默认权限与SnowLuma呼叫全体（v1.35.0，覆盖旧版默认范围）：** 新增固定object配置platform_command_defaults，qq_official（WS/Webhook共用）、aiocqhttp、other各有mode与allowed_commands，实际默认勾选直接呈现，schema默认由AstrBot自动补齐，不创建虚假的连接ID规则。连接专属platform_command_profiles仍首个精确匹配优先，完整替代而非合并默认项；升级不覆写已有规则。缺字段兼容内置默认，显式非法模式/字段拒绝；运行时实时读取，构造期前置过滤与路由、动态轮次、AI工具继续同权限。默认官方只等车且排除呼叫全体；OneBot保留原范围并新增呼叫全体；其他平台保留通用范围。呼叫全体仅OneBot/官方可用，其他队列操作仍仅官方；原OneBot专属能力限制不变。
+
+SnowLuma呼叫全体沿高优先级自定义路由精确匹配裸指令或/指令，无需is_at_or_wake_command；保留平台权限、私聊、DB、禁群、等车总开关检查，以原event.bot/self_id/group_id调用send_group_msg，typed at.qq=all加文本。只接受有效非零message_id及成功状态；按平台连接ID+机器人QQ+群号锁隔离，独立JSONv1文件onebot_call_all.json，发送前原子保存最近200条事件ID、失败则不发送；成功回执后计1800秒并保存，磁盘失败保留进程内冷却。失败/超时/取消/无回执不占冷却，无后台重试，同消息不重放，新消息允许手动重试。不能把OpenID当QQ群号或猜测两端群映射，SnowLuma只发邀请，原官方队列及通知存档不变。官方面板保留呼叫按钮，SnowLuma冷却由重复点击提示剩余时间；手动重新开放的官方入口保留完整面板及原冷却隐藏规则。旧专属配置若两端均开放，需用户取消一侧以免重复。SnowLuma仍受账号权限及QQ额度限制。
+
+QQ官方文档type=2按钮强制插入@bot data，reply控制引用，无不@参数。用户明确选择保留按钮，呼叫按钮reply=false取消引用，enter=true发送/呼叫全体；官方默认静默，OneBot读取顶层Plain命令并处理，不改原消息链或全局唤醒标志。不得伪造skip_at_bot字段或把取消引用描述成取消@。
+
+**平台指令配置（v1.27.0）：** platform_command_profiles 为命名 template_list，每项包含 platform_ids 精确连接ID列表、mode（仅开放勾选指令/全部开放/全部屏蔽）及 allowed_commands 多选。首个匹配项生效，空目标不匹配，未匹配连接使用v1.35.0平台默认权限；同协议不同实例独立。只按连接ID匹配，不按平台类型、QQ号或群号解析。COMMANDS/HANDLER_COMMANDS/COMMAND_ALIASES 是配置与执行共同目录，别名统一规范；第N轮通过稳定函数名映射，不依赖显示名。
 
 构造时只对本模块 AdapterMessageEvent 处理器，在原过滤器之前插入 PlatformCommandPermissionFilter；通过 get_handlers_by_module_name 包含暂时禁用的处理器，重装时先移除旧标记过滤器。允许回调绑定当前实例并实时读取配置，拒绝先于参数解析，不调用DB或网络，不重排/修改其他插件。分流器自身不受单指令过滤，继续禁止默认LLM并防御性过滤本插件不允许的处理器；官方端已允许业务处理器不得再被固定白名单剔除。队列命令入口另外按归一动作校验；lineup_tool 共用排表权限，不能绕过。
 
-等车仅官方；原QQ确认/解除、申请监听及列表/刷新、群成员导出保留OneBot能力限制，不被全部开放覆盖。开放不替代原有身份关联、超管/战队管理员、DB、群禁用、战队绑定或群属性要求。不迁移DB/队列，不删除或重计已有队列，不改普通聊天和其他插件权限。
+等车除呼叫全体外仅官方；原QQ确认/解除、申请监听及列表/刷新、群成员导出保留OneBot能力限制，不被全部开放覆盖。开放不替代原有身份关联、超管/战队管理员、DB、群禁用、战队绑定或群属性要求。不迁移DB/队列，不删除或重计已有队列，不改普通聊天和其他插件权限。
 
 **QQ 群命令隔离（v1.26.6）：** 两个 QQ 接入的官方端范围保留；aiocqhttp 群消息以原始顶层 Plain 拼接的文字判断命令意图，兼容 wake_prefix 剥掉斜杠，不读取 Reply 内被引用的指令，不改原文/消息链。以 `/` 开头均视为命令；裸形式通过全局注册表 AdapterMessageEvent/only_activated=False 的 CommandFilter/CommandGroupFilter.get_complete_command_names 识别名称、别名和父组，规范空白后按完整词边界匹配。动态重载后即时读取，不调用第三方 filter、不校验参数/权限、不污染 parsed_params。未知裸自定义指令无法可靠识别，需加 `/`。
 
-等车消息继续静默 stop；其他 OneBot 群命令只 should_call_llm(True) 禁止默认 LLM，立即交回标准插件分发，不 stop_event、不清结果、不查本插件DB或队列。未处理命令不会进入默认 Agent 或被追加至默认活跃对话；插件主动 ProviderRequest/模型调用仍由插件控制。普通聊天、私聊和其他平台不新增限制，不要求 chat 前缀。需要本插件在两个配置中均启用；不改数据库、身份权限或队列存档。
+除呼叫全体之外的等车消息继续静默 stop；其他 OneBot 群命令只 should_call_llm(True) 禁止默认 LLM，立即交回标准插件分发，不 stop_event、不清结果、不查本插件DB或队列。未处理命令不会进入默认 Agent 或被追加至默认活跃对话；插件主动 ProviderRequest/模型调用仍由插件控制。普通聊天、私聊和其他平台不新增限制，不要求 chat 前缀。需要本插件在两个配置中均启用；不改数据库、身份权限或队列存档。
 
 **人工外发标记（v1.20.2）：** 管理员提供单个本队截止战报 ID，将本队 ID≤截止 ID 的所有战报标记已发送/未发送，不限类型、月份和数量；状态按战队持久化，默认友谊导出按状态隔离成包。导出与入库不能自动标记，不修改战报正文或指纹；详见 F-08/F-36/F-37。
 
@@ -470,14 +476,14 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 - **v1.26.0 当前规则覆盖 v1.24～v1.25.6 的旧计时/单车面板规则。** 新车600秒截止；首次 len(members)>=3 时设置 ready=True 并 deadline=now+600，同时仅发送满员专属通知 @ 当时3人、提醒接友谊。ready 是持久化的“曾满员”而非当前人数；后续进队/离队/再次满员均不得改截止。重复事件不重新操作，进队与普通离队通知分别快照原成员/剩余成员，首次满员不再叠加普通入队提醒。
 - 房间 next_refresh 按240秒广播一次全车合并面板；不为各车开独立广播，进出/新开其他车不重启广播周期，各车 deadline 独立。过期移除仅本车；剩余队伍可即时更新合并面板。所有成员仍保留真实 joined_at。
 - v1.26.1 主入口 `/离队`、`/解散` 和 `/发送群号 群号`，按钮 action.data 同步简写，旧名称兼容。按官方群作用域一人一队，离队/发群号/解散按本人队伍定位，无需车号；加入可指定 token 或由服务器优先选未满3人队伍。允许超过3人；已在队内另开空队。解散仅当前成员或空队创建者可操作。发送群号至少3人，@其他队员并移除该车。
-- 底部原有2行×3按钮，v1.27.1增加第三行“呼叫全体”：进队等车、跑路了再见、发送群号／再开一车、解散队伍、帮助。每车另给原生 cmd-input 选择该车。旧“我也要等车”“人齐了发车”等入口兼容映射，不新增 LLM 工具。OneBot 对新旧入口均静默；官方端本插件其他功能默认静默，可按平台指令配置开放，不阻止第三方插件。
+- 底部原有2行×3按钮，v1.27.1增加第三行“呼叫全体”：进队等车、跑路了再见、发送群号／再开一车、解散队伍、帮助。每车另给原生 cmd-input 选择该车。旧“我也要等车”“人齐了发车”等入口兼容映射，不新增 LLM 工具。v1.35.0起OneBot仅执行呼叫全体，其他新旧等车入口均静默；官方端本插件其他功能默认静默，可按平台指令配置开放，不阻止第三方插件。
 - 面板标题用正文加粗，不用二级标题；自动清理与4分钟广播间隔同一行；同车成员同一逻辑行，窄屏交给QQ自然换行。保留32px头像与等待时间，删除胜率行且不调用 profile 查询。v1.26.4 只将面板成员姓名改回 qqbot-cmd-input：show=名字不加@、text=@名字+空格，均URL编码，面板不包含原生成员@。姓名来自成员name缓存，官方原始消息的群名片优先、QQ昵称兜底，缺失时车友标识；客户端原生@渲染的群名片不能反向读取。通知仍保持v1.26.3的单个原生@，不附加名字填字链接。
 - v1.26.3 通知仅保留原生 qqbot-at-user，按 uid 去重；移除旁附名字cmd-input，避免原生群名片后再叠加缓存QQ昵称。入退队/发车正文使用不含缓存人名的提示，保持原收件人规则。历史names快照留存但不再用于标签渲染；即使车辆已移除，补发也仅按原uid生成原生@。原生@点击行为交给QQ，不宣称点击能回填消息框。v1.26.2 群号改为后续单独 msg_type=0/content=纯数字消息，不套 Markdown/模板/键盘/输入标签，让 QQ 自行识别原生号码操作；不宣称已经验证具体客户端的下划线或弹层。帮助按钮与推荐指令为 `/等车帮助`，保留旧长名称兼容。
 - 每房间 number_day 按北京时间日界重置 next_number 为1；跨日旧车保留 day 并在标题加日期，唯一C前缀随机token不重用。裸数字车号重复时拒绝，让用户通过面板token明确队伍。
 - 存档 official_waiting_queues.json **JSON v2**，房间新增 next_refresh/number_day、车次新增day/owner，ready 改为粘性曾满员标志。v1先校验后自动迁移并原子落盘，保留成员、token、关联及outbox；旧截止不复活、最多保留600秒剩余。旧版未存历史满员，按已有ready初始化，不能声称恢复未记录的历史。MySQL schema仍20。
 - 消息 outbox 追加收件人名字快照，成员、截止和通知在同一edit原子提交。入队/离队/满员/发群号/解散提醒先落盘，API确认id才移除，失败240秒或下一交互补发；重启后即使车已移除，通知仍按收件人uid生成原生@，不依赖姓名快照。单次API 20秒，无自动重试，未知送达结果维持至少一次语义。
 - v1.26.2 outbox 可选 format=markdown/text 及 after 依赖。发车时在同一 edit 保存 @ 通知和纯数字记录，数字依赖 @ 通知的 id；前条未确认时跳过数字，但不阻塞其他车的独立通知。每条确认后单独原子移除，数字失败只留数字重试，不重复 @；复用原平台/AppID/群禁用与被动序号隔离。启动时只转换严格匹配旧发车文本中的数字 cmd-input 链接，保留原通知 id/收件人/重试时间，追加依赖数字记录，可重放且写失败不覆盖原文件。JSONv2与MySQL schema20不变。
-- v1.27.1 `/呼叫全体` 及同名按钮发送原生 `<qqbot-at-everyone />` 友谊邀请，允许无车时主动摇人。同房间所有人/车次共享1800秒冷却，按原平台实例/AppID/group_openid隔离；可选字段call_all_until校验非负有限数，旧JSONv2缺省0。v1.34.1起仅在成功消息回执后，在同一房间锁内原子保存冷却；跨日编号重置/空房/重启均不清零，保留事件去重。冷却中仅显示剩余时间，不修改车次截止或广播节奏。全体提醒不进入outbox；失败/超时/取消或缺少成功回执不进入冷却，不由后台自动重试，允许用户用新消息显式重试；事件或回复序号的发送前持久化失败不得发送。QQ管理员权限和每日额度仍由平台限制，SDK文档注明每群每天1次，不能声称30分钟冷却即可重复实际@全体。平台指令目录/schema同步新增“呼叫全体”，旧勾选配置需手动开放，OneBot继续静默。
+- v1.27.1 `/呼叫全体` 及同名按钮发送原生 `<qqbot-at-everyone />` 友谊邀请，允许无车时主动摇人。同房间所有人/车次共享1800秒冷却，按原平台实例/AppID/group_openid隔离；可选字段call_all_until校验非负有限数，旧JSONv2缺省0。v1.34.1起仅在成功消息回执后，在同一房间锁内原子保存冷却；跨日编号重置/空房/重启均不清零，保留事件去重。冷却中仅显示剩余时间，不修改车次截止或广播节奏。全体提醒不进入outbox；失败/超时/取消或缺少成功回执不进入冷却，不由后台自动重试，允许用户用新消息显式重试；事件或回复序号的发送前持久化失败不得发送。QQ管理员权限和每日额度仍由平台限制，SDK文档注明每群每天1次，不能声称30分钟冷却即可重复实际@全体。平台指令目录/schema同步新增“呼叫全体”，旧勾选配置需手动开放；v1.35.0起呼叫全体默认移至OneBot，详见本节新口径。
 - v1.27.2 呼叫全体复用panel渲染器，announcement仅供本次显式呼叫传入，同一消息发送原生全体标签、摇人文案、全房间当前车次及成员/计时/键盘；空房间显示没有队伍，不创建车辆。执行前已过期的车次移除后不再展示；普通查看/交互/广播仍不传全体标签，不增加发送次数、不改变冷却和截止。
 - v1.27.3 所有新生成panel按同一房间call_all_until与当前渲染时刻判断呼叫按钮：now<截止隐藏，now>=截止恢复。v1.34.1起呼叫面板通过本次渲染参数先隐藏按钮，只有成功回执后才写冷却；查看/交互/广播及重启同规则，无空键盘行，其他六个按钮及顺序保留。历史消息按钮与文字命令仍由execute校验冷却，不修改历史消息或额外推送恢复消息。
 - edit 内无 await，写失败只还原变化房间，保留其他群在途引用；每群锁、多群tick并发。initialize启动任务，terminate先取消任务再关DB，其他战报功能不变。
@@ -849,8 +855,8 @@ year = now.year - 1 if month > now.month else now.year
 | **F-39** | QQ 官方群 `/友谊等车`（兼容 `/等车`、`/蹲车`）、`/进队等车`、`/发送群号`、`/离队`、`/解散`（兼容 `/解散队伍`）、`/我也要等车 [车号]`、`/跑路了再见 [车号]`、`/人齐了发车 [车号] 群号`、`/再开一车`、`/等车ID 参赛ID`、`/友谊等车帮助`（兼容 `/等车帮助`） | `official_queue_cmd` / `WaitingQueues` | 官方群多车合并面板、4分钟房间广播、10分钟独立清理及首次满3人一次性重计时、满员超时未入新车可补发一次群号、入退队/满员/发车/解散定向提醒、每日车次编号；原账号关联见 F-40 | M-01、M-03、M-09、M-10、M-11 | 原子 JSON；身份 SQL 见 F-40 |
 | **F-40** | `/等车ID 角色或参赛ID`、`/确认关联 确认码`、`/解除官方关联` | request_official_link / confirm_official_link / revoke_official_links / _identity_qq | 原 QQ 确认 OpenID 对原用户的关联；两端同一原 QQ 身份和已有全部插件权限；保留原 QQ/角色/参赛 ID，支持即时撤销，不信任旧 JSON 展示关联 | M-02、M-03、M-10 | official_user_accounts / official_link_requests；schema v20 |
 | **F-41** | QQ群命令与默认对话隔离 | OfficialQueueFilter / official_queue_cmd / command_guard | 群内斜杠命令及已注册裸命令不回落默认LLM；保留插件分发、原参数及普通聊天，不依赖chat前缀 | M-10 | 不写数据库/队列 |
-| **F-42** | 按机器人连接ID手动分配本插件指令 | platform_policy / _install_platform_permissions / _filter_platform_handlers | 命名配置、多选/全部开放/全部屏蔽、别名统一、参数前静默拒绝、AI排表同权限；其他插件与原业务权限保留 | M-10 | 仅插件配置，无DB/队列迁移 |
-| **F-43** | QQ 官方群 `/呼叫全体` / 呼叫全体按钮 | `WaitingQueues.execute` | 原生 @全体成员友谊邀请及同条完整等车面板，冷却时隐藏按钮；房间共享30分钟持久化冷却，按连接/AppID/群隔离，成功回执后存档，失败／超时／取消不占冷却且不自动补发，原平台权限规则保留 | M-01、M-10 | JSON v2 可选 `call_all_until`，无SQL迁移 |
+| **F-42** | 平台默认权限／平台指令配置 | platform_policy / PlatformCommandPermissionFilter / official_queue_cmd | QQ官方、SnowLuma/OneBot及其他平台默认配置直接展示并可编辑，连接专属规则首个精确匹配优先；前置静默过滤、动态轮次和AI工具共用权限，其他插件保留 | M-10、M-11 | 插件配置，无SQL或队列迁移 |
+| **F-43** | `/呼叫全体` / 呼叫全体按钮 | OneBotCallAll / _call_all_onebot / WaitingQueues.execute | 默认由SnowLuma发送原生@全体友谊邀请，官方默认静默；保留按钮、取消引用，协议自动@保留；同群30分钟持久化冷却，成功回执后存档，失败／超时／取消不占冷却且不补发；手动开放官方时保留原面板与隐藏按钮规则 | M-01、M-10 | 独立onebot_call_all.json版本1；原官方JSONv2可选call_all_until，无SQL迁移 |
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 移除顶部介绍标题区并直接呈现功能Tab；本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
@@ -1062,7 +1068,7 @@ year = now.year - 1 if month > now.month else now.year
 | 你要做的事 | 必须同步修改 | 容易漏的点 |
 |---|---|---|
 | **改跨平台身份** | ① 两张关联表、唯一键与确认事务/原 QQ 撤销 ② _identity_qq 的 AppID 隔离和无身份拒绝 ③ _is_super_admin 异步调用全链、team_admin 与 own-ID/改名/我的战绩 ④ 等车资料优先已验证身份 ⑤ 确认/撤销的平台限制、哈希/过期/重放、同名与首次设置回归、帮助及文档 | 不能用公开角色名或旧 JSON 别名授权，不能覆盖 users.qq_id；原 QQ 权限实时判断，不能丢掉或扩大原授权 |
-| **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
+| **改平台指令权限** | ① platform_policy 指令目录/别名/动作映射、可编辑协议默认及连接覆盖优先级 ② 构造期前置过滤与运行期防御过滤、队列及AI工具同权限 ③ schema 模板/选项与 README/本表/使用指南 ④ 多实例、参数异常、默认行为及真实框架分发验证 | 不绕过原角色/群权限，不改第三方处理器，不把连接ID当QQ号；新增指令同步目录 |
 | **改每日友谊胜场检查** | ① home_team跨群、比赛日期／整场matches、kind=friendly、有效双方和winner ② SQL全月聚合后统一双向阈值与完整汇总、筛选分页和未计入提示 ③ 汇总／明细两GET均先验证当前战队权限与月份、明细仅本队当天对手 ④ 新Tab、本月独立月份、两侧分页、原文复制、异步旧响应／关闭／切身份清除 ⑤ 纯逻辑／API鉴权／隔离MySQL／实际SDK及独立入口浏览器，README和指南 | 各3胜而非合计3场；不按个人duel计数，不更改历史战报／积分，不混入踢馆或云端归档，不把读取失败显示为未超限 |
 | **改网页队伍／队员管理** | ① require_master先于参数与DB、两种战队会话／匿名拒绝 ② 角色／ID本队范围与原身份锁、冲突／旧值核验／原子回滚、QQ变更撤销角色官方关联 ③ 名单自动建号与部分成功 ④ 管理Tab显隐、分页搜索／空状态／移动端／切身份清数据、Pages与独立入口 ⑤ 隔离MySQL、API与实际SDK浏览器、README／指南 | 不将前端hidden当授权，不新增跨队认领或改历史战报；不自动建造参赛ID |
 | **改战队网页登录** | ① 授权后自动建号／启动补齐／幂等不重置、初始密码恢复密钥及私聊提供／改密失效、加盐密码文件0600／原子落盘回滚、7天会话摘要及原子注销／改密撤销与重启恢复、独立高熵会话与一次性码、限流／过期／注销／重启／并发改密／卸载 ② OneBot私聊QQ证明与platform_policy/schema选项标签／帮助 ③ 当前team_admins授权、本地home_team／云端服务端归属、核对查询及历史／取消／下载、管理员目录、服务端重读／批次身份／每包复核 ④ ContextVar身份、核心JWT与战队会话隔离、账号管理仅原后台 ⑤ 公网TLS两端拒绝／IP证书及代理导出、三登录方式／Cookie／失效清数据／异步旧响应丢弃／不重放、实际SDK浏览器和隔离MySQL、文档 | 不信客户端角色／QQ／正文／scope，不将队名筛选当授权，不把密码账号停用当QQ授权撤销，不记录口令或原始码／会话 |
@@ -1070,7 +1076,7 @@ year = now.year - 1 if month > now.month else now.year
 | **改WebUI筛选/布局** | ① 本地/云端COUNT与分页ID前的筛选SQL、未知胜负口径 ② 核对任一侧命中保留整组、过滤后分页、统计/下载完整范围 ③ API参数校验与前端复位/作用域/异步序号 ④ 搜索/战报等宽、外置轨道、同排等高及固定滚动条槽位 ⑤ 实际MySQL和浏览器长短卡片/空数据/筛选计数/跳页/复制/发送回归 | 不只筛当前页，不把未知算负场，不把云端网站胜方替换为插件重算；控件不得再次占内容列，不动统计/提交指纹/人工发送标记 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
 | **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 默认本地Tab、全文列表/复制、opaque sandbox中实际粘贴核验/焦点恢复/失败反馈及手机布局，浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
-| **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
+| **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、onebot_call_all独立群号作用域与成功回执、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **改战绩卡片** | ① record/my_record 与 `_record_results` 的范围和趋势分流 ② `stats.build_record_metrics` ③ `chart.make_record_images` 与共享 `_trend_image` ④ handler/渲染/指标/集合踢馆结果回归 ⑤ 帮助、预览与 README | 不把个人对局与战队整场混算、不吞掉长 ID 或截掉明细、不把趋势失败变成战绩查询失败；保留标准响应链 |
@@ -1357,7 +1363,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 | 配置 | 默认 | 作用于 |
 |---|---|---|
-| `platform_command_profiles` | [] | F-42 平台命名配置：platform_ids/mode/allowed_commands，首个精确匹配生效；未配置保留旧范围 |
+| `platform_command_defaults` | 各平台实际初始勾选 | F-42 固定qq_official/aiocqhttp/other，每项mode及allowed_commands，直接可改，默认官方不含呼叫全体、OneBot包含 |
+| `platform_command_profiles` | [] | F-42 连接专属命名配置：platform_ids/mode/allowed_commands，首个精确匹配优先于平台默认 |
 | `submit_requires_admin` | false | F-04，战报群内额外要求 `_is_manager`（含超管和本队管理员） |
 | `ranking_limit` | 10 | F-05 `全部` 分支的条数 |
 | `ranking_image` | true | F-05 输出形态（关 → 文本表格） |
@@ -1367,7 +1374,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 | `min_games` | 1 | F-05 入榜最低场次（SQL `HAVING total >=`，口径见 §10-2） |
 | `min_duels` | 3 | F-04 单份战报最少对局数，低于即拒收。**与 `min_games` 是两件事**：一个是提交前置条件，一个是排名门槛 |
 | `trend_chart_width` / `height` | 960 / 480 | F-07 图片尺寸 |
-| `official_queue_enabled` | true | F-39 仅 QQ 官方群等车指令及后台定时任务 |
+| `official_queue_enabled` | true | F-39 官方群等车指令及后台定时任务；F-43 SnowLuma呼叫全体总开关 |
 | `official_queue_proactive` | true | F-39 超过被动时限/额度时用已授权的主动消息 |
 | `official_queue_markdown_template_id` | 空 | F-39 留空为原生 Markdown，否则为审核模板 ID |
 | `official_queue_markdown_param` | content | F-39 审核模板正文变量名 |
@@ -1381,6 +1388,8 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 > `tests/test_config_schema.py` 钉住了格式与"死配置不许回来"两条。
 
 ---
+
+新增配置（v1.35.0）：`platform_command_defaults`（object：qq_official / aiocqhttp / other，各含mode与allowed_commands）。已有`platform_command_profiles`仅作连接专属覆盖，模板/目录保持同步；官方默认不含呼叫全体，OneBot默认含该项。其他配置与schema21不变。
 
 ## 12. 测试地图
 
@@ -1627,3 +1636,12 @@ v1.34.0 每日友谊检查：F-51，固定上限双方每天各3胜，不新增�
 v1.34.1 呼叫全体修复：现场2026-11-10北京时间16:37的QQ HTTP400返回code/err_code=40034142、message“消息发送失败，@全体成员次数超限”，确定为平台次数限制。QueueSendError保留可用平台错误码／消息，公共require_receipt统一拒绝非字典／无有效字符串id／显式错误code/err_code/retcode/status，main适配器与队列均使用；botpy1.2.1 ServerError只保留文字，按已知完整错误内容识别。取消原发送前30分钟预留，房间锁和已落盘事件ID继续防并发／重复投递；本次panel hide_call_all仅控制成功面板外观，不提前提交冷却。仅成功回执后从确认时刻开始1800秒并保存，失败／超时／取消不新增冷却、不进入outbox、不自动重试，用户新消息可显式重试。成功后冷却保存失败时日志说明已发出，当前进程保留冷却，后续保存恢复可落盘；磁盘故障未修复时不能保证重启保留。无QQ额外权限、平台额度或发送格式修改，JSONv2与schema21不变；旧已存截止不猜测成功／失败来源，不批量清除。
 
 验证：1489项默认回归通过、12项跳过；包含额度超限／错误回执／无ID／网络异常／超时／取消不占冷却、普通操作和重启不补发、重复事件去重／并发只发一次、用户新消息显式重试、成功从回执时间开始计时和成功后保存失败保留内存冷却。下载并按PyPI SHA256核验qq-botpy1.2.1官方wheel，直接使用原始ServerError类复现现场错误，在真实插件handler配合模拟QQ接口下，WS/Webhook与原生／审核模板4项兼容检查通过。未向真实QQ群发送测试消息；失败原因依据用户现场日志确认。
+
+### v1.35.0 平台默认配置与呼叫全体回归
+
+- `tests/test_onebot_call_all.py`覆盖原子事件防重、成功回执起算、重启/并发/群与账号隔离、失败/取消不冷却、显式重试及存档错误。
+- `tests/test_main.py`覆盖无@/裸命令OneBot发送原生全体、官方WS/Webhook默认静默、手动官方权限兼容、私聊/禁群/DB/总开关/参数拒绝。
+- `tests/test_platform_policy.py`与配置schema测试覆盖直接修改各协议默认、即时读取、连接专属覆盖、默认目录一致及传输硬限制。
+- 真实AstrBot配置加载与注册/唤醒/分发使用隔离I/O验证；未登录真实QQ验证按钮客户端或@全体额度。
+
+验证结果：默认测试1521项通过、12项按测试配置跳过；另在真实AstrBot v4.27.3及当前参考源码验证默认配置补齐/修改保留和144项注册、绑定、唤醒、分发场景。QQ及数据库I/O使用模拟接口。

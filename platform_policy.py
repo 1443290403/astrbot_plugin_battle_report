@@ -152,6 +152,11 @@ QUEUE_COMMANDS = {
 OFFICIAL_PLATFORMS = {'qq_official', 'qq_official_webhook'}
 ONEBOT_ONLY = {'确认关联', '解除官方关联', '申请审批', '申请列表', '刷新申请', '导出群成员','战报登录'}
 COMMANDS = tuple(dict.fromkeys([*HANDLER_COMMANDS.values(), *QUEUE_COMMANDS.values()]))
+DEFAULT_COMMANDS = {
+    'qq_official': tuple(c for c in dict.fromkeys(QUEUE_COMMANDS.values()) if c != '呼叫全体'),
+    'aiocqhttp': tuple(c for c in COMMANDS if c not in QUEUE_COMMANDS.values() or c == '呼叫全体'),
+    'other': tuple(c for c in COMMANDS if c not in QUEUE_COMMANDS.values() and c not in ONEBOT_ONLY),
+}
 
 
 def handler_command(handler):
@@ -201,13 +206,23 @@ def matched_profile(config, platform_id):
 def command_allowed(config, platform, platform_id, command):
     if command not in COMMANDS:
         return False
-    if command in QUEUE_COMMANDS.values() and platform not in OFFICIAL_PLATFORMS:
+    if command == '呼叫全体' and platform not in {*OFFICIAL_PLATFORMS, 'aiocqhttp'}:
+        return False
+    if command in QUEUE_COMMANDS.values() and command != '呼叫全体' and platform not in OFFICIAL_PLATFORMS:
         return False
     if command in ONEBOT_ONLY and platform != 'aiocqhttp':
         return False
     profile = matched_profile(config, platform_id)
     if profile is None:
-        return platform not in OFFICIAL_PLATFORMS or command in QUEUE_COMMANDS.values()
+        kind = 'qq_official' if platform in OFFICIAL_PLATFORMS else 'aiocqhttp' if platform == 'aiocqhttp' else 'other'
+        defaults = config.get('platform_command_defaults', {})
+        if not isinstance(defaults, dict):
+            return False
+        if kind not in defaults:
+            return command in DEFAULT_COMMANDS[kind]
+        profile = defaults[kind]
+        if not isinstance(profile, dict):
+            return False
     mode = profile.get('mode', '仅开放勾选指令')
     if mode == '全部开放':
         return True

@@ -20,6 +20,8 @@ def profile(ids, allowed=(), mode='仅开放勾选指令'):
     ('aiocqhttp', '排行', True), ('aiocqhttp', '申请审批', True),
     ('aiocqhttp', '进队等车', False), ('webchat', '排表', True),
     ('webchat', '导出群成员', False), ('telegram', '友谊等车', False),
+    ('qq_official', '呼叫全体', False), ('qq_official_webhook', '呼叫全体', False),
+    ('aiocqhttp', '呼叫全体', True), ('webchat', '呼叫全体', False),
 ])
 def test_unconfigured_connections_keep_existing_scope(platform, command, allowed):
     assert policy.command_allowed({}, platform, 'bot-A', command) is allowed
@@ -72,6 +74,41 @@ def test_profile_changes_take_effect_without_a_stale_allow_cache():
     assert not policy.command_allowed(config, 'aiocqhttp', 'bot-A', '排行')
     rule['allowed_commands'] = '排行'
     assert not policy.command_allowed(config, 'aiocqhttp', 'bot-A', '排行')
+
+
+def test_editable_adapter_defaults_apply_to_existing_connections_and_keep_overrides():
+    rule = profile([], ['排行'])
+    config = {'platform_command_defaults': {'qq_official': rule},
+              'platform_command_profiles': [profile(['special'], ['排表'])]}
+    for platform in policy.OFFICIAL_PLATFORMS:
+        assert policy.command_allowed(config, platform, 'existing', '排行')
+        assert not policy.command_allowed(config, platform, 'existing', '友谊等车')
+        assert policy.command_allowed(config, platform, 'special', '排表')
+        assert not policy.command_allowed(config, platform, 'special', '排行')
+    rule['allowed_commands'] = ['友谊等车']
+    assert policy.command_allowed(config, 'qq_official', 'existing', '友谊等车')
+    assert not policy.command_allowed(config, 'qq_official', 'existing', '排行')
+    assert policy.command_allowed(config, 'aiocqhttp', 'existing', '呼叫全体')
+
+
+@pytest.mark.parametrize('invalid', [None, '全部开放', [], {'mode': '无效方式'}])
+def test_invalid_explicit_default_cannot_grant_commands(invalid):
+    config = {'platform_command_defaults': {'aiocqhttp': invalid}}
+    assert not policy.command_allowed(config, 'aiocqhttp', 'bot-A', '排行')
+
+
+def test_visible_defaults_match_policy_and_can_be_edited_without_connection_ids():
+    schema = json.loads((Path(__file__).resolve().parents[1] / '_conf_schema.json').read_text())
+    items = schema['platform_command_defaults']['items']
+    for kind, commands in policy.DEFAULT_COMMANDS.items():
+        fields = items[kind]['items']
+        assert fields['allowed_commands']['default'] == list(commands)
+        assert set(commands) <= set(fields['allowed_commands']['options']) <= set(policy.COMMANDS)
+        config = {'platform_command_defaults': {kind: {
+            'mode': fields['mode']['default'], 'allowed_commands': list(commands)}}}
+        adapter = 'webchat' if kind == 'other' else kind
+        assert [c for c in policy.COMMANDS if policy.command_allowed(config, adapter, 'any', c)] == [
+            c for c in policy.COMMANDS if c in commands]
 
 
 @pytest.mark.parametrize('text,key', [('/排行 七月', '排行'), ('战报排行', '排行'),

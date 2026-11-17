@@ -2543,6 +2543,7 @@ def test_call_all_official_send_failure_has_no_cooldown_and_explicit_retry_works
     ev.get_platform_name=lambda:platform_name
     platform.meta=lambda:SimpleNamespace(name=platform_name)
     ev.get_message_str=lambda:'/呼叫全体'
+    set_platform_commands(obj, ev, ['呼叫全体'])
     obj.config['official_queue_markdown_template_id']=template
     async def run():
         api.post_group_message.side_effect=[failure,{'id':'notice'}]
@@ -2634,7 +2635,7 @@ def test_official_bot_cannot_bypass_queue_only_routing_via_llm_lineup_tool(offic
     '/等车', '蹲车', '/我也要等车 C1_abcd1234', '/跑路了再见',
     '/人齐了发车 C1_abcd1234 123456789', '/再开一车',
     '/等车ID "示例 玩家"', '/等车帮助', '/帮助 等车', '帮助 等车',
-    '/战报帮助 等车', '战报帮助 等车', '/呼叫全体', '呼叫全体',
+    '/战报帮助 等车', '战报帮助 等车',
 ])
 @pytest.mark.parametrize('group,ready', [('100', True), ('', True), ('100', False)])
 def test_onebot_waiting_commands_stop_silently_before_any_services(plugin_module, tmp_path, text, group, ready):
@@ -2662,6 +2663,68 @@ def test_onebot_command_guard_leaves_normal_chat_untouched(plugin_module, text):
     ev.get_platform_name = lambda: 'aiocqhttp'
     assert not plugin_module.OfficialQueueFilter().filter(ev, {})
     ev.stop_event.assert_not_called()
+
+
+@pytest.mark.parametrize('text', ['/呼叫全体', '呼叫全体'])
+def test_call_all_defaults_to_onebot_without_needing_an_at_or_wake_prefix(plugin_module, tmp_path, text):
+    obj = plugin(plugin_module, tmp_path)
+    obj._get_waiting_queues = Mock(side_effect=AssertionError('must not use official room'))
+    ev = event(text, messages=[plugin_module.Plain(text=text)])
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    ev.get_platform_id = lambda: 'snowluma-A'
+    ev.get_self_id = lambda: '90001'
+    ev.is_at_or_wake_command = False
+    ev.message_obj = SimpleNamespace(message_id='1001', raw_message={})
+    ev.bot.call_action.return_value = {'message_id': 77}
+    assert plugin_module.OfficialQueueFilter().filter(ev, {'wake_prefix': ['!']})
+    async def run():
+        await obj.official_queue_cmd(ev)
+        ev.bot.call_action.assert_awaited_once_with('send_group_msg', self_id=90001,
+            group_id=100, message=[{'type': 'at', 'data': {'qq': 'all'}},
+                {'type': 'text', 'data': {'text': '\n来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～'}}])
+        ev.send.assert_not_awaited()
+        ev.message_obj.message_id = '1002'
+        await obj.official_queue_cmd(ev)
+        assert ev.bot.call_action.await_count == 1
+        assert '冷却中' in ev.send.await_args.args[0]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('platform', ['qq_official', 'qq_official_webhook'])
+def test_call_all_official_is_silent_by_default_even_when_enabled(official_waiting, platform):
+    obj, ev, api, _ = official_waiting
+    ev.get_platform_name = lambda: platform
+    ev.get_message_str = lambda: '/呼叫全体'
+    obj._get_waiting_queues = Mock(side_effect=AssertionError('must not access official room'))
+    asyncio.run(obj.official_queue_cmd(ev))
+    api.post_group_message.assert_not_awaited()
+    ev.send.assert_not_awaited()
+    obj.db.get_group_ban.assert_not_awaited()
+
+
+@pytest.mark.parametrize('condition', ['denied', 'banned', 'db', 'disabled', 'private', 'bad_args'])
+def test_onebot_call_all_preserves_existing_platform_and_group_checks(plugin_module, tmp_path, condition):
+    obj = plugin(plugin_module, tmp_path)
+    ev = event('/呼叫全体 其他' if condition == 'bad_args' else '/呼叫全体',
+               group='' if condition == 'private' else '100')
+    ev.get_platform_name = lambda: 'aiocqhttp'
+    ev.get_platform_id = lambda: 'snowluma-A'
+    ev.get_self_id = lambda: '90001'
+    ev.message_obj = SimpleNamespace(message_id='1001', raw_message={})
+    if condition == 'denied':
+        obj.config['platform_command_defaults'] = {'aiocqhttp': {'mode': '全部屏蔽'}}
+    elif condition == 'banned':
+        obj.db.get_group_ban.return_value = True
+    elif condition == 'db':
+        obj.db_ready = False
+    elif condition == 'disabled':
+        obj.config['official_queue_enabled'] = False
+    asyncio.run(obj.official_queue_cmd(ev))
+    ev.bot.call_action.assert_not_awaited()
+    assert not (tmp_path / 'onebot_call_all.json').exists()
+    if condition == 'denied':
+        ev.send.assert_not_awaited()
+        obj.db.get_group_ban.assert_not_awaited()
 
 
 @pytest.mark.parametrize('text', ['/帮助', '/确认关联 AABBCCDDEEFF0011', '/解除官方关联',

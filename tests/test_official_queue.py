@@ -41,6 +41,7 @@ def test_shared_keyboard_has_three_buttons_per_row_and_no_car_required_for_own_a
     assert buttons[4]['action']['data'] == '/解散'
     assert buttons[5]['action']['data'] == '/等车帮助'
     assert buttons[6]['action']['data'] == '/呼叫全体' and buttons[6]['action']['enter'] is True
+    assert buttons[6]['action']['reply'] is False
     assert all(b['action']['type'] == 2 and b['action']['permission']['type'] == 2 for b in buttons)
 
 

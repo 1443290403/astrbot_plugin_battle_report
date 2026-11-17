@@ -31,7 +31,7 @@ _LEGACY_GROUP_NUMBER_RE = re.compile(
 HELP = ('友谊等车流程喵～\n/友谊等车：开车或查看所有队伍\n/再开一车：新增队伍\n'
         '/进队等车 [车号]：加入\n/离队：退出当前队伍\n'
         '/发送群号 群号：通知同车成员并结束该车\n/解散：解散当前队伍\n'
-        '/呼叫全体：@全体成员摇人友谊，成功后同群冷却30分钟\n'
+        '/呼叫全体：由SnowLuma @全体摇人友谊，成功后同群冷却30分钟\n'
         '入队后自动定位你的队伍，不用填写车号。\n'
         '/等车ID 角色或参赛ID：关联原账号，首次用原 QQ /确认关联 确认码\n'
         '每4分钟统一广播；建队10分钟清理，首次满3人重新计10分钟并提醒接友谊。\n'
@@ -144,7 +144,7 @@ def keyboard(car=None, *, show_call_all=True):
         actions.append(('call_all', '呼叫全体', '/呼叫全体', True))
     buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
                 'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
-                           'enter': enter, 'reply': True, 'unsupport_tips': '请发送对应文字指令'}}
+                           'enter': enter, 'reply': key != 'call_all', 'unsupport_tips': '请发送对应文字指令'}}
                for key, label, data, enter in actions]
     return {'content': {'rows': [{'buttons': buttons[i:i + 3]} for i in range(0, len(buttons), 3)]}}
 

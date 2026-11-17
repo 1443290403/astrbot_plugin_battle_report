@@ -32,6 +32,7 @@ from . import chart, help_guide, lineup, stats
 from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
 from .official_queue import group_nickname as queue_group_nickname
 from .official_queue import require_receipt as require_queue_receipt
+from .onebot_call_all import OneBotCallAll
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .command_guard import command_candidates, is_command_message, message_text as command_message_text
 from . import platform_policy
@@ -137,7 +138,7 @@ class OfficialQueueFilter(CustomFilter):
             return False
         platform = name()
         # 官方平台统一在此分流：本插件只开放等车，不拦其他插件。
-        # OneBot 等车指令静默；其他群命令仅禁止默认 LLM，不终止插件分发。
+        # OneBot 仅呼叫全体可执行；其他等车指令静默，群命令禁止默认 LLM。
         if platform in QUEUE_PLATFORMS:
             return True
         prefixes = cfg.get('wake_prefix', [])
@@ -246,7 +247,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.34.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.35.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -255,6 +256,7 @@ class BattleReportPlugin(Star):
         self.db_ready = False
         self._review_inbox: ReviewInbox | None = None
         self._waiting_queues: WaitingQueues | None = None
+        self._onebot_call_all: OneBotCallAll | None = None
         self._waiting_task: asyncio.Task | None = None
         try:
             self.data_dir = StarTools.get_data_dir()
@@ -550,6 +552,9 @@ class BattleReportPlugin(Star):
             event.clear_result()
             return
         try:
+            if event.get_platform_name() == 'aiocqhttp' and command[0] == '呼叫全体':
+                await self._call_all_onebot(event, command[1])
+                return
             if event.get_platform_name() not in QUEUE_PLATFORMS:
                 return
             if command is None:
@@ -580,10 +585,43 @@ class BattleReportPlugin(Star):
                 scope, action, raw, uid, '' if name == uid else name,
                 str(event.message_obj.message_id or ''))
         except Exception:
+            if event.get_platform_name() == 'aiocqhttp':
+                logger.exception('OneBot 呼叫全体操作失败')
+                await event.send(event.plain_result('呼叫全体操作失败，请稍后重新发送指令喵。'))
+                return
             logger.exception("QQ 官方等车操作或面板发送失败")
             await event.send(event.plain_result("友谊等车操作或面板发送失败喵，请 /友谊等车 查看当前队列。"))
         finally:
             event.clear_result()
+
+    async def _call_all_onebot(self, event, raw):
+        if raw:
+            await event.send(event.plain_result('用法喵：/呼叫全体'))
+            return
+        scope = _review_scope(event)
+        group = str(event.get_group_id() or '')
+        if scope is None or not group.isascii() or not group.isdigit() or int(group) <= 0:
+            await event.send(event.plain_result('呼叫全体要在 SnowLuma 群聊里用喵。'))
+            return
+        if not self.config.get('official_queue_enabled', True):
+            await event.send(event.plain_result('友谊等车功能尚未启用喵。'))
+            return
+        err = await self._group_check(event)
+        if err:
+            await event.send(event.plain_result(err))
+            return
+        if getattr(self, '_onebot_call_all', None) is None:
+            self._onebot_call_all = OneBotCallAll(self.data_dir / 'onebot_call_all.json', log=logger)
+        async def send():
+            return await asyncio.wait_for(event.bot.call_action('send_group_msg',
+                self_id=int(scope[1]), group_id=int(group), message=[
+                    {'type': 'at', 'data': {'qq': 'all'}},
+                    {'type': 'text', 'data': {'text': '\n来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～'}},
+                ]), timeout=20)
+        prompt = await self._onebot_call_all.execute((*scope, group),
+            str(event.message_obj.message_id or ''), send)
+        if prompt:
+            await event.send(event.plain_result(prompt))
 
     def _official_appid(self, event):
         get_name = getattr(event, "get_platform_name", None)
