@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.34.1
+最新版本：v1.35.0
 
-- 文件：astrbot_plugin_battle_report-1.34.1.zip
-- 源码提交：d50d3b07fbfe2b3a450a96681a66e8e224ff076d
+- 文件：astrbot_plugin_battle_report-1.35.0.zip
+- 源码提交：dde0fb7a91a7f9d5c833ab9419c8f08a794348bf
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：e95456f712d3867031ac2e7d69306a539add73e829a02b55ea6372e19f64f6fb
+- SHA256：4f1f795083290b80955933621d0e2edc523f4957b209f555427619263c2c0d76
 
 旧版本安装包保留，按文件名选择。
 
@@ -296,3 +296,13 @@ WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日
 
 - [友谊等车与呼叫全体说明](OFFICIAL_QUEUE_GUIDE-1.34.1.md)
 - [可选独立站静态资源](battle-report-web-1.34.1.zip)（不能当AstrBot插件安装）
+
+## v1.35.0 平台默认权限与SnowLuma呼叫全体
+
+呼叫全体默认由SnowLuma/OneBot发送，QQ官方默认静默；保留官方按钮并取消引用原面板，官方协议自动@仍存在。SnowLuma确认消息回执后共享30分钟持久冷却，失败、超时或取消不占冷却且不自动补发。其他等车操作仍仅官方。新增QQ官方、SnowLuma/OneBot及其他平台直接可改的默认权限；连接专属规则优先，旧配置保留。旧官方规则已开放呼叫全体时需取消，并在OneBot专属规则开放以避免重复。
+
+1521项测试通过、12项跳过，另通过实际AstrBot v4.27.3及当前源码的144项注册/绑定/唤醒/分发与配置补齐/修改保留验证。未在真实QQ群测试按钮或@全体额度；SQL schema21、原官方队列JSONv2保持。
+
+- [平台默认权限配置](PLATFORM_COMMAND_GUIDE-1.35.0.md)
+- [友谊等车与呼叫全体](OFFICIAL_QUEUE_GUIDE-1.35.0.md)
+- [可选独立站静态资源](battle-report-web-1.35.0.zip)（不能当AstrBot插件安装）
