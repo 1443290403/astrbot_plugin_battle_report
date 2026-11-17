@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.35.0
+最新版本：v1.36.0
 
-- 文件：astrbot_plugin_battle_report-1.35.0.zip
-- 源码提交：dde0fb7a91a7f9d5c833ab9419c8f08a794348bf
+- 文件：astrbot_plugin_battle_report-1.36.0.zip
+- 源码提交：164c318c465f87b860e34767d894543051e89951
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：4f1f795083290b80955933621d0e2edc523f4957b209f555427619263c2c0d76
+- SHA256：5010ea125324cb4318743f824ba3426fc06d1ad3a3611a1909bc7514a9f033e8
 
 旧版本安装包保留，按文件名选择。
 
@@ -306,3 +306,15 @@ WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日
 - [平台默认权限配置](PLATFORM_COMMAND_GUIDE-1.35.0.md)
 - [友谊等车与呼叫全体](OFFICIAL_QUEUE_GUIDE-1.35.0.md)
 - [可选独立站静态资源](battle-report-web-1.35.0.zip)（不能当AstrBot插件安装）
+
+## v1.36.0 无@回调按钮与群映射
+
+呼叫全体改为原生type1回调按钮，点击不发送指令、不填输入框、不@机器人。通过呼叫全体群映射指定官方连接+群OpenID及SnowLuma连接+机器人QQ+实际QQ群号；后台核验目标账号、权限和群状态，使用现有可信SDK互动事件，不新增公网入口。按钮与手动命令共享成功后30分钟冷却，失败不占冷却、不自动补发，新面板按映射隐藏冷却中的按钮。其他按钮及原队列保持。
+
+更新后配置群映射、重启AstrBot，并重新发送/友谊等车获得新按钮；Webhook需在开放平台订阅INTERACTION_CREATE。旧消息不会自动更换按钮。
+
+1555项测试通过、12项跳过；另通过实际qq-botpy1.2.1原始回调解析/分发/互动回应的WS和Webhook 2项验证，以及AstrBot v4.27.3/当前参考源码144项注册/唤醒/分发及配置补齐验证。全部QQ/DB I/O模拟，未在真实QQ群验证。SQL schema21、官方队列JSONv2及OneBot冷却JSONv1不变。
+
+- [群映射及互动订阅配置](OFFICIAL_QUEUE_GUIDE-1.36.0.md)
+- [平台默认权限配置](PLATFORM_COMMAND_GUIDE-1.36.0.md)
+- [可选独立站静态资源](battle-report-web-1.36.0.zip)（不能当AstrBot插件安装）
