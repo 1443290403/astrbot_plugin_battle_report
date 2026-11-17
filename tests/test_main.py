@@ -212,6 +212,21 @@ def test_callback_button_sends_via_onebot_without_user_message_and_shares_comman
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('reply', ['', ' \r\n', None, '{}', '{"code":0}', {'code':'0'}])
+def test_callback_sdk_successful_empty_ack_continues_to_onebot_and_shared_cooldown(callback_setup, reply):
+    obj, source, bot, _, payload = callback_setup
+    source.client.api.on_interaction_result.return_value = reply
+    async def run():
+        await source.client.on_interaction_create(payload())
+        assert [c.args[0] for c in bot.call_action.await_args_list] == ['get_login_info','send_group_msg']
+        assert bot.call_action.await_args.kwargs['message'][0] == {'type':'at','data':{'qq':'all'}}
+        assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) > 0
+        await source.client.on_interaction_create(payload('second-click'))
+        assert bot.call_action.await_count == 2
+        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 2
+    asyncio.run(run())
+
+
 def test_callback_retries_need_new_interaction_and_failures_never_start_cooldown(callback_setup):
     obj, source, bot, _, payload = callback_setup
     attempts = [0]

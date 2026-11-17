@@ -1,6 +1,7 @@
 """QQ 可信客户端互动回调接入；不增加公开路由，不生成用户消息。"""
 import asyncio
 import inspect
+import json
 import re
 import time
 
@@ -17,6 +18,30 @@ def field(obj, name, default=None):
 def owns(interaction):
     resolved = field(field(interaction, 'data'), 'resolved')
     return field(resolved, 'button_data') == CALL_ALL_CALLBACK
+
+
+def validate_ack_response(result):
+    """botpy仅在HTTP成功时返回；204可为''，带charset的JSON也可能为文本。"""
+    if result is None:
+        return
+    if isinstance(result, str):
+        if not result.strip():
+            return
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError('QQ互动回应不是有效JSON') from error
+    if not isinstance(result, dict):
+        raise RuntimeError('QQ互动回应格式未确认')
+    if result.get('status') == 'failed':
+        raise RuntimeError('QQ互动回应返回失败状态')
+    for key in ('code', 'err_code', 'retcode'):
+        if key not in result:
+            continue
+        value = result[key]
+        if not ((type(value) is int and value == 0) or (isinstance(value, str) and value.strip() == '0')):
+            code = str(value) if type(value) is int else '非零或无效值'
+            raise RuntimeError(f'QQ互动回应未确认，{key}={code}')
 
 
 def callback_identity(platform, interaction):
@@ -120,10 +145,8 @@ class QueueCallbackHooks:
         self.acknowledged[key] = now
         result = await asyncio.wait_for(platform.client.api.on_interaction_result(
             interaction_id=interaction_id, code=code), timeout=3)
-        if (result is not None and not isinstance(result, dict)) or (isinstance(result, dict) and (
-                result.get('status') == 'failed'
-                or any(result.get(k, 0) != 0 for k in ('code', 'err_code', 'retcode')))):
-            raise RuntimeError('QQ互动回应未确认')
+        validate_ack_response(result)
+        self.log.info('呼叫全体互动回应已确认：AppID=%s，回应码=%s', platform.appid, code)
         return True
 
     def restore(self, key):

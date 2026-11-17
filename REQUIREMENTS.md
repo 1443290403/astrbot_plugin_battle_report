@@ -443,6 +443,8 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 
 核对结果GET在原分类记录上按胜负过滤后再分页，不重抓网站、不重算完整分类统计；任一侧记录命中就保留整组对照。网站侧用winner/loser（新JSON增加loser），旧历史无loser时按已解析双方与展示胜方判断，无法判断则只在全部显示；本地侧按原核对展示胜方。上方统计及JSON下载仍保留完整任务范围，UI标明列表筛选状态。不得因筛选拆散不一致的双方原文，也不得写入本地比赛、指纹或人工发送标记。
 
+**互动回应格式兼容（v1.36.1）：** 用户现场已收到SDK互动事件、通过映射与前置权限，但acknowledge以“QQ互动回应未确认”阻断，未调用OneBot且未进入冷却。按实际qq-botpy1.2.1 _handle_response复现：HTTP成功码200/202/204中，非精确application/json的Content-Type会走text，204无正文为''，application/json; charset=utf-8会返回JSON字符串；旧版只允许None/字典而误判。新增validate_ack_response：None/空白字符串成功，非空字符串解析为JSON对象，字典的code/err_code/retcode只允许整数0或文本0；失败状态、非零/无效码、无效文本/非对象仍拒绝。SDK抛出的HTTP错误/网络异常/超时不转换为成功；原3秒ACK限时、一次回应、幂等、权限/群/账号复核与成功消息ID才计冷却不变。ACK成功只新增不含响应原文的INFO日志，不据此宣称全体已送达。旧群映射与状态无需迁移。
+
 **无@回调按钮（v1.36.0，覆盖v1.35.0按钮行为）：** 呼叫按钮action.type=1，data为固定命名空间battle_report:queue:call_all:v1，不带enter/reply，不生成用户消息或假指令，其他六个按钮仍type=2。新配置official_queue_call_all_routes为template_list：enabled/name、official_platform_id、official_group_openid、onebot_platform_id、onebot_self_id、onebot_group_id。以原官方连接+group_openid精确唯一匹配，目标必须为OneBot及指定数字机器人QQ/QQ群号；缺失、重复、禁用或无效映射拒绝，不能从点击数据指定目标。默认空映射，需要用户在同群两端/sid取得连接及群ID后配置，不推测两种群标识的关系。
 
 QueueCallbackHooks只挂接现有可信qq-botpy客户端的on_interaction_create，无新增HTTP入口或全局SDK修改；WebSocket保持原鉴权，Webhook保留核心验签。initialize、on_platform_loaded、on_astrbot_loaded及定时循环同步实例；on_platform_loaded在SDK登录任务运行前加入INTERACTION=1<<26订阅，热安装已登录客户端需重启，Webhook需开放平台订阅互动事件。只截获本插件button_data，其他回调交原处理器；重复同步不叠加，卸载恢复原处理器并取消/等待在途任务后再关DB。原core按会话权限过滤/聊天/其他插件不变。
@@ -1661,3 +1663,7 @@ v1.34.1 呼叫全体修复：现场2026-11-10北京时间16:37的QQ HTTP400返�
 - test_queue_callback：SDK对象/原始字段、映射格式拒绝、透传其他按钮、订阅、重复挂接/移除/卸载及在途取消。
 - test_main：原生type1、原SDKACK、OneBot目标核验、按钮/命令/重启共享冷却、新面板隐藏及不变更原键盘、并发只发一次、失败不冷却、无映射/重复映射/权限/禁群/账号/ACK失败不发全体；发送前权限和映射变化复核。
 - 默认回归1555项通过、12项跳过。另通过真实qq-botpy1.2.1 ConnectionSession.parser→Interaction→Client.ws_dispatch→插件→BotAPI.on_interaction_result的WS/Webhook 2项检查，以及AstrBot v4.27.3/当前参考源码144项注册/绑定/唤醒/分发与配置补齐验证。所有外部QQ/DB I/O为模拟，不代表真实QQ客户端/平台额度实机结果。
+
+### v1.36.1 互动成功回应兼容
+
+默认测试1585项通过、12项跳过。新增空/空白/None/JSON对象/JSON文本/字符串零码的归一化验证，明确错误码/失败状态/非法响应保留拒绝；插件回调空ACK后只发送一次全体并共享冷却。另用原qq-botpy1.2.1 _handle_response、BotAPI.on_interaction_result、ConnectionSession解析和Client分发验证25项场景：WS/Webhook下HTTP200/202/204、空正文/Content-Type charset JSON文本/零码成功，HTTP400、JSON错误码、无效文本及失败状态不调用OneBot且不冷却，并直接运行v1.36.0原ACK方法复现同一个RuntimeError。外部QQ及DB传输均为模拟；不声称已在用户服务器验证。

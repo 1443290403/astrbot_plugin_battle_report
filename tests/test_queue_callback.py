@@ -4,8 +4,22 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from queue_callback import QueueCallbackHooks, callback_identity, mapped_group, owns
+from queue_callback import QueueCallbackHooks, callback_identity, mapped_group, owns, validate_ack_response
 from official_queue import CALL_ALL_CALLBACK
+
+
+@pytest.mark.parametrize('reply', [None, '', ' \r\n', {}, '{}', {'code':0}, {'code':'0'},
+    '{"code":0,"err_code":"0"}', {'code':0,'err_code':0,'retcode':'0'}])
+def test_sdk_successful_empty_or_json_text_ack_is_accepted(reply):
+    validate_ack_response(reply)
+
+
+@pytest.mark.parametrize('reply', ['not json', '[]', 'null', '0', [], False, b'',
+    {'code':630003}, '{"code":630003}', {'code':'630003'}, {'code':None}, {'code':False},
+    {'code':0,'err_code':630002}, {'status':'failed'}, '{"status":"failed","code":0}'])
+def test_ack_errors_and_unknown_shapes_remain_rejected(reply):
+    with pytest.raises(RuntimeError):
+        validate_ack_response(reply)
 
 
 def test_sdk_objects_and_raw_payloads_keep_actual_interaction_id():
