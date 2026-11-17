@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.36.1
+最新版本：v1.36.2
 
-- 文件：astrbot_plugin_battle_report-1.36.1.zip
-- 源码提交：0537313cafa916bc1c12a27cc86f7e3776c15479
+- 文件：astrbot_plugin_battle_report-1.36.2.zip
+- 源码提交：bb65b84f928e480c69cbe8b65daa14e03f06428c
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：fd7fb542bde3df0e5e7e9e3d5edfc9405cbc41ecd9c07a117a4e4babe832fc04
+- SHA256：c07f1ad03295a17cdca42e76bc780b6a0f6407064312a7dbeb364691af8d00f0
 
 旧版本安装包保留，按文件名选择。
 
@@ -328,3 +328,13 @@ WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日
 - [等车与回调说明](OFFICIAL_QUEUE_GUIDE-1.36.1.md)
 - [平台默认权限配置](PLATFORM_COMMAND_GUIDE-1.36.1.md)
 - [可选独立站静态资源](battle-report-web-1.36.1.zip)（不能当AstrBot插件安装）
+
+## v1.36.2 呼叫全体剩余冷却提示
+
+冷却中点击呼叫全体按钮，改为正常互动回应0，SnowLuma在群里回复“呼叫全体冷却中，还需18分32秒喵。”。QQ固定回调弹窗无法自定义，此处通过普通text消息显示实际剩余时间；不@、不延长冷却、不自动重发。核验账号、映射、权限和群禁用后重新计算时间；点击时冷却未结束，即使ACK或核验期间到期，也只提示可再次点击，不自动再次呼叫。按钮与手动命令共用格式及持久化冷却，旧配置/映射/回调按钮可继续使用。
+
+1593项测试通过、12项跳过，另通过25项实际qq-botpy HTTP/API/解析/分发验证，包含再次点击只发普通文字、回应0且截止不变，以及错误回应仍不发送。外部QQ及DB I/O模拟，未在真实QQ群验证；无SQL或JSON迁移。
+
+- [等车与回调说明](OFFICIAL_QUEUE_GUIDE-1.36.2.md)
+- [平台权限配置](PLATFORM_COMMAND_GUIDE-1.36.2.md)
+- [可选独立站静态资源](battle-report-web-1.36.2.zip)（不能当AstrBot插件安装）
