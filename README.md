@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.36.0
+最新版本：v1.36.1
 
-- 文件：astrbot_plugin_battle_report-1.36.0.zip
-- 源码提交：164c318c465f87b860e34767d894543051e89951
+- 文件：astrbot_plugin_battle_report-1.36.1.zip
+- 源码提交：0537313cafa916bc1c12a27cc86f7e3776c15479
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：5010ea125324cb4318743f824ba3426fc06d1ad3a3611a1909bc7514a9f033e8
+- SHA256：fd7fb542bde3df0e5e7e9e3d5edfc9405cbc41ecd9c07a117a4e4babe832fc04
 
 旧版本安装包保留，按文件名选择。
 
@@ -318,3 +318,13 @@ WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日
 - [群映射及互动订阅配置](OFFICIAL_QUEUE_GUIDE-1.36.0.md)
 - [平台默认权限配置](PLATFORM_COMMAND_GUIDE-1.36.0.md)
 - [可选独立站静态资源](battle-report-web-1.36.0.zip)（不能当AstrBot插件安装）
+
+## v1.36.1 互动成功回应格式兼容
+
+修复点击已进入SDK与群映射后报“QQ互动回应未确认”、未执行SnowLuma的问题。qq-botpy成功HTTP204可返回空字符串，JSON带charset可返回JSON文本；现按合法成功格式归一化，兼容文本零码，明确错误码/失败状态/非法内容/HTTP异常/超时仍拒绝，失败不进入冷却且不重试。新增互动确认INFO日志，最终冷却仍依赖OneBot消息ID。
+
+1585项测试通过、12项跳过，另通过实际qq-botpy1.2.1 HTTP解码/API/解析/分发的25项验证，并运行原v1.36.0代码复现成功HTTP204下的同一报错；外部QQ和DB传输均模拟。已有群映射与回调按钮保留，更新重载后可直接重试，无SQL或状态迁移。
+
+- [等车与回调说明](OFFICIAL_QUEUE_GUIDE-1.36.1.md)
+- [平台默认权限配置](PLATFORM_COMMAND_GUIDE-1.36.1.md)
+- [可选独立站静态资源](battle-report-web-1.36.1.zip)（不能当AstrBot插件安装）
