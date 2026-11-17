@@ -88,7 +88,7 @@ def plugin_module(monkeypatch):
     module('astrbot.api', AstrBotConfig=dict, logger=logging.getLogger('test_plugin'))
     module('astrbot.api.event', AstrMessageEvent=object, filter=SimpleNamespace(
         command=command, llm_tool=llm_tool, custom_filter=custom_filter,
-        on_astrbot_loaded=lambda: lambda fn: fn))
+        on_astrbot_loaded=lambda: lambda fn: fn, on_platform_loaded=lambda: lambda fn: fn))
     module('astrbot.api.event.filter', CustomFilter=CustomFilter)
     module('astrbot.api.message_components', **{
         name: type(name, (Component,), {}) for name in ['At', 'File', 'Image', 'Node', 'Nodes', 'Plain', 'Reply']})
@@ -139,6 +139,7 @@ def event(text='', group='100', admin=False, messages=None):
 
 def plugin(mod, tmp_path):
     obj = object.__new__(mod.BattleReportPlugin)
+    obj.context = SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[]))
     obj.config = {'min_duels': 1}
     obj.data_dir = tmp_path
     obj.db_ready = True
@@ -155,6 +156,160 @@ def plugin(mod, tmp_path):
 
 async def collect(generator):
     return [value async for value in generator]
+
+
+@pytest.fixture
+def callback_setup(plugin_module, tmp_path):
+    obj = plugin(plugin_module, tmp_path)
+    source = SimpleNamespace(appid='app-A', meta=lambda: SimpleNamespace(name='qq_official', id='official-A'),
+        client=SimpleNamespace(intents=0, _connection=None, api=SimpleNamespace(
+            on_interaction_result=AsyncMock(return_value={}), post_group_message=AsyncMock())))
+    async def call(action, **kwargs):
+        return {'user_id': 90001} if action == 'get_login_info' else {'message_id': 77}
+    bot = SimpleNamespace(call_action=AsyncMock(side_effect=call))
+    target = SimpleNamespace(meta=lambda: SimpleNamespace(name='aiocqhttp', id='snow-A'), get_client=lambda: bot)
+    platforms = {'official-A': source, 'snow-A': target}
+    obj.context = SimpleNamespace(get_platform_inst=platforms.get,
+        platform_manager=SimpleNamespace(platform_insts=list(platforms.values())))
+    row = dict(official_platform_id='official-A', official_group_openid='group-openid',
+        onebot_platform_id='snow-A', onebot_self_id='90001', onebot_group_id='100001', enabled=True)
+    obj.config['official_queue_call_all_routes'] = [row]
+    obj._sync_queue_callbacks()
+    def payload(id='interaction-1'):
+        return dict(id=id, event_id='INTERACTION_CREATE:outer-id', application_id='app-A', type=11,
+            scene='group', chat_type=1, group_openid='group-openid', group_member_openid='member-openid',
+            data={'type': 11, 'resolved': {'button_id': 'call_all',
+                  'button_data': plugin_module.callback_identity.__globals__['CALL_ALL_CALLBACK']}})
+    return obj, source, bot, row, payload
+
+
+def test_callback_button_sends_via_onebot_without_user_message_and_shares_command_cooldown(callback_setup):
+    obj, source, bot, _, payload = callback_setup
+    async def run():
+        await source.client.on_interaction_create(payload())
+        source.client.api.on_interaction_result.assert_awaited_once_with(interaction_id='interaction-1', code=0)
+        source.client.api.post_group_message.assert_not_awaited()
+        assert [c.args[0] for c in bot.call_action.await_args_list] == ['get_login_info', 'send_group_msg']
+        message = bot.call_action.await_args.kwargs['message']
+        assert message[0] == {'type': 'at', 'data': {'qq': 'all'}}
+        assert bot.call_action.await_args.kwargs['group_id'] == 100001
+        await source.client.on_interaction_create(payload('interaction-2'))
+        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 2
+        assert bot.call_action.await_count == 2
+        ev = event('/呼叫全体', group='100001')
+        ev.get_platform_name = lambda: 'aiocqhttp'
+        ev.get_platform_id = lambda: 'snow-A'
+        ev.get_self_id = lambda: '90001'
+        ev.message_obj = SimpleNamespace(message_id='manual-new')
+        ev.bot = bot
+        await obj.official_queue_cmd(ev)
+        assert '冷却中' in ev.send.await_args.args[0]
+        assert bot.call_action.await_count == 2
+        obj._onebot_call_all = None
+        await source.client.on_interaction_create(payload('after-restart'))
+        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 2
+        assert bot.call_action.await_count == 2
+    asyncio.run(run())
+
+
+def test_callback_retries_need_new_interaction_and_failures_never_start_cooldown(callback_setup):
+    obj, source, bot, _, payload = callback_setup
+    attempts = [0]
+    async def call(action, **kwargs):
+        if action == 'get_login_info':
+            return {'user_id': 90001}
+        if kwargs['message'][0]['type'] == 'at':
+            attempts[0] += 1
+            if attempts[0] == 1:
+                raise TimeoutError()
+        return {'message_id': 77}
+    bot.call_action.side_effect = call
+    async def run():
+        await source.client.on_interaction_create(payload())
+        assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) == 0
+        assert '未进入冷却' in bot.call_action.await_args.kwargs['message'][0]['data']['text']
+        await source.client.on_interaction_create(payload())
+        assert attempts[0] == 1
+        source.client.api.on_interaction_result.assert_awaited_once()
+        await source.client.on_interaction_create(payload('new-click'))
+        assert attempts[0] == 2
+        assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) > 0
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('condition', ['missing', 'duplicate', 'disabled_route', 'wrong_source', 'wrong_appid',
+    'private', 'invalid_member', 'official_denied', 'onebot_denied', 'disabled', 'db', 'banned_source',
+    'banned_target', 'wrong_account', 'ack_timeout', 'ack_error', 'wrong_target_adapter'])
+def test_callback_invalid_mapping_permissions_or_transport_cannot_send_all(callback_setup, condition):
+    obj, source, bot, row, payload = callback_setup
+    data = payload()
+    if condition == 'missing': obj.config['official_queue_call_all_routes'] = []
+    elif condition == 'duplicate': obj.config['official_queue_call_all_routes'].append(dict(row))
+    elif condition == 'disabled_route': row['enabled'] = False
+    elif condition == 'wrong_source': row['official_platform_id'] = 'other-connection'
+    elif condition == 'wrong_appid': data['application_id'] = 'other-app'
+    elif condition == 'private': data.update(scene='c2c', chat_type=2)
+    elif condition == 'invalid_member': data.pop('group_member_openid')
+    elif condition == 'official_denied': obj.config['platform_command_defaults'] = {'qq_official': {'mode':'全部屏蔽'}}
+    elif condition == 'onebot_denied': obj.config['platform_command_defaults'] = {'aiocqhttp': {'mode':'全部屏蔽'}}
+    elif condition == 'disabled': obj.config['official_queue_enabled'] = False
+    elif condition == 'db': obj.db_ready = False
+    elif condition.startswith('banned_'):
+        obj.db.get_group_ban.side_effect = lambda gid: gid == ('group-openid' if condition == 'banned_source' else '100001')
+    elif condition == 'wrong_account': bot.call_action.side_effect = lambda *a,**k: {'user_id':11111}
+    elif condition == 'ack_timeout': source.client.api.on_interaction_result.side_effect = TimeoutError()
+    elif condition == 'ack_error': source.client.api.on_interaction_result.return_value = {'code':630003}
+    elif condition == 'wrong_target_adapter': row['onebot_platform_id'] = 'official-A'
+    asyncio.run(source.client.on_interaction_create(data))
+    assert not any(c.args[0] == 'send_group_msg' for c in bot.call_action.await_args_list)
+    service = getattr(obj, '_onebot_call_all', None)
+    assert not service or service.remaining(('snow-A','90001','100001')) == 0
+
+
+def test_parallel_callback_clicks_only_send_one_all_mention(callback_setup):
+    obj, source, bot, _, payload = callback_setup
+    async def run():
+        await asyncio.gather(*(source.client.on_interaction_create(payload('click-'+str(i))) for i in range(5)))
+        assert sum(c.args[0] == 'send_group_msg' for c in bot.call_action.await_args_list) == 1
+        assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) > 0
+    asyncio.run(run())
+
+
+def test_callback_cooldown_hides_button_in_subsequent_official_panels(callback_setup, plugin_module):
+    obj, source, _, row, payload = callback_setup
+    source.client.api.post_group_message.return_value = {'id': 'panel-id'}
+    queue = importlib.import_module(plugin_module.WaitingQueues.__module__)
+    async def run():
+        await source.client.on_interaction_create(payload())
+        original = queue.keyboard()
+        await obj._send_waiting_message(('official-A','app-A','group-openid'), 'panel', original, {})
+        buttons = source.client.api.post_group_message.await_args.kwargs['keyboard']['content']['rows']
+        assert [len(r['buttons']) for r in buttons] == [3,3]
+        assert not any(b['id']=='call_all' for r in buttons for b in r['buttons'])
+        assert any(b['id']=='call_all' for r in original['content']['rows'] for b in r['buttons'])
+        room = obj._get_onebot_call_all().state['rooms'][obj._onebot_call_all.key(('snow-A','90001','100001'))]
+        room['until'] = 0
+        await obj._send_waiting_message(('official-A','app-A','group-openid'), 'panel', original, {})
+        rows = source.client.api.post_group_message.await_args.kwargs['keyboard']['content']['rows']
+        assert rows[-1]['buttons'][0]['id'] == 'call_all'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('change', ['route', 'target_permission', 'source_permission', 'ban', 'disabled'])
+def test_callback_rechecks_authorization_after_login_before_sending(callback_setup, change):
+    obj, source, bot, row, payload = callback_setup
+    async def call(action, **kwargs):
+        assert action == 'get_login_info'
+        if change == 'route': row['onebot_group_id'] = '999999'
+        elif change == 'target_permission': obj.config['platform_command_defaults'] = {'aiocqhttp': {'mode':'全部屏蔽'}}
+        elif change == 'source_permission': obj.config['platform_command_defaults'] = {'qq_official': {'mode':'全部屏蔽'}}
+        elif change == 'ban': obj.db.get_group_ban.return_value = True
+        elif change == 'disabled': obj.config['official_queue_enabled'] = False
+        return {'user_id':90001}
+    bot.call_action.side_effect = call
+    asyncio.run(source.client.on_interaction_create(payload()))
+    bot.call_action.assert_awaited_once()
+    assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) == 0
 
 
 def ranking_with_llm(mod, tmp_path, text='/排行 七月'):
@@ -2520,7 +2675,7 @@ def test_call_all_uses_native_official_markdown_and_selected_permission(official
         assert '**友谊等车**' in text and '当前没有队伍喵。' in text
         rows = params['keyboard']['content']['rows']
         assert [len(row['buttons']) for row in rows] == [3, 3]
-        assert all(button['action']['data'] != '/呼叫全体' for row in rows for button in row['buttons'])
+        assert all(button['id'] != 'call_all' for row in rows for button in row['buttons'])
         ev.message_obj.message_id = 'incoming-2'
         await obj.official_queue_cmd(ev)
         assert api.post_group_message.await_count == 2
@@ -2561,7 +2716,7 @@ def test_call_all_official_send_failure_has_no_cooldown_and_explicit_retry_works
         assert api.post_group_message.await_count==3
         assert service.room(scope)['call_all_until']>service.clock()
         rows=api.post_group_message.await_args.kwargs['keyboard']['content']['rows']
-        assert all(b['action']['data']!='/呼叫全体' for r in rows for b in r['buttons'])
+        assert all(b['id']!='call_all' for r in rows for b in r['buttons'])
     asyncio.run(run())
 
 

@@ -40,9 +40,10 @@ def test_shared_keyboard_has_three_buttons_per_row_and_no_car_required_for_own_a
     assert buttons[2]['action']['data'] == '/发送群号 ' and buttons[2]['action']['enter'] is False
     assert buttons[4]['action']['data'] == '/解散'
     assert buttons[5]['action']['data'] == '/等车帮助'
-    assert buttons[6]['action']['data'] == '/呼叫全体' and buttons[6]['action']['enter'] is True
-    assert buttons[6]['action']['reply'] is False
-    assert all(b['action']['type'] == 2 and b['action']['permission']['type'] == 2 for b in buttons)
+    assert buttons[6]['action']['data'] == queue.CALL_ALL_CALLBACK
+    assert buttons[6]['action']['type'] == 1
+    assert 'enter' not in buttons[6]['action'] and 'reply' not in buttons[6]['action']
+    assert all(b['action']['type'] == 2 and b['action']['permission']['type'] == 2 for b in buttons[:6])
 
 
 def test_all_cars_in_one_compact_panel_members_on_one_logical_line_without_stats(setup_queue):
@@ -484,7 +485,7 @@ def test_call_all_button_hidden_until_cooldown_expires_across_refresh_and_restar
     async def scenario():
         await act()
         baseline = actions()
-        assert baseline[-1] == '/呼叫全体'
+        assert baseline[-1] == queue.CALL_ALL_CALLBACK
         await act('呼叫全体')
         assert actions() == baseline[:-1]
         await act('等车')
@@ -494,7 +495,7 @@ def test_call_all_button_hidden_until_cooldown_expires_across_refresh_and_restar
         clock[0] = 240
         await service.tick()
         original_panels = [c for c in send.await_args_list if c.args[0] == SCOPE and c.args[2]]
-        assert all(b['action']['data'] != '/呼叫全体'
+        assert all(b['action']['data'] != queue.CALL_ALL_CALLBACK
                    for row in original_panels[-1].args[2]['content']['rows'] for b in row['buttons'])
         restored = queue.WaitingQueues(service.path, send, service.profile, service.bind, clock=lambda: clock[0])
         await restored.execute(SCOPE, '等车', '', 'u1', '云玩家', 'restart')
@@ -646,7 +647,7 @@ def test_confirmed_call_all_starts_cooldown_at_receipt_time(setup_queue):
     assert service.room(SCOPE)['call_all_until']==1817
     restored=queue.WaitingQueues(service.path,None,None,None)
     assert restored.room(SCOPE)['call_all_until']==1817
-    assert all(b['action']['data']!='/呼叫全体' for r in send.await_args.args[2]['content']['rows'] for b in r['buttons'])
+    assert all(b['action']['data']!=queue.CALL_ALL_CALLBACK for r in send.await_args.args[2]['content']['rows'] for b in r['buttons'])
 
 
 def test_confirmed_call_all_keeps_runtime_cooldown_if_saving_receipt_fails(setup_queue,monkeypatch):
@@ -680,7 +681,7 @@ def test_call_all_quota_failure_reports_actual_reason_and_keeps_button_available
         assert '权限' not in texts(send)[-1]
         send.side_effect=None
         await act('等车')
-        assert any(b['action']['data']=='/呼叫全体' for r in send.await_args.args[2]['content']['rows'] for b in r['buttons'])
+        assert any(b['action']['data']==queue.CALL_ALL_CALLBACK for r in send.await_args.args[2]['content']['rows'] for b in r['buttons'])
         assert not service.room(SCOPE).get('call_all_until')
     asyncio.run(run())
 

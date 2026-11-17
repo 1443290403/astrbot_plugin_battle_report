@@ -52,6 +52,10 @@ class OneBotCallAll:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
+    def remaining(self, scope):
+        room = self.state['rooms'].get(self.key(scope), {})
+        return max(0, math.ceil(room.get('until', 0) - self.clock()))
+
     async def execute(self, scope, message_id, send):
         """返回必要提示；None 表示已发送或重复事件。send 必须返回 OneBot 消息回执。"""
         key = self.key(scope)

@@ -443,11 +443,19 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 
 核对结果GET在原分类记录上按胜负过滤后再分页，不重抓网站、不重算完整分类统计；任一侧记录命中就保留整组对照。网站侧用winner/loser（新JSON增加loser），旧历史无loser时按已解析双方与展示胜方判断，无法判断则只在全部显示；本地侧按原核对展示胜方。上方统计及JSON下载仍保留完整任务范围，UI标明列表筛选状态。不得因筛选拆散不一致的双方原文，也不得写入本地比赛、指纹或人工发送标记。
 
+**无@回调按钮（v1.36.0，覆盖v1.35.0按钮行为）：** 呼叫按钮action.type=1，data为固定命名空间battle_report:queue:call_all:v1，不带enter/reply，不生成用户消息或假指令，其他六个按钮仍type=2。新配置official_queue_call_all_routes为template_list：enabled/name、official_platform_id、official_group_openid、onebot_platform_id、onebot_self_id、onebot_group_id。以原官方连接+group_openid精确唯一匹配，目标必须为OneBot及指定数字机器人QQ/QQ群号；缺失、重复、禁用或无效映射拒绝，不能从点击数据指定目标。默认空映射，需要用户在同群两端/sid取得连接及群ID后配置，不推测两种群标识的关系。
+
+QueueCallbackHooks只挂接现有可信qq-botpy客户端的on_interaction_create，无新增HTTP入口或全局SDK修改；WebSocket保持原鉴权，Webhook保留核心验签。initialize、on_platform_loaded、on_astrbot_loaded及定时循环同步实例；on_platform_loaded在SDK登录任务运行前加入INTERACTION=1<<26订阅，热安装已登录客户端需重启，Webhook需开放平台订阅互动事件。只截获本插件button_data，其他回调交原处理器；重复同步不叠加，卸载恢复原处理器并取消/等待在途任务后再关DB。原core按会话权限过滤/聊天/其他插件不变。
+
+业务验证type11、group场景、d.id、group_openid、group_member_openid与可选AppID匹配原连接；不可用网关event_id或带INTERACTION_CREATE前缀的ID替代互动ID。按AppID+互动ID在回应前去重，调用原SDK on_interaction_result（PUT /interactions/{id}），3秒限时、只回应一次，失败不发送。无效配置回应1、无权限4、已有冷却2；0仅确认收到点击，不代表业务通知成功。官方至少开放一项等车入口、目标OneBot需允许呼叫全体，保留等车总开关、DB、源和目标禁群检查；get_login_info核验指定账号，发送前再次核验映射/连接/权限/群状态，变化即取消。无管理员点击要求，与原公开呼叫入口一致。
+
+回调使用与手动命令相同OneBotCallAll实例/文件/作用域，事件键qqinteraction:AppID:互动ID，成功回执后30分钟冷却，失败/超时/取消/缺回执不占冷却，不自动补发。后续官方面板按显式映射读取OneBot冷却并移除call_all按钮，保留原键盘对象与其他按钮，不多发面板；到期后下次刷新恢复。旧历史消息无法改按钮类型，需重新/友谊等车；旧回调冷却中仅互动回应频繁。SnowLuma仍只发送邀请，官方原车次/计时/存档/广播与SQL schema21不变。
+
 **平台默认权限与SnowLuma呼叫全体（v1.35.0，覆盖旧版默认范围）：** 新增固定object配置platform_command_defaults，qq_official（WS/Webhook共用）、aiocqhttp、other各有mode与allowed_commands，实际默认勾选直接呈现，schema默认由AstrBot自动补齐，不创建虚假的连接ID规则。连接专属platform_command_profiles仍首个精确匹配优先，完整替代而非合并默认项；升级不覆写已有规则。缺字段兼容内置默认，显式非法模式/字段拒绝；运行时实时读取，构造期前置过滤与路由、动态轮次、AI工具继续同权限。默认官方只等车且排除呼叫全体；OneBot保留原范围并新增呼叫全体；其他平台保留通用范围。呼叫全体仅OneBot/官方可用，其他队列操作仍仅官方；原OneBot专属能力限制不变。
 
-SnowLuma呼叫全体沿高优先级自定义路由精确匹配裸指令或/指令，无需is_at_or_wake_command；保留平台权限、私聊、DB、禁群、等车总开关检查，以原event.bot/self_id/group_id调用send_group_msg，typed at.qq=all加文本。只接受有效非零message_id及成功状态；按平台连接ID+机器人QQ+群号锁隔离，独立JSONv1文件onebot_call_all.json，发送前原子保存最近200条事件ID、失败则不发送；成功回执后计1800秒并保存，磁盘失败保留进程内冷却。失败/超时/取消/无回执不占冷却，无后台重试，同消息不重放，新消息允许手动重试。不能把OpenID当QQ群号或猜测两端群映射，SnowLuma只发邀请，原官方队列及通知存档不变。官方面板保留呼叫按钮，SnowLuma冷却由重复点击提示剩余时间；手动重新开放的官方入口保留完整面板及原冷却隐藏规则。旧专属配置若两端均开放，需用户取消一侧以免重复。SnowLuma仍受账号权限及QQ额度限制。
+SnowLuma呼叫全体沿高优先级自定义路由精确匹配裸指令或/指令，无需is_at_or_wake_command；保留平台权限、私聊、DB、禁群、等车总开关检查，以原event.bot/self_id/group_id调用send_group_msg，typed at.qq=all加文本。只接受有效非零message_id及成功状态；按平台连接ID+机器人QQ+群号锁隔离，独立JSONv1文件onebot_call_all.json，发送前原子保存最近200条事件ID、失败则不发送；成功回执后计1800秒并保存，磁盘失败保留进程内冷却。失败/超时/取消/无回执不占冷却，无后台重试，同消息不重放，新消息允许手动重试。不能把OpenID当QQ群号或猜测两端群映射，SnowLuma只发邀请，原官方队列及通知存档不变。v1.36.0起官方面板按显式映射隐藏SnowLuma冷却中的呼叫按钮；手动重新开放的官方入口保留完整面板及原冷却隐藏规则。旧专属配置若两端均开放，需用户取消一侧以免重复。SnowLuma仍受账号权限及QQ额度限制。
 
-QQ官方文档type=2按钮强制插入@bot data，reply控制引用，无不@参数。用户明确选择保留按钮，呼叫按钮reply=false取消引用，enter=true发送/呼叫全体；官方默认静默，OneBot读取顶层Plain命令并处理，不改原消息链或全局唤醒标志。不得伪造skip_at_bot字段或把取消引用描述成取消@。
+QQ官方文档type=2按钮强制插入@bot data，reply控制引用，无不@参数。v1.35.0仅取消引用仍会自动@，v1.36.0按用户授权改为type1回调；官方默认静默，OneBot读取顶层Plain命令并处理，不改原消息链或全局唤醒标志。不得伪造skip_at_bot字段或把取消引用描述成取消@。
 
 **平台指令配置（v1.27.0）：** platform_command_profiles 为命名 template_list，每项包含 platform_ids 精确连接ID列表、mode（仅开放勾选指令/全部开放/全部屏蔽）及 allowed_commands 多选。首个匹配项生效，空目标不匹配，未匹配连接使用v1.35.0平台默认权限；同协议不同实例独立。只按连接ID匹配，不按平台类型、QQ号或群号解析。COMMANDS/HANDLER_COMMANDS/COMMAND_ALIASES 是配置与执行共同目录，别名统一规范；第N轮通过稳定函数名映射，不依赖显示名。
 
@@ -856,11 +864,12 @@ year = now.year - 1 if month > now.month else now.year
 | **F-40** | `/等车ID 角色或参赛ID`、`/确认关联 确认码`、`/解除官方关联` | request_official_link / confirm_official_link / revoke_official_links / _identity_qq | 原 QQ 确认 OpenID 对原用户的关联；两端同一原 QQ 身份和已有全部插件权限；保留原 QQ/角色/参赛 ID，支持即时撤销，不信任旧 JSON 展示关联 | M-02、M-03、M-10 | official_user_accounts / official_link_requests；schema v20 |
 | **F-41** | QQ群命令与默认对话隔离 | OfficialQueueFilter / official_queue_cmd / command_guard | 群内斜杠命令及已注册裸命令不回落默认LLM；保留插件分发、原参数及普通聊天，不依赖chat前缀 | M-10 | 不写数据库/队列 |
 | **F-42** | 平台默认权限／平台指令配置 | platform_policy / PlatformCommandPermissionFilter / official_queue_cmd | QQ官方、SnowLuma/OneBot及其他平台默认配置直接展示并可编辑，连接专属规则首个精确匹配优先；前置静默过滤、动态轮次和AI工具共用权限，其他插件保留 | M-10、M-11 | 插件配置，无SQL或队列迁移 |
-| **F-43** | `/呼叫全体` / 呼叫全体按钮 | OneBotCallAll / _call_all_onebot / WaitingQueues.execute | 默认由SnowLuma发送原生@全体友谊邀请，官方默认静默；保留按钮、取消引用，协议自动@保留；同群30分钟持久化冷却，成功回执后存档，失败／超时／取消不占冷却且不补发；手动开放官方时保留原面板与隐藏按钮规则 | M-01、M-10 | 独立onebot_call_all.json版本1；原官方JSONv2可选call_all_until，无SQL迁移 |
+| **F-43** | `/呼叫全体` / 呼叫全体按钮 | OneBotCallAll / _call_all_onebot / WaitingQueues.execute / F-52 | 默认由SnowLuma发送原生@全体友谊邀请，官方文字命令默认静默；按钮改为回调无@，详见F-52；同群30分钟持久化冷却，成功回执后存档，失败／超时／取消不占冷却且不补发；手动开放官方时保留原面板与隐藏按钮规则 | M-01、M-10 | 独立onebot_call_all.json版本1；原官方JSONv2可选call_all_until，无SQL迁移 |
 | **F-44** | AstrBot 后台战报核对 WebUI | ComparisonWebUI / ComparisonJobs / report_site / report_comparison | 固定站点完整分页、按战队/月份对照、原文分页/进度/取消/最近20次/JSON；比赛与发布日期分离，失败不发布残缺结果 | M-01、M-02、M-04、M-09、M-10 | report_comparisons 任务 JSON；完整抓取后调用 F-45 |
 | **F-45** | 云端战报 Tab／拉取归档 | archive_cloud_reports / get_cloud_reports | 网站 ID 主键事务 UPSERT、首次/最近抓取时间、独立查询分页；不导入本地统计 | M-01、M-02、M-10 | cloud_battle_reports；schema v21 |
 | **F-46** | 本地战报 Tab／勾选发送到 QQ | get_webui_local_reports / QQReportDispatch | 移除顶部介绍标题区并直接呈现功能Tab；本地默认首Tab、全部/友谊/踢馆分页、列表全文/直接复制、全宽等高/稳定滚动条、查询战队胜负筛选及容器外侧分页/滚动页码直跳、混合跨页勾选；自定义QQ或目标队指定管理员、预览确认、OneBot私聊合并转发、逐包回执/停止/受限重试 | M-01、M-02、M-09、M-10 | 本地 SELECT；report_dispatches 原子JSON；不改变 export_sent |
 | **F-47** | 自动独立战报管理入口 | standalone_web / scripts/export_report_webui.py / webui_standalone | 现有后台端口自动挂载/battle-report/，冷启／热安装／停用清理；原账号及2FA、401不重放；可选静态导出／Nginx | M-09、F-44、F-45、F-46 | 不新增端口／配置／账号；只公开6个静态资源 |
+| **F-52** | 原生呼叫回调按钮及群映射 | QueueCallbackHooks / _queue_call_all_callback / mapped_group | type1不发送指令或@，可信SDK接入、按显式双端群映射、一次互动回应、目标账号及权限复核，与手动命令共享冷却和新面板隐藏 | M-10、F-39、F-42、F-43 | 新配置official_queue_call_all_routes；复用OneBot JSONv1与官方JSONv2，无SQL迁移 |
 | **F-51** | 每日友谊胜场检查 | friendly_audit / get_daily_friendly_counts / get_daily_friendly_reports / ComparisonWebUI | 默认北京时间本月，按比赛日期与对手双向各最多3胜；先全月统计再筛选分页，正常3:3不超限，缺失胜者／不符战队跳过提示，战报明细分页与复制 | M-02、M-07、M-09、F-47、F-48 | 本地matches/duels只读，kind=friendly；无schema变化 |
 | **F-50** | 一周会话与HTTPS访问 | WebAccounts / StandaloneFrontend / setup_report_https | 战队7天摘要会话跨重启恢复／持久撤销、管理员原Cookie及登录类型恢复、公网TLS保护、仅IP证书／代理配置生成 | M-10、F-47、F-48 | 原子JSON会话摘要；可选主机证书与Nginx配置，无schema变更 |
 | **F-49** | WebUI队伍／队员管理 | WebManagement / ComparisonWebUI / get_webui_teams / get_webui_members / get_webui_players | 仅核心后台身份，战队／管理员及群概览、管理员成员候选／可移除标签／单QQ手动兜底、角色资料／QQ与已有参赛ID绑定管理、搜索分页及并发修改检查 | M-02、M-03、M-10、F-48 | 复用team_admins/users/player_ids及原身份锁；无schema迁移 |
@@ -1076,7 +1085,7 @@ year = now.year - 1 if month > now.month else now.year
 | **改WebUI筛选/布局** | ① 本地/云端COUNT与分页ID前的筛选SQL、未知胜负口径 ② 核对任一侧命中保留整组、过滤后分页、统计/下载完整范围 ③ API参数校验与前端复位/作用域/异步序号 ④ 搜索/战报等宽、外置轨道、同排等高及固定滚动条槽位 ⑤ 实际MySQL和浏览器长短卡片/空数据/筛选计数/跳页/复制/发送回归 | 不只筛当前页，不把未知算负场，不把云端网站胜方替换为插件重算；控件不得再次占内容列，不动统计/提交指纹/人工发送标记 |
 | **改云端归档/QQ批量发送** | ① schema21幂等DDL/云端ID校验/事务UPSERT与并发 ② 本地按场次分页/类型与战队隔离/服务端重读原文 ③ 三Tab与跨页选择 ④ 后台认证/创建者隔离/管理员复核/原生OneBot与账号校验 ⑤ 冻结预览确认、typed text节点、逐包回执、unknown禁止重试、取消重启落盘 ⑥ MySQL/模拟发送/真实bridge浏览器、README/指南 | 不自动导入本地、不写人工已发送标记、不把超时当失败可安全重试，不把客户端正文当权威数据 |
 | **改外部战报核对** | ① report_site 查询范围/固定域名/分页完整性 ② report_comparison 序列/标记/对齐及CLI共用 ③ get_comparison_reports只读侧信息 ④ WebUI bridge/登录/分页/历史/取消/生命周期 ⑤ 默认本地Tab、全文列表/复制、opaque sandbox中实际粘贴核验/焦点恢复/失败反馈及手机布局，浏览器/服务回归、README及使用指南 | 不改变提交指纹、不自动修复DB，不混淆网站发布时间与比赛时间；失败不能导出局部差异，不把候选当重复事实 |
-| **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、onebot_call_all独立群号作用域与成功回执、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
+| **改 QQ 官方等车** | ① OfficialQueueFilter 按平台指令配置分流、第三方处理器保留和默认LLM关闭、OneBot 等车静默及群命令LLM隔离、command_guard 原始文本/注册命令识别及帮助别名 ② WaitingQueues 状态、作用域锁、呼叫全体持久化共享冷却及禁止补发、onebot_call_all独立群号作用域与成功回执、首次满员一次性计时、入退队提醒、合并广播/每日编号、出发/outbox/存档 ③ _send_waiting_message 的 Markdown/纯文本分流、通知依赖及确认、模板/被动额度及主动权限 ④ 面板名字来源/填字标签与通知原生@分流、原账号身份关联 ⑤ 可信SDK互动接入、platform_loaded订阅、唯一映射/目标账号复核、ACK与发送分离、共享冷却/新面板隐藏及卸载清理 ⑥ 生命周期任务、模拟时钟/接口/并发/失败测试、配置四处及官方帮助 | 不可把 OpenID 当 QQ 号，不得偷改 ID 归属或权限；不能把 API 调用尝试当发送成功；原 OneBot 功能不变 |
 | **改 LLM 排表工具** | ① `lineup_tool` 的工具名、Google Args 描述与单文本 schema ② 共享 `_prepare_lineup` 和命令路径 ③ 私聊/群禁用/DB、空格 ID、种子、一次原文发送与无战报入库回归 ④ README、帮助及预览 | 不让模型指定群号、修改模板空格或调用管理/提交；成功返回 None 结束本轮，不能残留待发送结果 |
 | **改 QQ 申请审批** | ① `RequestReviewFilter` 与 `review_request/request_list/request_refresh` 的授权和平台隔离 ② `request_review.py` 的原子持久化/引用映射/处理状态 ③ `tests/test_request_review.py` 与真实 handler 测试 ④ 超管帮助与 README | 不能自动同意、跨机器人处理、以 QQ 替代 flag 或重复执行未知结果 |
 | **改战绩卡片** | ① record/my_record 与 `_record_results` 的范围和趋势分流 ② `stats.build_record_metrics` ③ `chart.make_record_images` 与共享 `_trend_image` ④ handler/渲染/指标/集合踢馆结果回归 ⑤ 帮助、预览与 README | 不把个人对局与战队整场混算、不吞掉长 ID 或截掉明细、不把趋势失败变成战绩查询失败；保留标准响应链 |
@@ -1363,6 +1372,7 @@ WHERE d.score_a = 0 AND d.score_b = 0 AND m.winner <> ''
 
 | 配置 | 默认 | 作用于 |
 |---|---|---|
+| `official_queue_call_all_routes` | [] | F-52 官方连接+群OpenID → OneBot连接+机器人QQ+实际群号的唯一显式映射；为空时拒绝按钮发送，手动命令继续可用 |
 | `platform_command_defaults` | 各平台实际初始勾选 | F-42 固定qq_official/aiocqhttp/other，每项mode及allowed_commands，直接可改，默认官方不含呼叫全体、OneBot包含 |
 | `platform_command_profiles` | [] | F-42 连接专属命名配置：platform_ids/mode/allowed_commands，首个精确匹配优先于平台默认 |
 | `submit_requires_admin` | false | F-04，战报群内额外要求 `_is_manager`（含超管和本队管理员） |
@@ -1645,3 +1655,9 @@ v1.34.1 呼叫全体修复：现场2026-11-10北京时间16:37的QQ HTTP400返�
 - 真实AstrBot配置加载与注册/唤醒/分发使用隔离I/O验证；未登录真实QQ验证按钮客户端或@全体额度。
 
 验证结果：默认测试1521项通过、12项按测试配置跳过；另在真实AstrBot v4.27.3及当前参考源码验证默认配置补齐/修改保留和144项注册、绑定、唤醒、分发场景。QQ及数据库I/O使用模拟接口。
+
+### v1.36.0 无@回调按钮
+
+- test_queue_callback：SDK对象/原始字段、映射格式拒绝、透传其他按钮、订阅、重复挂接/移除/卸载及在途取消。
+- test_main：原生type1、原SDKACK、OneBot目标核验、按钮/命令/重启共享冷却、新面板隐藏及不变更原键盘、并发只发一次、失败不冷却、无映射/重复映射/权限/禁群/账号/ACK失败不发全体；发送前权限和映射变化复核。
+- 默认回归1555项通过、12项跳过。另通过真实qq-botpy1.2.1 ConnectionSession.parser→Interaction→Client.ws_dispatch→插件→BotAPI.on_interaction_result的WS/Webhook 2项检查，以及AstrBot v4.27.3/当前参考源码144项注册/绑定/唤醒/分发与配置补齐验证。所有外部QQ/DB I/O为模拟，不代表真实QQ客户端/平台额度实机结果。

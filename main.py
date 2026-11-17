@@ -33,6 +33,7 @@ from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_c
 from .official_queue import group_nickname as queue_group_nickname
 from .official_queue import require_receipt as require_queue_receipt
 from .onebot_call_all import OneBotCallAll
+from .queue_callback import QueueCallbackHooks, callback_identity, mapped_group, field as callback_field
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .command_guard import command_candidates, is_command_message, message_text as command_message_text
 from . import platform_policy
@@ -247,7 +248,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.35.0")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.36.0")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -257,6 +258,7 @@ class BattleReportPlugin(Star):
         self._review_inbox: ReviewInbox | None = None
         self._waiting_queues: WaitingQueues | None = None
         self._onebot_call_all: OneBotCallAll | None = None
+        self._queue_callback_hooks = None
         self._waiting_task: asyncio.Task | None = None
         try:
             self.data_dir = StarTools.get_data_dir()
@@ -294,9 +296,15 @@ class BattleReportPlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def report_frontend_loaded(self):
+        self._sync_queue_callbacks()
         # On cold startup the dashboard APP is constructed after plugin loading.
         if getattr(self, '_standalone_frontend', None) and not self._register_standalone_frontend():
             logger.warning('当前 AstrBot 未提供兼容的独立页面挂载接口，可继续使用后台 Pages 入口')
+
+    @filter.on_platform_loaded()
+    async def queue_platform_loaded(self):
+        # 平台实例已创建、SDK登录任务尚未运行，此时加入INTERACTION订阅。
+        self._sync_queue_callbacks()
 
     @filter.command('战报登录',alias={'/战报登录'})
     async def report_web_login(self,event:AstrMessageEvent):
@@ -376,6 +384,7 @@ class BattleReportPlugin(Star):
     async def initialize(self):
         """初始化：覆写 /第N轮 处理器显示名 + 连接 MySQL。"""
         self._friendly_round_display()
+        self._sync_queue_callbacks()
         try:
             self.db = Database(
                 host=str(self.config.get("mysql_host", "127.0.0.1")),
@@ -421,6 +430,12 @@ class BattleReportPlugin(Star):
             logger.warning(f"设置 /第N轮 显示名失败: {e}")
 
     async def terminate(self):
+        hooks = getattr(self, '_queue_callback_hooks', None)
+        if hooks:
+            try:
+                await hooks.close()
+            except Exception:
+                logger.exception('等车按钮回调清理失败，继续关闭其他资源')
         frontend = getattr(self, '_standalone_frontend', None)
         if frontend:
             try:
@@ -457,6 +472,7 @@ class BattleReportPlugin(Star):
     async def _waiting_loop(self):
         while True:
             try:
+                self._sync_queue_callbacks()
                 if self.config.get("official_queue_enabled", True):
                     queues = self._get_waiting_queues()
                     await queues.tick()
@@ -483,6 +499,15 @@ class BattleReportPlugin(Star):
                  "values": [text]}]} if template else {"content": text})
             params = dict(msg_type=2, markdown=markdown, **reply)
             if keyboard:
+                try:
+                    target_scope = mapped_group(self.config, platform_id, group_id)
+                except ValueError:
+                    target_scope = None
+                if target_scope and self._get_onebot_call_all().remaining(target_scope) > 0:
+                    rows = [{**row, 'buttons': [b for b in row['buttons'] if b.get('id') != 'call_all']}
+                            for row in keyboard['content']['rows']]
+                    keyboard = {**keyboard, 'content': {**keyboard['content'],
+                        'rows': [row for row in rows if row['buttons']]}}
                 params["keyboard"] = keyboard
         result = await asyncio.wait_for(platform.client.api.post_group_message(
             group_openid=group_id, **params), timeout=20)
@@ -610,18 +635,103 @@ class BattleReportPlugin(Star):
         if err:
             await event.send(event.plain_result(err))
             return
-        if getattr(self, '_onebot_call_all', None) is None:
-            self._onebot_call_all = OneBotCallAll(self.data_dir / 'onebot_call_all.json', log=logger)
         async def send():
-            return await asyncio.wait_for(event.bot.call_action('send_group_msg',
-                self_id=int(scope[1]), group_id=int(group), message=[
-                    {'type': 'at', 'data': {'qq': 'all'}},
-                    {'type': 'text', 'data': {'text': '\n来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～'}},
-                ]), timeout=20)
-        prompt = await self._onebot_call_all.execute((*scope, group),
+            return await self._send_onebot_call_all(event.bot, scope[1], group)
+        prompt = await self._get_onebot_call_all().execute((*scope, group),
             str(event.message_obj.message_id or ''), send)
         if prompt:
             await event.send(event.plain_result(prompt))
+
+    def _get_onebot_call_all(self):
+        if getattr(self, '_onebot_call_all', None) is None:
+            self._onebot_call_all = OneBotCallAll(self.data_dir / 'onebot_call_all.json', log=logger)
+        return self._onebot_call_all
+
+    async def _send_onebot_call_all(self, bot, self_id, group):
+        return await asyncio.wait_for(bot.call_action('send_group_msg',
+            self_id=int(self_id), group_id=int(group), message=[
+                {'type': 'at', 'data': {'qq': 'all'}},
+                {'type': 'text', 'data': {'text': '\n来打友谊喵！发送 /友谊等车 查看或创建队伍，一起接友谊～'}},
+            ]), timeout=20)
+
+    def _sync_queue_callbacks(self):
+        try:
+            if getattr(self, '_queue_callback_hooks', None) is None:
+                self._queue_callback_hooks = QueueCallbackHooks(self.context, self._queue_call_all_callback, logger)
+            self._queue_callback_hooks.sync()
+        except Exception:
+            logger.exception('等车互动回调挂接失败，手动指令和其他功能继续可用')
+
+    async def _queue_call_all_callback(self, platform, interaction):
+        hooks = self._queue_callback_hooks
+        interaction_id = callback_field(interaction, 'id')
+        if not isinstance(interaction_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,256}', interaction_id):
+            logger.warning('呼叫全体回调缺少有效互动ID，未发送')
+            return
+        try:
+            _, group_openid, _ = callback_identity(platform, interaction)
+            source_id = str(platform.meta().id)
+            if (self.context.get_platform_inst(source_id) is not platform
+                    or platform.meta().name not in QUEUE_PLATFORMS
+                    or not self.config.get('official_queue_enabled', True) or self._check_db()):
+                raise ValueError('官方连接或友谊等车功能暂不可用')
+            source_allowed = any(platform_policy.command_allowed(self.config, platform.meta().name, source_id, cmd)
+                                 for cmd in platform_policy.QUEUE_COMMANDS.values())
+            scope = mapped_group(self.config, source_id, group_openid)
+            target = self.context.get_platform_inst(scope[0])
+            if target is None or target.meta().name != 'aiocqhttp':
+                raise ValueError('映射的SnowLuma连接不可用')
+            if not source_allowed or not platform_policy.command_allowed(self.config, 'aiocqhttp', scope[0], '呼叫全体'):
+                await hooks.acknowledge(platform, interaction_id, 4)
+                return
+            service = self._get_onebot_call_all()
+            if service.remaining(scope) > 0:
+                await hooks.acknowledge(platform, interaction_id, 2)
+                return
+        except ValueError as error:
+            logger.warning('呼叫全体回调未执行：%s；官方连接=%s，群OpenID=%s', error,
+                           platform.meta().id, callback_field(interaction, 'group_openid', ''))
+            await hooks.acknowledge(platform, interaction_id, 1)
+            return
+        # 先回应收到事件，避免QQ客户端持续loading；确认回应后才开始业务发送。
+        if not await hooks.acknowledge(platform, interaction_id, 0):
+            return
+        if await self.db.get_group_ban(group_openid) or await self.db.get_group_ban(scope[2]):
+            logger.warning('呼叫全体回调命中禁用群，未发送')
+            return
+        bot = target.get_client()
+        verified = False
+        async def send():
+            nonlocal verified
+            # 映射/权限变化时不能继续把旧目标当作新配置发送。
+            if (mapped_group(self.config, source_id, group_openid) != scope
+                    or self.context.get_platform_inst(scope[0]) is not target
+                    or not self.config.get('official_queue_enabled', True)
+                    or not platform_policy.command_allowed(self.config, 'aiocqhttp', scope[0], '呼叫全体')):
+                raise ValueError('呼叫全体配置已改变，请重新点击')
+            login = await asyncio.wait_for(bot.call_action('get_login_info', self_id=int(scope[1])), timeout=10)
+            if isinstance(login, dict) and (login.get('status') == 'failed' or login.get('retcode', 0) != 0):
+                login = None
+            if isinstance(login, dict) and 'data' in login:
+                login = login['data'] if login.get('retcode', 0) == 0 else None
+            if not isinstance(login, dict) or str(login.get('user_id')) != scope[1]:
+                raise ValueError('无法确认映射的SnowLuma机器人QQ')
+            if (mapped_group(self.config, source_id, group_openid) != scope
+                    or self.context.get_platform_inst(scope[0]) is not target
+                    or self.context.get_platform_inst(source_id) is not platform
+                    or not self.config.get('official_queue_enabled', True) or self._check_db()
+                    or not platform_policy.command_allowed(self.config, 'aiocqhttp', scope[0], '呼叫全体')
+                    or not any(platform_policy.command_allowed(self.config, platform.meta().name, source_id, cmd)
+                               for cmd in platform_policy.QUEUE_COMMANDS.values())
+                    or await self.db.get_group_ban(group_openid) or await self.db.get_group_ban(scope[2])):
+                raise ValueError('呼叫全体映射、权限或群状态已改变，未发送')
+            verified = True
+            return await self._send_onebot_call_all(bot, scope[1], scope[2])
+        prompt = await service.execute(scope, f'qqinteraction:{platform.appid}:{interaction_id}', send)
+        if prompt and verified:
+            # 普通文字回执；永远不在通知失败后再次@全体。
+            await asyncio.wait_for(bot.call_action('send_group_msg', self_id=int(scope[1]),
+                group_id=int(scope[2]), message=[{'type': 'text', 'data': {'text': prompt}}]), timeout=20)
 
     def _official_appid(self, event):
         get_name = getattr(event, "get_platform_name", None)

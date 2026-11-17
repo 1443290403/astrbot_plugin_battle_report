@@ -22,6 +22,7 @@ except ImportError:
 REFRESH = 240
 GATHER_TIMEOUT = READY_TIMEOUT = 600
 CALL_ALL_COOLDOWN = 1800
+CALL_ALL_CALLBACK = 'battle_report:queue:call_all:v1'
 PLATFORMS = {'qq_official', 'qq_official_webhook'}
 COMMANDS = ('友谊等车帮助', '友谊等车', '进队等车', '发送群号', '解散队伍', '离队', '解散', '人齐了发车', '跑路了再见',
             '我也要等车', '再开一车', '等车帮助', '等车ID', '等车', '蹲车', '呼叫全体')
@@ -143,8 +144,10 @@ def keyboard(car=None, *, show_call_all=True):
     if show_call_all:
         actions.append(('call_all', '呼叫全体', '/呼叫全体', True))
     buttons = [{'id': key, 'render_data': {'label': label, 'visited_label': label, 'style': 1},
-                'action': {'type': 2, 'permission': {'type': 2}, 'data': data,
-                           'enter': enter, 'reply': key != 'call_all', 'unsupport_tips': '请发送对应文字指令'}}
+                'action': {'type': 1 if key == 'call_all' else 2, 'permission': {'type': 2},
+                           'data': CALL_ALL_CALLBACK if key == 'call_all' else data,
+                           **({} if key == 'call_all' else {'enter': enter, 'reply': True}),
+                           'unsupport_tips': '请直接发送 /呼叫全体' if key == 'call_all' else '请发送对应文字指令'}}
                for key, label, data, enter in actions]
     return {'content': {'rows': [{'buttons': buttons[i:i + 3]} for i in range(0, len(buttons), 3)]}}
 

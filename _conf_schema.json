@@ -1,4 +1,58 @@
 {
+  "official_queue_call_all_routes": {
+    "description": "呼叫全体群映射",
+    "type": "template_list",
+    "default": [],
+    "hint": "回调按钮不会发送文字或@机器人。须将官方群OpenID映射到同一QQ群的SnowLuma连接与机器人QQ；通过两端 /sid 获取连接ID及群会话ID。缺少或重复映射时拒绝发送。首次更新后重启AstrBot使官方互动订阅生效。",
+    "templates": {
+      "route": {
+        "name": "官方群 → SnowLuma群",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "description": "映射名称",
+            "type": "string",
+            "default": "新的群映射"
+          },
+          "enabled": {
+            "description": "启用映射",
+            "type": "bool",
+            "default": true
+          },
+          "official_platform_id": {
+            "description": "官方机器人连接ID",
+            "type": "string",
+            "default": "",
+            "hint": "官方端 /sid 回执的Bot ID。"
+          },
+          "official_group_openid": {
+            "description": "官方群OpenID",
+            "type": "string",
+            "default": "",
+            "hint": "官方端 /sid 的会话ID中，GroupMessage后面的完整群标识，不是数字QQ群号。"
+          },
+          "onebot_platform_id": {
+            "description": "SnowLuma连接ID",
+            "type": "string",
+            "default": "",
+            "hint": "SnowLuma端 /sid 回执的Bot ID。"
+          },
+          "onebot_self_id": {
+            "description": "SnowLuma机器人QQ",
+            "type": "string",
+            "default": "",
+            "hint": "SnowLuma登录的机器人QQ号，必须填写，避免多账号连接误发。"
+          },
+          "onebot_group_id": {
+            "description": "实际QQ群号",
+            "type": "string",
+            "default": "",
+            "hint": "与此官方群对应的QQ群号，只填数字。"
+          }
+        }
+      }
+    }
+  },
   "platform_command_defaults": {
     "description": "平台默认权限",
     "type": "object",
