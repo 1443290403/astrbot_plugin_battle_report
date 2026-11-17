@@ -32,7 +32,7 @@ from . import chart, help_guide, lineup, stats
 from .official_queue import WaitingQueues, PLATFORMS as QUEUE_PLATFORMS, parse_command as parse_queue_command, HELP as OFFICIAL_QUEUE_HELP, safe as queue_safe
 from .official_queue import group_nickname as queue_group_nickname
 from .official_queue import require_receipt as require_queue_receipt
-from .onebot_call_all import OneBotCallAll
+from .onebot_call_all import OneBotCallAll, cooldown_message
 from .queue_callback import QueueCallbackHooks, callback_identity, mapped_group, field as callback_field
 from .command_args import parse_command_args, parse_managed_ids, single_name
 from .command_guard import command_candidates, is_command_message, message_text as command_message_text
@@ -248,7 +248,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.36.1")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.36.2")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -685,9 +685,7 @@ class BattleReportPlugin(Star):
                 await hooks.acknowledge(platform, interaction_id, 4)
                 return
             service = self._get_onebot_call_all()
-            if service.remaining(scope) > 0:
-                await hooks.acknowledge(platform, interaction_id, 2)
-                return
+            was_cooling = service.remaining(scope) > 0
         except ValueError as error:
             logger.warning('呼叫全体回调未执行：%s；官方连接=%s，群OpenID=%s', error,
                            platform.meta().id, callback_field(interaction, 'group_openid', ''))
@@ -701,7 +699,8 @@ class BattleReportPlugin(Star):
             return
         bot = target.get_client()
         verified = False
-        async def send():
+        attempted = False
+        async def verify_target():
             nonlocal verified
             # 映射/权限变化时不能继续把旧目标当作新配置发送。
             if (mapped_group(self.config, source_id, group_openid) != scope
@@ -726,8 +725,19 @@ class BattleReportPlugin(Star):
                     or await self.db.get_group_ban(group_openid) or await self.db.get_group_ban(scope[2])):
                 raise ValueError('呼叫全体映射、权限或群状态已改变，未发送')
             verified = True
+
+        async def send():
+            nonlocal attempted
+            attempted = True
+            await verify_target()
             return await self._send_onebot_call_all(bot, scope[1], scope[2])
-        prompt = await service.execute(scope, f'qqinteraction:{platform.appid}:{interaction_id}', send)
+        prompt = await service.execute(scope, f'qqinteraction:{platform.appid}:{interaction_id}', send,
+                                       status_only=was_cooling)
+        if prompt and not attempted:
+            # 冷却分支未调用send，也要核验账号、映射和群权限后才能发普通文字。
+            await verify_target()
+            remaining = service.remaining(scope)
+            prompt = cooldown_message(remaining)
         if prompt and verified:
             # 普通文字回执；永远不在通知失败后再次@全体。
             await asyncio.wait_for(bot.call_action('send_group_msg', self_id=int(scope[1]),

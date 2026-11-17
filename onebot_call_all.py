@@ -14,6 +14,12 @@ except ImportError:
     from official_queue import CALL_ALL_COOLDOWN, QueueSendError, call_all_failure
 
 
+def cooldown_message(remaining):
+    if remaining > 0:
+        return f'呼叫全体冷却中，还需{remaining // 60}分{remaining % 60:02}秒喵。'
+    return '呼叫全体冷却已结束，可以再次点击按钮喵。'
+
+
 class OneBotCallAll:
     def __init__(self, path, *, clock=time.time, log=None):
         self.path = Path(path)
@@ -56,8 +62,8 @@ class OneBotCallAll:
         room = self.state['rooms'].get(self.key(scope), {})
         return max(0, math.ceil(room.get('until', 0) - self.clock()))
 
-    async def execute(self, scope, message_id, send):
-        """返回必要提示；None 表示已发送或重复事件。send 必须返回 OneBot 消息回执。"""
+    async def execute(self, scope, message_id, send, *, status_only=False):
+        """返回提示或None；status_only只查询状态，send必须返回OneBot消息回执。"""
         key = self.key(scope)
         async with self.locks.setdefault(key, asyncio.Lock()):
             room = self.state['rooms'].setdefault(key, {'scope': list(scope), 'until': 0, 'seen': []})
@@ -73,8 +79,8 @@ class OneBotCallAll:
                 self.state['rooms'][key] = previous
                 raise
             remaining = math.ceil(room['until'] - self.clock())
-            if remaining > 0:
-                return f'呼叫全体冷却中，还需{remaining // 60}分{remaining % 60:02}秒喵。'
+            if remaining > 0 or status_only:
+                return cooldown_message(max(0, remaining))
             try:
                 result = await send()
                 if (not isinstance(result, dict)

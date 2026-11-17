@@ -194,8 +194,9 @@ def test_callback_button_sends_via_onebot_without_user_message_and_shares_comman
         assert message[0] == {'type': 'at', 'data': {'qq': 'all'}}
         assert bot.call_action.await_args.kwargs['group_id'] == 100001
         await source.client.on_interaction_create(payload('interaction-2'))
-        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 2
-        assert bot.call_action.await_count == 2
+        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 0
+        assert bot.call_action.await_count == 4
+        assert '冷却中' in bot.call_action.await_args.kwargs['message'][0]['data']['text']
         ev = event('/呼叫全体', group='100001')
         ev.get_platform_name = lambda: 'aiocqhttp'
         ev.get_platform_id = lambda: 'snow-A'
@@ -204,11 +205,11 @@ def test_callback_button_sends_via_onebot_without_user_message_and_shares_comman
         ev.bot = bot
         await obj.official_queue_cmd(ev)
         assert '冷却中' in ev.send.await_args.args[0]
-        assert bot.call_action.await_count == 2
+        assert bot.call_action.await_count == 4
         obj._onebot_call_all = None
         await source.client.on_interaction_create(payload('after-restart'))
-        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 2
-        assert bot.call_action.await_count == 2
+        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 0
+        assert bot.call_action.await_count == 6
     asyncio.run(run())
 
 
@@ -222,8 +223,9 @@ def test_callback_sdk_successful_empty_ack_continues_to_onebot_and_shared_cooldo
         assert bot.call_action.await_args.kwargs['message'][0] == {'type':'at','data':{'qq':'all'}}
         assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) > 0
         await source.client.on_interaction_create(payload('second-click'))
-        assert bot.call_action.await_count == 2
-        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 2
+        assert bot.call_action.await_count == 4
+        assert source.client.api.on_interaction_result.await_args.kwargs['code'] == 0
+        assert bot.call_action.await_args.kwargs['message'][0]['type'] == 'text'
     asyncio.run(run())
 
 
@@ -285,7 +287,9 @@ def test_parallel_callback_clicks_only_send_one_all_mention(callback_setup):
     obj, source, bot, _, payload = callback_setup
     async def run():
         await asyncio.gather(*(source.client.on_interaction_create(payload('click-'+str(i))) for i in range(5)))
-        assert sum(c.args[0] == 'send_group_msg' for c in bot.call_action.await_args_list) == 1
+        sent = [c.kwargs['message'] for c in bot.call_action.await_args_list if c.args[0] == 'send_group_msg']
+        assert sum(m[0]['type'] == 'at' for m in sent) == 1
+        assert sum(m[0]['type'] == 'text' and '冷却中' in m[0]['data']['text'] for m in sent) == 4
         assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) > 0
     asyncio.run(run())
 
@@ -325,6 +329,103 @@ def test_callback_rechecks_authorization_after_login_before_sending(callback_set
     asyncio.run(source.client.on_interaction_create(payload()))
     bot.call_action.assert_awaited_once()
     assert obj._get_onebot_call_all().remaining(('snow-A','90001','100001')) == 0
+
+
+def test_callback_cooldown_reply_has_exact_remaining_time_and_does_not_extend_cooldown(callback_setup):
+    obj, source, bot, _, payload = callback_setup
+    service = obj._get_onebot_call_all()
+    now = [1000]
+    service.clock = lambda: now[0]
+    scope = ('snow-A','90001','100001')
+    async def run():
+        await source.client.on_interaction_create(payload())
+        room = service.state['rooms'][service.key(scope)]
+        assert room['until'] == 2800
+        now[0] = 1688
+        await source.client.on_interaction_create(payload('cooldown-click'))
+        source.client.api.on_interaction_result.assert_awaited_with(interaction_id='cooldown-click',code=0)
+        bot.call_action.assert_awaited_with('send_group_msg', self_id=90001, group_id=100001,
+            message=[{'type':'text','data':{'text':'呼叫全体冷却中，还需18分32秒喵。'}}])
+        assert room['until'] == 2800
+        assert sum(c.args[0]=='send_group_msg' and c.kwargs['message'][0]['type']=='at'
+                   for c in bot.call_action.await_args_list) == 1
+        count = bot.call_action.await_count
+        await source.client.on_interaction_create(payload('cooldown-click'))
+        assert bot.call_action.await_count == count
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('condition', ['banned', 'wrong_account', 'revoked', 'mapping_changed', 'reply_timeout'])
+def test_callback_cooldown_reply_keeps_target_checks_and_never_retries_all(callback_setup, condition):
+    obj, source, bot, row, payload = callback_setup
+    service = obj._get_onebot_call_all()
+    scope = ('snow-A','90001','100001')
+    async def run():
+        await source.client.on_interaction_create(payload())
+        until = service.state['rooms'][service.key(scope)]['until']
+        bot.call_action.reset_mock()
+        async def call(action,**kwargs):
+            if action == 'get_login_info':
+                if condition == 'revoked': obj.config['platform_command_defaults'] = {'aiocqhttp':{'mode':'全部屏蔽'}}
+                if condition == 'mapping_changed': row['onebot_group_id'] = '999999'
+                return {'user_id':11111 if condition=='wrong_account' else 90001}
+            if condition == 'reply_timeout': raise TimeoutError()
+            raise AssertionError('invalid cooldown target must not send a message')
+        bot.call_action.side_effect = call
+        if condition == 'banned': obj.db.get_group_ban.return_value = True
+        await source.client.on_interaction_create(payload('cooldown-click'))
+        assert service.state['rooms'][service.key(scope)]['until'] == until
+        if condition != 'reply_timeout':
+            assert not any(c.args[0]=='send_group_msg' for c in bot.call_action.await_args_list)
+        else:
+            assert bot.call_action.await_args.kwargs['message'][0]['type']=='text'
+            count = bot.call_action.await_count
+            await source.client.on_interaction_create(payload('cooldown-click'))
+            assert bot.call_action.await_count == count
+    asyncio.run(run())
+
+
+def test_callback_cooldown_expiring_during_login_only_reports_expiry(callback_setup):
+    obj, source, bot, _, payload = callback_setup
+    service = obj._get_onebot_call_all()
+    now = [1000]
+    service.clock = lambda: now[0]
+    async def run():
+        await source.client.on_interaction_create(payload())
+        now[0] = 2799
+        async def call(action,**kwargs):
+            if action == 'get_login_info':
+                now[0] = 2801
+                return {'user_id':90001}
+            assert kwargs['message'][0]['type']=='text'
+            assert '冷却已结束' in kwargs['message'][0]['data']['text']
+            return {'message_id':88}
+        bot.call_action.side_effect = call
+        await source.client.on_interaction_create(payload('last-second'))
+        assert sum(c.args[0]=='send_group_msg' and c.kwargs['message'][0]['type']=='at'
+                   for c in bot.call_action.await_args_list) == 1
+        assert service.state['rooms'][service.key(('snow-A','90001','100001'))]['until']==2800
+    asyncio.run(run())
+
+
+def test_callback_cooldown_expiring_while_acknowledging_does_not_call_all(callback_setup):
+    obj, source, bot, _, payload = callback_setup
+    service = obj._get_onebot_call_all()
+    now = [1000]
+    service.clock = lambda: now[0]
+    async def run():
+        await source.client.on_interaction_create(payload())
+        now[0] = 2799
+        async def ack(**kwargs):
+            now[0] = 2801
+            return {}
+        source.client.api.on_interaction_result.side_effect = ack
+        await source.client.on_interaction_create(payload('expires-during-ack'))
+        assert '冷却已结束' in bot.call_action.await_args.kwargs['message'][0]['data']['text']
+        assert sum(c.args[0]=='send_group_msg' and c.kwargs['message'][0]['type']=='at'
+                   for c in bot.call_action.await_args_list) == 1
+        assert service.state['rooms'][service.key(('snow-A','90001','100001'))]['until']==2800
+    asyncio.run(run())
 
 
 def ranking_with_llm(mod, tmp_path, text='/排行 七月'):

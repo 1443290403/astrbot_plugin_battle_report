@@ -443,15 +443,17 @@ WebUI 三 Tab：本地上传（首位、默认打开）、核对（第二位）�
 
 核对结果GET在原分类记录上按胜负过滤后再分页，不重抓网站、不重算完整分类统计；任一侧记录命中就保留整组对照。网站侧用winner/loser（新JSON增加loser），旧历史无loser时按已解析双方与展示胜方判断，无法判断则只在全部显示；本地侧按原核对展示胜方。上方统计及JSON下载仍保留完整任务范围，UI标明列表筛选状态。不得因筛选拆散不一致的双方原文，也不得写入本地比赛、指纹或人工发送标记。
 
+**冷却剩余时间消息（v1.36.2，覆盖旧code2反馈）：** QQ互动回应只提供固定code，无自定义弹窗文案。冷却点击改为code0确认接收，沿OneBotCallAll.execute持久事件去重后取得冷却提示；不调用全体发送回调。抽出verify_target供真正呼叫和冷却文字发送共同使用，保留指定账号登录核验、映射/连接/权限/DB/源和目标禁群复核。冷却分支在核验后重取remaining并共用onebot_call_all.cooldown_message格式，typed text仅发送“呼叫全体冷却中，还需X分YY秒喵。”，不含at/reply，不改变until。点击时记录was_cooling并以status_only传给同一房间锁内的execute；即使ACK或核验期间到期，也只回冷却已结束、可再次点击，不自动调用全体；真正全体发送失败沿原失败提示，不重新核验/重试全体。提示发送异常仅日志，不自动重发，原成功消息回执才开始冷却的规则不变。新面板隐藏、旧面板回调、手动命令共享同份状态，无配置/SQL/JSON迁移。
+
 **互动回应格式兼容（v1.36.1）：** 用户现场已收到SDK互动事件、通过映射与前置权限，但acknowledge以“QQ互动回应未确认”阻断，未调用OneBot且未进入冷却。按实际qq-botpy1.2.1 _handle_response复现：HTTP成功码200/202/204中，非精确application/json的Content-Type会走text，204无正文为''，application/json; charset=utf-8会返回JSON字符串；旧版只允许None/字典而误判。新增validate_ack_response：None/空白字符串成功，非空字符串解析为JSON对象，字典的code/err_code/retcode只允许整数0或文本0；失败状态、非零/无效码、无效文本/非对象仍拒绝。SDK抛出的HTTP错误/网络异常/超时不转换为成功；原3秒ACK限时、一次回应、幂等、权限/群/账号复核与成功消息ID才计冷却不变。ACK成功只新增不含响应原文的INFO日志，不据此宣称全体已送达。旧群映射与状态无需迁移。
 
 **无@回调按钮（v1.36.0，覆盖v1.35.0按钮行为）：** 呼叫按钮action.type=1，data为固定命名空间battle_report:queue:call_all:v1，不带enter/reply，不生成用户消息或假指令，其他六个按钮仍type=2。新配置official_queue_call_all_routes为template_list：enabled/name、official_platform_id、official_group_openid、onebot_platform_id、onebot_self_id、onebot_group_id。以原官方连接+group_openid精确唯一匹配，目标必须为OneBot及指定数字机器人QQ/QQ群号；缺失、重复、禁用或无效映射拒绝，不能从点击数据指定目标。默认空映射，需要用户在同群两端/sid取得连接及群ID后配置，不推测两种群标识的关系。
 
 QueueCallbackHooks只挂接现有可信qq-botpy客户端的on_interaction_create，无新增HTTP入口或全局SDK修改；WebSocket保持原鉴权，Webhook保留核心验签。initialize、on_platform_loaded、on_astrbot_loaded及定时循环同步实例；on_platform_loaded在SDK登录任务运行前加入INTERACTION=1<<26订阅，热安装已登录客户端需重启，Webhook需开放平台订阅互动事件。只截获本插件button_data，其他回调交原处理器；重复同步不叠加，卸载恢复原处理器并取消/等待在途任务后再关DB。原core按会话权限过滤/聊天/其他插件不变。
 
-业务验证type11、group场景、d.id、group_openid、group_member_openid与可选AppID匹配原连接；不可用网关event_id或带INTERACTION_CREATE前缀的ID替代互动ID。按AppID+互动ID在回应前去重，调用原SDK on_interaction_result（PUT /interactions/{id}），3秒限时、只回应一次，失败不发送。无效配置回应1、无权限4、已有冷却2；0仅确认收到点击，不代表业务通知成功。官方至少开放一项等车入口、目标OneBot需允许呼叫全体，保留等车总开关、DB、源和目标禁群检查；get_login_info核验指定账号，发送前再次核验映射/连接/权限/群状态，变化即取消。无管理员点击要求，与原公开呼叫入口一致。
+业务验证type11、group场景、d.id、group_openid、group_member_openid与可选AppID匹配原连接；不可用网关event_id或带INTERACTION_CREATE前缀的ID替代互动ID。按AppID+互动ID在回应前去重，调用原SDK on_interaction_result（PUT /interactions/{id}），3秒限时、只回应一次，失败不发送。无效配置回应1、无权限4；v1.36.2起已有冷却也回应0并通过SnowLuma普通消息反馈剩余时间；0仅确认收到点击，不代表业务通知成功。官方至少开放一项等车入口、目标OneBot需允许呼叫全体，保留等车总开关、DB、源和目标禁群检查；get_login_info核验指定账号，发送前再次核验映射/连接/权限/群状态，变化即取消。无管理员点击要求，与原公开呼叫入口一致。
 
-回调使用与手动命令相同OneBotCallAll实例/文件/作用域，事件键qqinteraction:AppID:互动ID，成功回执后30分钟冷却，失败/超时/取消/缺回执不占冷却，不自动补发。后续官方面板按显式映射读取OneBot冷却并移除call_all按钮，保留原键盘对象与其他按钮，不多发面板；到期后下次刷新恢复。旧历史消息无法改按钮类型，需重新/友谊等车；旧回调冷却中仅互动回应频繁。SnowLuma仍只发送邀请，官方原车次/计时/存档/广播与SQL schema21不变。
+回调使用与手动命令相同OneBotCallAll实例/文件/作用域，事件键qqinteraction:AppID:互动ID，成功回执后30分钟冷却，失败/超时/取消/缺回执不占冷却，不自动补发。后续官方面板按显式映射读取OneBot冷却并移除call_all按钮，保留原键盘对象与其他按钮，不多发面板；到期后下次刷新恢复。旧历史消息无法改按钮类型，需重新/友谊等车；v1.36.2起旧回调在冷却中发送剩余时间普通群消息。SnowLuma仍只发送邀请，官方原车次/计时/存档/广播与SQL schema21不变。
 
 **平台默认权限与SnowLuma呼叫全体（v1.35.0，覆盖旧版默认范围）：** 新增固定object配置platform_command_defaults，qq_official（WS/Webhook共用）、aiocqhttp、other各有mode与allowed_commands，实际默认勾选直接呈现，schema默认由AstrBot自动补齐，不创建虚假的连接ID规则。连接专属platform_command_profiles仍首个精确匹配优先，完整替代而非合并默认项；升级不覆写已有规则。缺字段兼容内置默认，显式非法模式/字段拒绝；运行时实时读取，构造期前置过滤与路由、动态轮次、AI工具继续同权限。默认官方只等车且排除呼叫全体；OneBot保留原范围并新增呼叫全体；其他平台保留通用范围。呼叫全体仅OneBot/官方可用，其他队列操作仍仅官方；原OneBot专属能力限制不变。
 
@@ -1667,3 +1669,7 @@ v1.34.1 呼叫全体修复：现场2026-11-10北京时间16:37的QQ HTTP400返�
 ### v1.36.1 互动成功回应兼容
 
 默认测试1585项通过、12项跳过。新增空/空白/None/JSON对象/JSON文本/字符串零码的归一化验证，明确错误码/失败状态/非法响应保留拒绝；插件回调空ACK后只发送一次全体并共享冷却。另用原qq-botpy1.2.1 _handle_response、BotAPI.on_interaction_result、ConnectionSession解析和Client分发验证25项场景：WS/Webhook下HTTP200/202/204、空正文/Content-Type charset JSON文本/零码成功，HTTP400、JSON错误码、无效文本及失败状态不调用OneBot且不冷却，并直接运行v1.36.0原ACK方法复现同一个RuntimeError。外部QQ及DB传输均为模拟；不声称已在用户服务器验证。
+
+### v1.36.2 冷却剩余时间反馈
+
+默认回归1593项通过、12项跳过；tests/test_main覆盖精确18分32秒普通文字、互动回应0、按钮/手动/重启共用冷却且until不变、并发仅一次全体及其他点击仅文字、重复事件防重、账号/禁群/权限/映射变化拒绝文字、提示超时不重试，ACK或登录期间冷却到期只回结束提示。另通过25项真实qq-botpy HTTP解码/API/解析/分发验证，所有成功回应场景均追加冷却点击并确认code0/单段text/截止不变，原HTTP及错误回应拒绝行为保留。外部QQ与DB I/O模拟，未在真实QQ群验证。
