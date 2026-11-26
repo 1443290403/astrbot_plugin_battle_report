@@ -2,13 +2,13 @@
 
 源码见 master 分支；本分支仅保存安装包和下载附件。请下载 ZIP 文件，在 AstrBot 插件管理中上传。
 
-最新版本：v1.36.2
+最新版本：v1.36.3
 
-- 文件：astrbot_plugin_battle_report-1.36.2.zip
-- 源码提交：bb65b84f928e480c69cbe8b65daa14e03f06428c
+- 文件：astrbot_plugin_battle_report-1.36.3.zip
+- 源码提交：25384e33ae1f2f815ebebe4407623f8c28d84496
 - 根目录包含 metadata.yaml 与 main.py
 - 已使用 AstrBot v4.27.3 安装包检查方法校验，所有文件与源码提交一致
-- SHA256：c07f1ad03295a17cdca42e76bc780b6a0f6407064312a7dbeb364691af8d00f0
+- SHA256：c9d475f9b3bf26cb361c7c6d81c5ab62c8f6dcac369692ced8d4ed4074256d71
 
 旧版本安装包保留，按文件名选择。
 
@@ -338,3 +338,9 @@ WebUI新增“友谊检查”Tab，默认北京时间本月，按本地比赛日
 - [等车与回调说明](OFFICIAL_QUEUE_GUIDE-1.36.2.md)
 - [平台权限配置](PLATFORM_COMMAND_GUIDE-1.36.2.md)
 - [可选独立站静态资源](battle-report-web-1.36.2.zip)（不能当AstrBot插件安装）
+
+## v1.36.3 合并月初友谊趋势
+
+独立趋势图与战绩卡合并每月前 3 个有友谊胜负的日期，首点按合计胜负计算，并显示起止日期。后续日期逐日累计。
+
+1538 项测试通过，20 项跳过。安装包通过 AstrBot v4.27.3 校验。
