@@ -248,7 +248,7 @@ def _parse_chunk(chunk: str) -> "ParseResult":
     return parse_battle_report(chunk)
 
 
-@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.36.2")
+@register("battle_report", "RLotusX", "战队对战战报：排表、提交、排行、踢馆、趋势、导出", "1.36.3")
 class BattleReportPlugin(Star):
     def __init__(self, context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -2530,7 +2530,7 @@ class BattleReportPlugin(Star):
             else:
                 raw = await self.db.get_player_trend(
                     home_team, display, date_from, date_to, side_team=home_team)
-            points = stats.compute_cumulative([(d, w, l) for d, w, l in raw if int(w) + int(l) > 0])
+            points = stats.compute_trend_points(raw)
         except Exception:
             logger.exception("战绩趋势查询失败")
             trend_note = "趋势暂时不可用"
@@ -2546,7 +2546,11 @@ class BattleReportPlugin(Star):
                 lines += ["参赛 ID："] + list(shown_players)
             lines += [f"{label}：{value}" for label, value in metrics]
             lines += [trend_note or ("友谊累计胜率：" if points else "本期暂无友谊胜负记录")]
-            lines += [f"{p['date']}  {p['win_rate']:g}%" for p in points]
+            for point in points:
+                date = point["date"]
+                if "period_start" in point:
+                    date = f"{point['period_start']} 至 {date}"
+                lines.append(f"{date}  {point['win_rate']:g}%")
             for name, data in details or []:
                 lines += [f"参赛 ID：{name}"] + [f"{label}：{value}" for label, value in data]
             yield event.plain_result("\n".join(lines))
@@ -2675,10 +2679,10 @@ class BattleReportPlugin(Star):
                 pts = await self.db.get_player_trend(home_team, name, date_from, date_to, side_team=home_team)
             if not pts:
                 pts = await self.db.get_team_trend(home_team, name, date_from, date_to)
-            if not pts:
-                yield event.plain_result(f"喵…没找到「{name}」{title_suffix}的数据呢。")
+            points = stats.compute_trend_points(pts)
+            if not points:
+                yield event.plain_result(f"喵…没找到「{name}」{title_suffix}的友谊胜负记录呢。")
                 return
-            points = stats.compute_cumulative(pts)
             out = self.data_dir / "trends" / f"trend_{uuid4().hex}.png"
             path = await asyncio.to_thread(
                 chart.make_trend_chart, points,

@@ -1690,7 +1690,8 @@ def test_record_images_embed_same_period_and_correct_subject_trend(plugin_module
     args, kw = renderer.call_args
     assert args[1:3] == ('a队', '2026-07-01 至 2026-07-31')
     assert args[3] == plugin_module.stats.build_record_metrics(agg, team=scope == 'team')
-    assert args[4][-1]['win_rate'] == 75 and args[4][-1]['total'] == 4
+    assert args[4] == [dict(date='2026-07-03', period_start='2026-07-02',
+                           wins=3, losses=1, total=4, win_rate=75.0)]
     assert args[5].parent == tmp_path / 'records'
     if scope == 'team':
         obj.db.get_team_trend.assert_awaited_once_with('a队', 'a队', '2026-07-01', '2026-07-31')
@@ -1723,7 +1724,8 @@ def test_record_render_failure_keeps_readable_stats_and_trend_text(plugin_module
     response = asyncio.run(collect(getattr(obj, handler)(event(command))))
     assert len(response) == 1 and isinstance(response[0], str)
     assert '胜率：75%' in response[0] and '总积分：6.25' in response[0]
-    assert '2026-07-02  50%' in response[0] and '2026-07-03  75%' in response[0]
+    assert '2026-07-02 至 2026-07-03  75%' in response[0]
+    assert '2026-07-02  50%' not in response[0]
     assert '查询出错' not in response[0]
 
 

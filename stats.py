@@ -10,6 +10,7 @@ REQUIREMENTS.md §5-M13。
 
 import math
 import unicodedata
+from itertools import groupby
 
 try:  # AstrBot 运行时按包导入
     from .battle_report_parser import KIND_RAID, RAID_PLACEHOLDER, is_kof
@@ -34,6 +35,22 @@ def compute_cumulative(points: list[tuple[str, int, int]]) -> list[dict]:
             {"date": date, "win_rate": wr, "total": total, "wins": cum_w, "losses": cum_l}
         )
     return result
+
+
+def compute_trend_points(points: list[tuple[str, int, int]]) -> list[dict]:
+    """按已排序的友谊日期展示趋势，将每月前 3 个有胜负的日期合成一点。"""
+    daily = compute_cumulative([(date, wins, losses) for date, wins, losses in points
+                                if int(wins) + int(losses) > 0])
+    displayed = []
+    for _, month_points in groupby(daily, key=lambda point: str(point["date"])[:7]):
+        days = list(month_points)
+        opening = days[:3]
+        first_point = opening[-1]
+        if len(opening) > 1:
+            first_point = {**first_point, "period_start": opening[0]["date"]}
+        displayed.append(first_point)
+        displayed.extend(days[3:])
+    return displayed
 
 
 def compute_match_stats(

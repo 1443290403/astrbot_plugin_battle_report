@@ -198,15 +198,23 @@ def _trend_image(
         draw.text((x, label_y), text, font=font_small,
                   fill="#2f6fed", anchor="ms", stroke_width=2, stroke_fill="white")
 
-    # x 轴日期标签（抽样，显示 MM-DD）
+    # x 轴日期标签按宽度抽样，合并点分两行展示起止日期。
     step = max(1, n // 10)
     if scale != 1:
-        slots = max(2, int(data_w / (draw.textlength("00-00", font=font_small) + 16)))
+        date_sample = "00-00～" if any("period_start" in p for p in points) else "00-00"
+        slots = max(2, int(data_w / (draw.textlength(date_sample, font=font_small) + 16)))
         step = max(1, (n + slots - 1) // slots)
     for i in range(0, n, step):
         x = px(i)
-        draw.text((x, height - margin_bottom + 8), _short_date(points[i]["date"]),
-                  font=font_small, fill="black", anchor="ma")
+        point = points[i]
+        end = _short_date(point["date"])
+        label_pos = (x, height - margin_bottom + 8)
+        if "period_start" in point:
+            start = _short_date(point["period_start"])
+            draw.multiline_text(label_pos, f"{start}～\n{end}", font=font_small,
+                                fill="black", anchor="ma", align="center", spacing=1)
+        else:
+            draw.text(label_pos, end, font=font_small, fill="black", anchor="ma")
 
     # 图例放在绘图区外，标明缩放范围，避免遮住放大后的曲线。
     draw.text((margin_left, height - 14), f"胜率轴：{y_min}%–{y_max}%",
