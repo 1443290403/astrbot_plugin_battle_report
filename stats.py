@@ -38,18 +38,22 @@ def compute_cumulative(points: list[tuple[str, int, int]]) -> list[dict]:
 
 
 def compute_trend_points(points: list[tuple[str, int, int]]) -> list[dict]:
-    """按已排序的友谊日期展示趋势，将每月前 3 个有胜负的日期合成一点。"""
+    """每月首点累计满 10 场即出点，最多合并三个有友谊胜负记录的日期。"""
     daily = compute_cumulative([(date, wins, losses) for date, wins, losses in points
                                 if int(wins) + int(losses) > 0])
     displayed = []
+    previous_total = 0
     for _, month_points in groupby(daily, key=lambda point: str(point["date"])[:7]):
         days = list(month_points)
-        opening = days[:3]
-        first_point = opening[-1]
-        if len(opening) > 1:
-            first_point = {**first_point, "period_start": opening[0]["date"]}
+        opening_end = 0
+        while opening_end < min(2, len(days) - 1) and days[opening_end]["total"] - previous_total < 10:
+            opening_end += 1
+        first_point = days[opening_end]
+        if opening_end:
+            first_point = {**first_point, "period_start": days[0]["date"]}
         displayed.append(first_point)
-        displayed.extend(days[3:])
+        displayed.extend(days[opening_end + 1:])
+        previous_total = days[-1]["total"]
     return displayed
 
 

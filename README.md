@@ -1,6 +1,6 @@
 # 战队对战战报
 
-![版本](https://img.shields.io/badge/版本-1.36.3-brightgreen)
+![版本](https://img.shields.io/badge/版本-1.36.4-brightgreen)
 ![AstrBot](https://img.shields.io/badge/AstrBot-v4.27.3+-blue)
 
 ## 🌟 插件简介
@@ -180,7 +180,7 @@
 
 ### 📈 胜率走势 (/趋势)
 
-- 独立趋势图与战绩卡将每月查询范围内前 3 个有友谊胜负记录的日期合成一个点。按合计胜负计算，横轴标出起止日期，后续日期继续累计。
+- 独立趋势图与战绩卡按月计算首点。从查询范围内该月首个有友谊胜负记录的日期开始，累计达到 10 场即停止合并，最多取该月前三个有效日期。合并按整日计入，横轴标出起止日期，后续日期继续逐日累计。
 
 - `/趋势 云玩家`、`/趋势 最近7天`、`/趋势 a队 七月`
 - 横轴首尾数据点与边界保留等量空白，单点居中；战绩卡内嵌趋势同步生效。
@@ -488,7 +488,7 @@ a队踢馆b队
 
 ## 📦 安装说明
 
-[下载 v1.26.4 安装包](https://github.com/1443290403/astrbot_plugin_battle_report/raw/refs/heads/install-packages/astrbot_plugin_battle_report-1.26.4.zip)，在 AstrBot 插件管理中上传。包内根目录直接包含 `metadata.yaml` 和 `main.py`。
+在 AstrBot 插件管理中上传 ZIP。包内根目录直接包含 `metadata.yaml` 和 `main.py`。[下载 v1.36.4 安装包](https://github.com/1443290403/astrbot_plugin_battle_report/raw/refs/heads/install-packages/astrbot_plugin_battle_report-1.36.4.zip)
 
 1. 将本目录放到 `AstrBot/data/plugins/astrbot_plugin_battle_report`
 2. 重启 AstrBot，在管理面板启用插件
@@ -533,6 +533,10 @@ a队踢馆b队
 由 `requirements.txt` 自动安装，无需手动处理。
 
 ## 📝 更新日志
+
+### v1.36.4
+
+- 趋势图月初累计满 10 场即绘制首点，最多合并三个有友谊胜负记录的日期。每个纳入的日期都计入当天全部胜负。
 
 ### v1.36.3
 
