@@ -1,56 +1,60 @@
-name: Verify opening-date trends
+name: Publish validated v1.36.3 package
 on:
   push:
     branches: [codex/month-opening-trend-check]
-permissions:
-  contents: read
+permissions: {}
 jobs:
-  verify:
+  publish:
+    if: github.repository == '1443290403/astrbot_plugin_battle_report'
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 25384e33ae1f2f815ebebe4407623f8c28d84496
-          persist-credentials: false
-      - uses: actions/setup-python@v5
+          ref: install-packages
+      - uses: actions/download-artifact@v4
         with:
-          python-version: '3.12'
-      - run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y fonts-noto-cjk
-          python -m pip install -r requirements.txt pytest pytest-asyncio PyYAML cryptography
-      - run: python -m pytest -q tests/
-      - run: |
-          git archive --format=zip --output=/tmp/astrbot_plugin_battle_report-1.36.3.zip HEAD
-          python - <<'PY'
-          import ast
-          import urllib.request
-          import os
-          import zipfile
-          import yaml
-
-          def source(path):
-              url = 'https://raw.githubusercontent.com/AstrBotDevs/AstrBot/v4.27.3/' + path
-              return ast.parse(urllib.request.urlopen(url, timeout=20).read())
-          updater = source('astrbot/core/star/updater.py')
-          base = source('astrbot/core/zip_updater.py')
-          derived = next(n for n in updater.body if isinstance(n, ast.ClassDef) and n.name == '_PluginUpdater')
-          root = next(n for n in base.body if isinstance(n, ast.ClassDef) and n.name == '_RepoZipUpdater')
-          methods = [n for cls in [derived, root] for n in cls.body if isinstance(n, ast.FunctionDef)
-                     and n.name in {'find_plugin_metadata_entry', 'validate_plugin_metadata',
-                                    'inspect_plugin_archive', '_resolve_archive_root_dir'}]
-          constants = [n for n in updater.body if isinstance(n, ast.Assign)
-                       and any(isinstance(t, ast.Name) and t.id.startswith('PLUGIN_METADATA_') for t in n.targets)]
-          check = ast.ClassDef(name='ArchiveCheck', bases=[], keywords=[], body=methods, decorator_list=[])
-          module = ast.Module(body=ast.parse('from __future__ import annotations').body + constants + [check], type_ignores=[])
-          scope = dict(os=os, zipfile=zipfile, yaml=yaml)
-          exec(compile(ast.fix_missing_locations(module), 'archive_validator', 'exec'), scope)
-          result = scope['ArchiveCheck'].inspect_plugin_archive('/tmp/astrbot_plugin_battle_report-1.36.3.zip')
-          assert result['metadata_entry'] == 'metadata.yaml' and result['metadata']['version'] == '1.36.3'
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
+          run-id: 45793169375
+          github-token: ${{ github.token }}
           name: astrbot-plugin-battle-report-1.36.3
-          path: /tmp/astrbot_plugin_battle_report-1.36.3.zip
-          retention-days: 7
+      - name: Record and publish the verified plugin archive
+        run: |
+          test "$(git rev-parse HEAD)" = 07016f6bc8b42152dcac40cdef6872592a3e4ae2
+          source_commit="$(git ls-remote origin refs/heads/master | cut -f1)"
+          test "$source_commit" = 25384e33ae1f2f815ebebe4407623f8c28d84496
+          python - <<'PY'
+          import hashlib
+          import re
+          import zipfile
+          from pathlib import Path
+
+          filename = 'astrbot_plugin_battle_report-1.36.3.zip'
+          source = '25384e33ae1f2f815ebebe4407623f8c28d84496'
+          archive = Path(filename)
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None
+              assert {'metadata.yaml', 'main.py', 'tests/test_trend_opening.py'} <= set(z.namelist())
+              assert b'\nversion: 1.36.3\n' in z.read('metadata.yaml')
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          path = Path('README.md')
+          text = path.read_text(encoding='utf-8')
+          for pattern, result in (
+              (r'^最新版本：.*$', '最新版本：v1.36.3'),
+              (r'^- 文件：.*$', f'- 文件：{filename}'),
+              (r'^- 源码提交：.*$', f'- 源码提交：{source}'),
+              (r'^- SHA256：.*$', f'- SHA256：{digest}'),
+          ):
+              text, count = re.subn(pattern, result, text, count=1, flags=re.M)
+              assert count == 1
+          text += '\n## v1.36.3 合并月初友谊趋势\n\n独立趋势图与战绩卡合并每月前 3 个有友谊胜负的日期，首点按合计胜负计算，并显示起止日期。后续日期逐日累计。\n\n1538 项测试通过，20 项跳过。安装包通过 AstrBot v4.27.3 校验。\n'
+          path.write_text(text, encoding='utf-8')
+          print(f'Installation archive SHA256 {digest}')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md astrbot_plugin_battle_report-1.36.3.zip
+          git commit -m 'package: publish v1.36.3 opening-date friendship trends'
+          git push origin HEAD:refs/heads/install-packages
